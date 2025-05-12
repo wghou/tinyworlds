@@ -17,3 +17,5 @@ six>=1.16.0
 pycparser>=2.21
 opencv
 matplotlib
+tqdm
+h5py>=3.0.0
