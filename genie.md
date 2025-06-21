@@ -75,3 +75,11 @@ LAM 300M, patch size 16, codebook embedding size 32, 8 unqiue codes (actions)
 
 Frechet Video Distance for video fidelity and Peak Signal-to-Noise Ratio for controllability (how much video generations differ when conditioned on latent actions inferred from ground truth vs sapled from random distribution)
 
+
+# ST Transformer
+
+L spatial/temporal blocks with (spatial layer, temporal layer, feedforward layer)
+spatial layer attends over 1 x H x W tokens within each timestep
+temporal layer attends over T x 1 x 1 across T timesteps for the same token
+
+(so just attention translated to video domain)

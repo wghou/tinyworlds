@@ -17,7 +17,7 @@ class PongDataset(Dataset):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
-            n_frames = len(frames)
+            n_frames = len(frames) // 20 # for debugging/development
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM

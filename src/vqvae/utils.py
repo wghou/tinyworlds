@@ -4,8 +4,8 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import time
 import os
-from datasets.block import BlockDataset, LatentBlockDataset
-from datasets.pong import PongDataset
+from src.vqvae.datasets.block import BlockDataset, LatentBlockDataset
+from src.vqvae.datasets.pong import PongDataset
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
