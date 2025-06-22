@@ -60,7 +60,7 @@ def load_latent_block():
                        transform=None)
     return train, val
 
-def load_pong():
+def load_pong(num_frames=1):
     """loads pong dataset"""
     current_folder_path = os.getcwd()
     video_path = current_folder_path + '/data/pong.mp4'
@@ -74,11 +74,13 @@ def load_pong():
     train = PongDataset(video_path, 
                        transform=transform,
                        save_path=preprocessed_path,
-                       train=True)
+                       train=True,
+                       num_frames=num_frames)
     val = PongDataset(video_path,
                       transform=transform,
                       save_path=preprocessed_path,
-                      train=False)
+                      train=False,
+                      num_frames=num_frames)
     
     return train, val
 
@@ -95,7 +97,7 @@ def data_loaders(train_data, val_data, batch_size):
     return train_loader, val_loader
 
 
-def load_data_and_data_loaders(dataset, batch_size):
+def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
     if dataset == 'CIFAR10':
         training_data, validation_data = load_cifar()
         training_loader, validation_loader = data_loaders(
@@ -116,7 +118,7 @@ def load_data_and_data_loaders(dataset, batch_size):
         x_train_var = np.var(training_data.data)
     # TODO: add pong dataset
     elif dataset == 'PONG':
-        training_data, validation_data = load_pong()
+        training_data, validation_data = load_pong(num_frames=num_frames)
         training_loader, validation_loader = data_loaders(
             training_data, validation_data, batch_size)
 
@@ -160,13 +162,19 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     Visualizes original images and their reconstructions side by side
     
     Args:
-        original: Tensor of original images (B, C, H, W)
-        reconstruction: Tensor of reconstructed images (B, C, H, W) 
+        original: Tensor of original images (B, C, H, W) or sequences (B, seq_len, C, H, W)
+        reconstruction: Tensor of reconstructed images (B, C, H, W) or sequences (B, seq_len, C, H, W) 
         save_path: Optional path to save the visualization
     """
     # Move tensors to CPU and convert to numpy arrays
     original = original.detach().cpu()
     reconstruction = reconstruction.detach().cpu()
+    
+    # Handle sequences by taking the first frame from each sequence
+    if original.dim() == 5:  # (B, seq_len, C, H, W)
+        original = original[:, 0]  # Take first frame from each sequence
+    if reconstruction.dim() == 5:  # (B, seq_len, C, H, W)
+        reconstruction = reconstruction[:, 0]  # Take first frame from each sequence
     
     # Create a figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))

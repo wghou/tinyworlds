@@ -1,9 +1,8 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-from models.residual import ResidualStack
+from cnn_models.residual import ResidualStack
 
 
 class Decoder(nn.Module):

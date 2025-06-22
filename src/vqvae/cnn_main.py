@@ -3,7 +3,7 @@ import torch
 import torch.optim as optim
 import argparse
 import utils
-from src.vqvae.models.video_tokenizer import Video_Tokenizer
+from cnn_models.vqvae import VQVAE
 import os
 from utils import visualize_reconstruction
 from tqdm import tqdm
@@ -15,18 +15,17 @@ Hyperparameters
 """
 timestamp = utils.readable_timestamp()
 
-parser.add_argument("--batch_size", type=int, default=4)
+parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--n_updates", type=int, default=10000)
 parser.add_argument("--n_hiddens", type=int, default=128)
-parser.add_argument("--n_residual_hiddens", type=int, default=8)
+parser.add_argument("--n_residual_hiddens", type=int, default=32)
 parser.add_argument("--n_residual_layers", type=int, default=2)
 parser.add_argument("--embedding_dim", type=int, default=64)
 parser.add_argument("--n_embeddings", type=int, default=512)
 parser.add_argument("--beta", type=float, default=.25)
 parser.add_argument("--learning_rate", type=float, default=3e-4)
-parser.add_argument("--log_interval", type=int, default=5)
-parser.add_argument("--dataset",  type=str, default='PONG')
-parser.add_argument("--context_length", type=int, default=8)
+parser.add_argument("--log_interval", type=int, default=500)
+parser.add_argument("--dataset",  type=str, default='CIFAR10')
 
 # whether or not to save model
 parser.add_argument("-save", action="store_true", default=True)
@@ -48,26 +47,13 @@ Load data and define batch data loaders
 """
 
 training_data, validation_data, training_loader, validation_loader, x_train_var = utils.load_data_and_data_loaders(
-    dataset=args.dataset, 
-    batch_size=args.batch_size, 
-    num_frames=args.context_length
-)
+    args.dataset, args.batch_size)
 """
 Set up VQ-VAE model with components defined in ./models/ folder
 """
 
-model = Video_Tokenizer(
-    frame_size=(64, 64), 
-    patch_size=4, 
-    embed_dim=512, 
-    num_heads=8,
-    hidden_dim=2048, 
-    num_blocks=6, 
-    latent_dim=32, 
-    dropout=0.1, 
-    codebook_size=512, 
-    beta=1.0
-).to(device)
+model = VQVAE(args.n_hiddens, args.n_residual_hiddens,
+              args.n_residual_layers, args.n_embeddings, args.embedding_dim, args.beta).to(device)
 
 """
 Set up optimizer and training loop
@@ -112,30 +98,21 @@ def train():
         os.makedirs(reconstructions_dir)
         
     start_iter = max(args.start_iteration, results['n_updates'])
-
-    print(f"Starting training")
     
     for i in tqdm(range(start_iter, args.n_updates)):
-        print(f"Iteration {i}")
         (x, _) = next(iter(training_loader))
         x = x.to(device)
         optimizer.zero_grad()
 
-        x_hat, vq_loss = model(x)
-
-        print(f"forward pass complete")
-
+        embedding_loss, x_hat, perplexity = model(x)
         recon_loss = torch.mean((x_hat - x)**2) / x_train_var
-        
-        loss = recon_loss + vq_loss
-        
-        print(f"backward pass")
+        loss = recon_loss + embedding_loss
+
         loss.backward()
-        
-        print(f"optimizer step")
         optimizer.step()
 
         results["recon_errors"].append(recon_loss.cpu().detach().numpy())
+        results["perplexities"].append(perplexity.cpu().detach().numpy())
         results["loss_vals"].append(loss.cpu().detach().numpy())
         results["n_updates"] = i
 
@@ -155,7 +132,7 @@ def train():
             print('Update #', i, 'Recon Error:',
                   np.mean(results["recon_errors"][-args.log_interval:]),
                   'Loss', np.mean(results["loss_vals"][-args.log_interval:]),
-                  'VQ Loss:', vq_loss.cpu().detach().numpy())
+                  'Perplexity:', np.mean(results["perplexities"][-args.log_interval:]))
 
 
 if __name__ == "__main__":

@@ -236,7 +236,22 @@ class VectorQuantizer(nn.Module):
         self.beta = beta
         
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
-        self.embedding.weight.data.uniform_(-1.0, 1.0)
+        
+        # Better initialization: spread out the embeddings
+        # Initialize with orthogonal vectors to ensure good separation
+        with torch.no_grad():
+            # Create orthogonal basis
+            orthogonal_vectors = torch.randn(self.n_e, self.e_dim)
+            # Apply Gram-Schmidt orthogonalization
+            for i in range(self.n_e):
+                for j in range(i):
+                    proj = torch.dot(orthogonal_vectors[i], orthogonal_vectors[j]) / torch.dot(orthogonal_vectors[j], orthogonal_vectors[j])
+                    orthogonal_vectors[i] = orthogonal_vectors[i] - proj * orthogonal_vectors[j]
+                # Normalize
+                orthogonal_vectors[i] = orthogonal_vectors[i] / torch.norm(orthogonal_vectors[i])
+            
+            # Scale to reasonable range - reduce scaling to bring vectors closer
+            self.embedding.weight.data = orthogonal_vectors * 0.1  # Reduced from 0.5
         
     def forward(self, z):
         # z shape: (batch, embedding_dim)
@@ -246,8 +261,30 @@ class VectorQuantizer(nn.Module):
             torch.sum(self.embedding.weight**2, dim=1) - 2 * \
             torch.matmul(z, self.embedding.weight.t())
             
+        # DEBUG: Print distance information
+        # print(f"\n=== VQ DEBUG ===")
+        # print(f"Input z shape: {z.shape}")
+        # print(f"Input z mean: {z.mean()}")
+        # print(f"Input z std: {z.std()}")
+        # print(f"Codebook weights shape: {self.embedding.weight.shape}")
+        # print(f"Codebook weights mean: {self.embedding.weight.mean()}")
+        # print(f"Codebook weights std: {self.embedding.weight.std()}")
+        # print(f"Distance matrix shape: {d.shape}")
+        # print(f"Distance matrix min: {d.min()}")
+        # print(f"Distance matrix max: {d.max()}")
+        # print(f"Distance matrix mean: {d.mean()}")
+        # print(f"Distance matrix std: {d.std()}")
+        
         # Find nearest embedding
         min_encoding_indices = torch.argmin(d, dim=1)
+        
+        # DEBUG: Print distance to each codebook entry
+        # for i in range(self.n_e):
+        #     count = (min_encoding_indices == i).sum().item()
+        #     if count > 0:
+        #         avg_dist = d[min_encoding_indices == i, i].mean().item()
+        #         print(f"Action {i}: {count} samples, avg distance: {avg_dist:.4f}")
+        
         z_q = self.embedding(min_encoding_indices)
         
         # Compute loss
@@ -257,7 +294,26 @@ class VectorQuantizer(nn.Module):
         # Preserve gradients
         z_q = z + (z_q - z).detach()
         
+        # print(f"VQ loss: {loss}")
+        # print(f"=== END VQ DEBUG ===\n")
+        
         return loss, z_q, min_encoding_indices
+
+    def reset_codebook(self):
+        """Reset codebook to orthogonal initialization if it gets stuck"""
+        with torch.no_grad():
+            # Create orthogonal basis
+            orthogonal_vectors = torch.randn(self.n_e, self.e_dim)
+            # Apply Gram-Schmidt orthogonalization
+            for i in range(self.n_e):
+                for j in range(i):
+                    proj = torch.dot(orthogonal_vectors[i], orthogonal_vectors[j]) / torch.dot(orthogonal_vectors[j], orthogonal_vectors[j])
+                    orthogonal_vectors[i] = orthogonal_vectors[i] - proj * orthogonal_vectors[j]
+                # Normalize
+                orthogonal_vectors[i] = orthogonal_vectors[i] / torch.norm(orthogonal_vectors[i])
+            
+            # Scale to reasonable range - reduce scaling to bring vectors closer
+            self.embedding.weight.data = orthogonal_vectors * 0.1  # Reduced from 0.5
 
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent actions"""
@@ -402,12 +458,36 @@ class LAM(nn.Module):
         # Encode frames to get actions and features
         actions, embeddings = self.encoder(frames)
         
+        # Add noise to actions during training to force diversity
+        if self.training:
+            # Add small amount of noise to break symmetry
+            noise_std = 1.0  # Increased from 0.1
+            actions = actions + torch.randn_like(actions) * noise_std
+        
+        # DEBUG: Print encoder outputs
+        # print(f"\n=== ENCODER DEBUG ===")
+        # print(f"Encoder actions shape: {actions.shape}")
+        # print(f"Encoder actions mean: {actions.mean()}, std: {actions.std()}, min: {actions.min()}, max: {actions.max()}")
+        
         # Flatten actions for quantization
         batch_size, seq_len, action_dim = actions.shape
         actions_flat = rearrange(actions, 'b s a -> (b s) a')
         
+        # DEBUG: Print flattened actions
+        # print(f"Flattened actions shape: {actions_flat.shape}")
+        # print(f"Flattened actions mean: {actions_flat.mean()}")
+        # print(f"Flattened actions std: {actions_flat.std()}")
+        
         # Quantize actions
         vq_loss, z_q_flat, action_indices_flat = self.quantizer(actions_flat)
+        
+        # DEBUG: Print quantization results
+        # print(f"VQ loss: {vq_loss}")
+        # print(f"Quantized actions shape: {z_q_flat.shape}")
+        # print(f"Action indices shape: {action_indices_flat.shape}")
+        # print(f"Unique action indices: {torch.unique(action_indices_flat)}")
+        # print(f"Action indices counts: {torch.bincount(action_indices_flat, minlength=self.quantizer.n_e)}")
+        # print(f"=== END ENCODER DEBUG ===\n")
         
         # Reshape quantized actions back to sequence
         z_q = rearrange(z_q_flat, '(b s) a -> b s a', b=batch_size, s=seq_len)
@@ -420,13 +500,54 @@ class LAM(nn.Module):
         target_frames = frames[:, 1:]  # All frames except first [batch_size, seq_len-1, channels, height, width]
         recon_loss = F.mse_loss(pred_frames, target_frames)
         
-        # Compute diversity loss to encourage use of all action codes
-        action_probs = torch.bincount(action_indices.flatten(), minlength=self.quantizer.n_e).float()
-        action_probs = action_probs / action_probs.sum()
-        diversity_loss = -torch.sum(action_probs * torch.log(action_probs + 1e-10))
+        # Compute diversity loss on CONTINUOUS encoder outputs (before quantization)
+        # This ensures gradients flow back to the encoder
+        # We want the encoder to output diverse continuous representations
+        actions_mean = actions.mean(dim=1)  # [batch_size, action_dim] - average across sequence
+        actions_std = actions.std(dim=1)    # [batch_size, action_dim] - std across sequence
         
-        # Total loss with weights
-        total_loss = recon_loss + 0.25 * vq_loss - 10.0 * diversity_loss
+        # Encourage diverse continuous outputs by penalizing low variance
+        continuous_diversity_loss = -torch.mean(actions_std)  # Negative because we want to maximize std
+        
+        # Also encourage different actions across the sequence
+        sequence_diversity_loss = -torch.mean(torch.std(actions, dim=1))  # Negative because we want to maximize std
+        
+        # Combine both diversity losses
+        diversity_loss = continuous_diversity_loss + sequence_diversity_loss
+        
+        # DEBUG: Print diversity loss details
+        # print(f"\n=== DIVERSITY DEBUG ===")
+        # print(f"Actions mean across sequence: {actions_mean.mean():.4f}")
+        # print(f"Actions std across sequence: {actions_std.mean():.4f}")
+        # print(f"Actions std across batch: {torch.std(actions, dim=1).mean():.4f}")
+        # print(f"Continuous diversity loss: {continuous_diversity_loss:.4f}")
+        # print(f"Sequence diversity loss: {sequence_diversity_loss:.4f}")
+        # print(f"Total diversity loss: {diversity_loss:.4f}")
+        
+        # DEBUG: Check if diverse continuous outputs actually map to diverse discrete actions
+        # Sample a few actions and see their distances to all codebook entries
+        sample_actions = actions_flat[:5]  # Take first 5 actions
+        distances = torch.sum(sample_actions.unsqueeze(1) ** 2, dim=2) + \
+                   torch.sum(self.quantizer.embedding.weight**2, dim=1) - 2 * \
+                   torch.matmul(sample_actions, self.quantizer.embedding.weight.t())
+        
+        # print(f"Sample actions distances to codebook:")
+        # for i in range(5):
+        #     print(f"  Action {i}: distances = {distances[i].detach().cpu().numpy()}")
+        #     closest = torch.argmin(distances[i]).item()
+        #     print(f"    Closest to action {closest} (distance: {distances[i, closest]:.4f})")
+        
+        # print(f"=== END DIVERSITY DEBUG ===\n")
+        
+        # Total loss with weights - now include reconstruction and VQ loss
+        total_loss = 1 * recon_loss + 0.25 * vq_loss - 100.0 * diversity_loss  # Increased from 500.0
+        
+        # DEBUG: Print loss components
+        # print(f"Reconstruction loss: {recon_loss:.4f}")
+        # print(f"VQ loss: {vq_loss:.4f}")
+        # print(f"Weighted diversity loss: {-1000.0 * diversity_loss:.4f}")
+        # print(f"Total loss: {total_loss:.4f}")
+        # print(f"=== END DEBUG ===\n")
         
         # Create loss dictionary for monitoring
         loss_dict = {

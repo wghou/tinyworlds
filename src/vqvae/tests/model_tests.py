@@ -5,7 +5,7 @@ from models.encoder import Encoder
 from models.decoder import Decoder
 from models.quantizer import VectorQuantizer
 from models.residual import ResidualLayer, ResidualStack
-from models.vqvae import VQVAE
+from vqvae.models.video_tokenizer import VQVAE
 
 class TestModels(unittest.TestCase):
     def setUp(self):

@@ -4,9 +4,7 @@ from models.lam import LAM
 import argparse
 from tqdm import tqdm
 import os
-from utils import (visualize_action_clusters, visualize_action_interpolation, 
-                  plot_action_distribution, visualize_reconstructions, 
-                  load_sequence_dataset)
+from utils import visualize_reconstructions, load_sequence_dataset
 import multiprocessing
 
 def main():
@@ -16,12 +14,12 @@ def main():
     parser.add_argument("--n_updates", type=int, default=1000)
     parser.add_argument("--learning_rate", type=float, default=3e-3)
     parser.add_argument("--frame_size", type=int, default=64)
-    parser.add_argument("--n_actions", type=int, default=8)
+    parser.add_argument("--n_actions", type=int, default=4)
     parser.add_argument("--patch_size", type=int, default=16, help="Patch size for ST-Transformer")
     parser.add_argument("--embed_dim", type=int, default=512, help="Embedding dimension for ST-Transformer")
-    parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads")
-    parser.add_argument("--hidden_dim", type=int, default=2048, help="Hidden dimension for feed-forward")
-    parser.add_argument("--num_blocks", type=int, default=6, help="Number of ST-Transformer blocks")
+    parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads")
+    parser.add_argument("--hidden_dim", type=int, default=1024, help="Hidden dimension for feed-forward")
+    parser.add_argument("--num_blocks", type=int, default=4, help="Number of ST-Transformer blocks")
     parser.add_argument("--action_dim", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
     parser.add_argument("--dataset", type=str, default="PONG")
@@ -76,12 +74,12 @@ def main():
         optimizer.step()
         
         # Print progress every 10 steps
-        if (epoch + 1) % 10 == 0:
-            print(f"\nStep {epoch+1}")
-            print(f"Total Loss: {loss.item():.4f}")
-            print(f"Reconstruction Loss: {loss_dict['recon_loss'].item():.4f}")
-            print(f"VQ Loss: {loss_dict['vq_loss'].item():.4f}")
-            print(f"Diversity Loss: {loss_dict['diversity_loss'].item():.4f}")
+        if (epoch + 1) % 50 == 0:
+            # print(f"\nStep {epoch+1}")
+            # print(f"Total Loss: {loss.item():.4f}")
+            # print(f"Reconstruction Loss: {loss_dict['recon_loss'].item():.4f}")
+            # print(f"VQ Loss: {loss_dict['vq_loss'].item():.4f}")
+            # print(f"Diversity Loss: {loss_dict['diversity_loss'].item():.4f}")
             
             # Check VQ codebook usage
             with torch.no_grad():
@@ -98,22 +96,22 @@ def main():
                 
                 # Check frame differences
                 frame_diff = torch.mean((frame_sequences[:, -1] - frame_sequences[:, 0])**2).item()
-                print(f"Avg frame difference: {frame_diff:.4f}")
+                # print(f"Avg frame difference: {frame_diff:.4f}")
                 
-                print(f"Unique continuous actions: {unique_continuous}")
-                print(f"Unique discrete actions: {unique_discrete}/{args.n_actions}")
-                print(f"Discrete actions: {torch.unique(action_indices).cpu().numpy()}")
+                # print(f"Unique continuous actions: {unique_continuous}")
+                # print(f"Unique discrete actions: {unique_discrete}/{args.n_actions}")
+                # print(f"Discrete actions: {torch.unique(action_indices).cpu().numpy()}")
                 
                 # Check encoder output variance
                 z_e_var = torch.var(actions_flat).item()
-                print(f"Encoder output variance: {z_e_var:.4f}")
+                # print(f"Encoder output variance: {z_e_var:.4f}")
                 
                 # Check VQ codebook variance
                 vq_var = torch.var(model.quantizer.embedding.weight).item()
-                print(f"VQ codebook variance: {vq_var:.4f}")
+                # print(f"VQ codebook variance: {vq_var:.4f}")
         
         # Visualize results periodically
-        vis_interval = 10
+        vis_interval = 50
         if epoch % vis_interval == 0:
             # Create results directory if it doesn't exist
             os.makedirs('results', exist_ok=True)

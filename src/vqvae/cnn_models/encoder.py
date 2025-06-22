@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from models.residual import ResidualStack
+from cnn_models.residual import ResidualStack
 
 class Encoder(nn.Module):
     """

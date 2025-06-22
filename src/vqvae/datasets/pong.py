@@ -1,17 +1,18 @@
 """Dataset for loading Pong video frames using HDF5 storage"""
 
-import torch
 from torch.utils.data import Dataset
 import cv2
 import h5py
 import os
 from tqdm import tqdm
 import numpy as np
+import torch
 
 class PongDataset(Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1):
         self.transform = transform
         self.train = train
+        self.num_frames = num_frames
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
@@ -79,17 +80,28 @@ class PongDataset(Dataset):
         return np.array(frames)
 
     def __len__(self):
-        return len(self.data)
+        # Adjust length to account for sequence requirements
+        return max(0, len(self.data) - self.num_frames + 1)
     
     def __getitem__(self, index):
-        frame = self.data[index]
+        print(f"Getting item {index}")
+        # Get sequence of frames starting from index
+        frame_sequence = self.data[index:index + self.num_frames]
         
         # Convert to float and normalize to [0, 1]
-        frame = frame.astype(np.float32) / 255.0
+        frame_sequence = frame_sequence.astype(np.float32) / 255.0
         
         if self.transform:
-            frame = self.transform(frame)
-        return frame, 0  # Return 0 as dummy label
+            transformed_frames = []
+            for frame in frame_sequence:
+                # Pass numpy array directly to transform (ToTensor will handle conversion)
+                transformed_frame = self.transform(frame)
+                transformed_frames.append(transformed_frame)
+            frame_sequence = torch.stack(transformed_frames, dim=0)  # [seq_len, C, H, W]
+        else:
+            frame_sequence = torch.from_numpy(frame_sequence).permute(0, 3, 1, 2)  # [seq_len, C, H, W]
+        
+        return frame_sequence, 0  # Return 0 as dummy label
     
     def __del__(self):
         if hasattr(self, 'h5_file'):
