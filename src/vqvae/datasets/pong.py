@@ -84,7 +84,6 @@ class PongDataset(Dataset):
         return max(0, len(self.data) - self.num_frames + 1)
     
     def __getitem__(self, index):
-        print(f"Getting item {index}")
         # Get sequence of frames starting from index
         frame_sequence = self.data[index:index + self.num_frames]
         

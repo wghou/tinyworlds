@@ -225,7 +225,8 @@ class STTransformer(nn.Module):
             x: [batch_size, seq_len, num_patches, embed_dim]
         """
         for block in self.blocks:
-            x = block(x)
+            # Use gradient checkpointing to save memory
+            x = torch.utils.checkpoint.checkpoint(block, x)
         return x
 
 class VectorQuantizer(nn.Module):
@@ -253,53 +254,15 @@ class VectorQuantizer(nn.Module):
         """
         batch_size, seq_len, num_patches, latent_dim = z.shape
         
-        # Debug input
-        if torch.isnan(z).any():
-            print("VQ WARNING: Input z contains NaN!")
-        if torch.isinf(z).any():
-            print("VQ WARNING: Input z contains inf!")
-        
         # Reshape z to [batch_size * seq_len * num_patches, latent_dim] for distance calculation
         z_flat = z.view(-1, latent_dim)  # [batch_size * seq_len * num_patches, latent_dim]
-        
-        # Debug z_flat
-        if torch.isnan(z_flat).any():
-            print("VQ WARNING: z_flat contains NaN!")
-        if torch.isinf(z_flat).any():
-            print("VQ WARNING: z_flat contains inf!")
-        
-        # Debug embedding weights
-        if torch.isnan(self.embedding.weight).any():
-            print("VQ WARNING: embedding weights contain NaN!")
-        if torch.isinf(self.embedding.weight).any():
-            print("VQ WARNING: embedding weights contain inf!")
         
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
         z_squared = torch.sum(z_flat ** 2, dim=1, keepdim=True)
         e_squared = torch.sum(self.embedding.weight**2, dim=1)
         z_e_product = torch.matmul(z_flat, self.embedding.weight.t())
         
-        # Debug individual terms
-        if torch.isnan(z_squared).any():
-            print("VQ WARNING: z_squared contains NaN!")
-        if torch.isinf(z_squared).any():
-            print("VQ WARNING: z_squared contains inf!")
-        if torch.isnan(e_squared).any():
-            print("VQ WARNING: e_squared contains NaN!")
-        if torch.isinf(e_squared).any():
-            print("VQ WARNING: e_squared contains inf!")
-        if torch.isnan(z_e_product).any():
-            print("VQ WARNING: z_e_product contains NaN!")
-        if torch.isinf(z_e_product).any():
-            print("VQ WARNING: z_e_product contains inf!")
-        
         d = z_squared + e_squared - 2 * z_e_product  # [batch_size * seq_len * num_patches, codebook_size]
-        
-        # Debug final distance
-        if torch.isnan(d).any():
-            print("VQ WARNING: distance matrix contains NaN!")
-        if torch.isinf(d).any():
-            print("VQ WARNING: distance matrix contains inf!")
             
         # Find nearest embedding
         min_encoding_indices = torch.argmin(d, dim=1)  # [batch_size * seq_len * num_patches]
@@ -309,38 +272,22 @@ class VectorQuantizer(nn.Module):
         
         z_q = self.embedding(min_encoding_indices)  # [batch_size, seq_len, num_patches, latent_dim]
         
-        # Debug z_q
-        if torch.isnan(z_q).any():
-            print("VQ WARNING: z_q contains NaN!")
-        if torch.isinf(z_q).any():
-            print("VQ WARNING: z_q contains inf!")
+        # VQ-VAE loss with proper stop gradients as per paper:
+        # L = log p(x|zq(x)) + ||sg[ze(x)] - e||² + β||ze(x) - sg[e]||²
         
-        # Compute loss
-        commitment_loss = torch.mean((z_q.detach()-z)**2)
-        codebook_loss = torch.mean((z_q - z.detach()) ** 2)
+        # Commitment loss: ||ze(x) - sg[e]||² (encoder learns to commit to embeddings)
+        commitment_loss = torch.mean((z - z_q.detach())**2)
         
-        # Debug individual loss terms
-        if torch.isnan(commitment_loss):
-            print("VQ WARNING: commitment_loss is NaN!")
-        if torch.isinf(commitment_loss):
-            print("VQ WARNING: commitment_loss is inf!")
-        if torch.isnan(codebook_loss):
-            print("VQ WARNING: codebook_loss is NaN!")
-        if torch.isinf(codebook_loss):
-            print("VQ WARNING: codebook_loss is inf!")
+        # Codebook loss: ||sg[ze(x)] - e||² (embeddings learn to match encoder output)
+        codebook_loss = torch.mean((z.detach() - z_q)**2)
         
-        loss = commitment_loss + self.beta * codebook_loss
+        # Total VQ loss
+        vq_loss = commitment_loss + self.beta * codebook_loss
         
-        # Debug final loss
-        if torch.isnan(loss):
-            print("VQ WARNING: final loss is NaN!")
-        if torch.isinf(loss):
-            print("VQ WARNING: final loss is inf!")
-               
-        # Preserve gradients
+        # Straight-through estimator for gradients
         z_q = z + (z_q - z).detach()
         
-        return loss, z_q, min_encoding_indices
+        return vq_loss, z_q, min_encoding_indices
 
     def reset_codebook(self):
         """Reset codebook to stable initialization if it gets stuck"""
@@ -349,7 +296,7 @@ class VectorQuantizer(nn.Module):
             self.embedding.weight.data.uniform_(-1.0 / self.codebook_size, 1.0 / self.codebook_size)
 
 class Encoder(nn.Module):
-    """ST-Transformer encoder that takes frames and outputs latent actions"""
+    """ST-Transformer encoder that takes frames and outputs latent representations"""
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8, 
                  hidden_dim=1024, num_blocks=6, latent_dim=32, dropout=0.1):
         super().__init__()
@@ -380,7 +327,7 @@ class Encoder(nn.Module):
         return predicted_latents
 
 class Decoder(nn.Module):
-    """ST-Transformer decoder that takes frames and latents to predict next frame"""
+    """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
                  hidden_dim=2048, num_blocks=6, latent_dim=64, dropout=0.1, height=64, width=64, channels=3):
         super().__init__()
@@ -391,7 +338,7 @@ class Decoder(nn.Module):
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
         
         num_patches = (height // patch_size) * (width // patch_size)
-        # Frame prediction head goes from num_patches * embed_dim to height * width * channels
+        # Frame reconstruction head goes from num_patches * embed_dim to height * width * channels
         self.frame_head = nn.Linear(num_patches * embed_dim, height * width * channels)
         self.height = height
         self.width = width
@@ -445,41 +392,14 @@ class Video_Tokenizer(nn.Module):
         self.vq = VectorQuantizer(codebook_size, latent_dim, beta)
         
     def forward(self, frames):
-        # Debug input
-        if torch.isnan(frames).any():
-            print("WARNING: Input frames contain NaN!")
-        if torch.isinf(frames).any():
-            print("WARNING: Input frames contain inf!")
             
         # Encode frames to latent representations
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
         
-        # Debug encoder output
-        if torch.isnan(embeddings).any():
-            print("WARNING: Encoder output contains NaN!")
-        if torch.isinf(embeddings).any():
-            print("WARNING: Encoder output contains inf!")
-        
         # Apply vector quantization
         vq_loss, z_q, min_encoding_indices = self.vq(embeddings)
         
-        # Debug VQ output
-        if torch.isnan(z_q).any():
-            print("WARNING: VQ output contains NaN!")
-        if torch.isinf(z_q).any():
-            print("WARNING: VQ output contains inf!")
-        if torch.isnan(vq_loss):
-            print("WARNING: VQ loss is NaN!")
-        if torch.isinf(vq_loss):
-            print("WARNING: VQ loss is inf!")
-        
         # Decode quantized latents back to frames
         x_hat = self.decoder(z_q)  # [batch_size, seq_len, channels, height, width]
-        
-        # Debug decoder output
-        if torch.isnan(x_hat).any():
-            print("WARNING: Decoder output contains NaN!")
-        if torch.isinf(x_hat).any():
-            print("WARNING: Decoder output contains inf!")
         
         return x_hat, vq_loss

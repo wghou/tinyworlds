@@ -15,7 +15,7 @@ Hyperparameters
 """
 timestamp = utils.readable_timestamp()
 
-parser.add_argument("--batch_size", type=int, default=4)
+parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--n_updates", type=int, default=10000)
 parser.add_argument("--n_hiddens", type=int, default=128)
 parser.add_argument("--n_residual_hiddens", type=int, default=8)
@@ -23,10 +23,10 @@ parser.add_argument("--n_residual_layers", type=int, default=2)
 parser.add_argument("--embedding_dim", type=int, default=64)
 parser.add_argument("--n_embeddings", type=int, default=512)
 parser.add_argument("--beta", type=float, default=.25)
-parser.add_argument("--learning_rate", type=float, default=3e-4)
-parser.add_argument("--log_interval", type=int, default=5)
+parser.add_argument("--learning_rate", type=float, default=1e-4)
+parser.add_argument("--log_interval", type=int, default=250)
 parser.add_argument("--dataset",  type=str, default='PONG')
-parser.add_argument("--context_length", type=int, default=8)
+parser.add_argument("--context_length", type=int, default=4)
 
 # whether or not to save model
 parser.add_argument("-save", action="store_true", default=True)
@@ -58,14 +58,14 @@ Set up VQ-VAE model with components defined in ./models/ folder
 
 model = Video_Tokenizer(
     frame_size=(64, 64), 
-    patch_size=4, 
-    embed_dim=512, 
-    num_heads=8,
-    hidden_dim=2048, 
-    num_blocks=6, 
-    latent_dim=32, 
+    patch_size=8,  # Larger patches = fewer patches (8x8 instead of 4x4)
+    embed_dim=128,  # Much smaller embedding dimension (was 512)
+    num_heads=4,   # Fewer attention heads (was 8)
+    hidden_dim=512,  # Much smaller hidden dimension (was 2048)
+    num_blocks=2,  # Fewer transformer blocks (was 6)
+    latent_dim=16,  # Smaller latent dimension (was 32)
     dropout=0.1, 
-    codebook_size=512, 
+    codebook_size=256,  # Smaller codebook (was 512)
     beta=1.0
 ).to(device)
 
@@ -116,23 +116,16 @@ def train():
     print(f"Starting training")
     
     for i in tqdm(range(start_iter, args.n_updates)):
-        print(f"Iteration {i}")
         (x, _) = next(iter(training_loader))
         x = x.to(device)
         optimizer.zero_grad()
 
         x_hat, vq_loss = model(x)
 
-        print(f"forward pass complete")
-
         recon_loss = torch.mean((x_hat - x)**2) / x_train_var
         
         loss = recon_loss + vq_loss
-        
-        print(f"backward pass")
         loss.backward()
-        
-        print(f"optimizer step")
         optimizer.step()
 
         results["recon_errors"].append(recon_loss.cpu().detach().numpy())
