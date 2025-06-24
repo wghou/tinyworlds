@@ -67,6 +67,8 @@ class SpatialAttention(nn.Module):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
+        Returns:
+            out: [batch_size, seq_len, num_patches, embed_dim]
         """
         # Always expects x of shape [batch, seq, num_patches, embed_dim]
         batch_size, seq_len, num_patches, embed_dim = x.shape
@@ -118,6 +120,8 @@ class TemporalAttention(nn.Module):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
+        Returns:
+            out: [batch_size, seq_len, num_patches, embed_dim]
         """
         # Always expects x of shape [batch, seq, num_patches, embed_dim]
         batch_size, seq_len, num_patches, embed_dim = x.shape
@@ -166,6 +170,8 @@ class FeedForward(nn.Module):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
+        Returns:
+            out: [batch_size, seq_len, num_patches, embed_dim]
         """
         batch_size, seq_len, num_patches, embed_dim = x.shape
         
@@ -198,6 +204,8 @@ class STTransformerBlock(nn.Module):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
+        Returns:
+            out: [batch_size, seq_len, num_patches, embed_dim]
         """
         # Spatial attention - attends over patches within each frame
         x = self.spatial_attn(x)
@@ -223,10 +231,11 @@ class STTransformer(nn.Module):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
+        Returns:
+            out: [batch_size, seq_len, num_patches, embed_dim]
         """
         for block in self.blocks:
-            # Use gradient checkpointing to save memory
-            x = torch.utils.checkpoint.checkpoint(block, x)
+            x = block(x)
         return x
 
 class VectorQuantizer(nn.Module):
