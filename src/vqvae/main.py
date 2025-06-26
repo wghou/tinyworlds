@@ -138,6 +138,7 @@ def save_videotokenizer_model_and_results(model, optimizer, results, hyperparame
     results_to_save = {
         'model': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'results': results,
         'hyperparameters': hyperparameters
     }
@@ -176,6 +177,9 @@ Set up optimizer and training loop
 """
 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, amsgrad=True)
 
+# Add learning rate scheduler for better convergence
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.5)
+
 """
 Load checkpoint if specified
 """
@@ -199,6 +203,10 @@ if args.checkpoint:
         # Restore optimizer state if available
         if 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Restore scheduler state if available
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     else:
         print(f"No checkpoint found at {args.checkpoint}")
 
@@ -213,24 +221,46 @@ def train():
 
     print(f"Starting training")
     
+    # Warmup for VQ loss to prevent early mode collapse
+    warmup_steps = min(2000, args.n_updates // 2)  # Longer warmup - first 50% of training
+    
+    # Track reset attempts to prevent infinite loops
+    reset_count = 0
+    max_resets = 5
+    last_codebook_usage = 0.0
+    improvement_threshold = 0.05  # 5% improvement
+    
     for i in tqdm(range(start_iter, args.n_updates)):
         (x, _) = next(iter(training_loader))
         x = x.to(device)
         optimizer.zero_grad()
 
-        x_hat, vq_loss = model(x)
+        x_hat, vq_loss, min_encoding_indices = model(x)
 
         recon_loss = torch.mean((x_hat - x)**2) / x_train_var
         
-        # Weight the losses to prevent mode collapse
-        loss = recon_loss  # Temporarily disable VQ loss to fix mode collapse
-        # loss = 100.0 * recon_loss + 0.01 * vq_loss  # Much more aggressive weighting
+        # More aggressive warmup and better loss balancing
+        if i < warmup_steps:
+            # During warmup, gradually increase VQ loss but keep it very small
+            vq_weight = args.beta * (i / warmup_steps) ** 2  # Quadratic warmup
+        else:
+            vq_weight = args.beta
+            
+        # Add a diversity penalty to encourage codebook usage
+        with torch.no_grad():
+            unique_indices = torch.unique(min_encoding_indices)
+            diversity_penalty = 1.0 - (len(unique_indices) / args.codebook_size)
+        diversity_loss = diversity_penalty * 0.001  # Small penalty for low diversity
+            
+        # Proper VQ-VAE loss weighting to prevent mode collapse
+        loss = recon_loss + vq_weight * vq_loss + diversity_loss
         loss.backward()
         
         # Clip gradients to prevent instability
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         optimizer.step()
+        scheduler.step()  # Step the learning rate scheduler
 
         results["recon_errors"].append(recon_loss.cpu().detach().numpy())
         results["loss_vals"].append(loss.cpu().detach().numpy())
@@ -239,12 +269,40 @@ def train():
         # Debug loss balance
         if i % 10 == 0:  # Print every 10 iterations
             print(f"Iteration {i}:")
+            print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
             print(f"  Recon Loss: {recon_loss.item():.6f}")
             print(f"  VQ Loss: {vq_loss.item():.6f}")
+            print(f"  VQ Weight: {vq_weight:.4f}")
+            print(f"  Diversity Loss: {diversity_loss}")
             print(f"  Total Loss: {loss.item():.6f}")
             print(f"  VQ/Recon Ratio: {vq_loss.item()/recon_loss.item():.2f}")
             print(f"  x_hat variance: {torch.var(x_hat, dim=0).mean().item():.6f}")
             print(f"  x variance: {torch.var(x, dim=0).mean().item():.6f}")
+            
+            # Monitor codebook usage
+            with torch.no_grad():
+                # Get unique codebook indices used in this batch
+                unique_indices = torch.unique(min_encoding_indices)
+                codebook_usage = len(unique_indices) / args.codebook_size
+                print(f"  Codebook usage: {codebook_usage:.2%} ({len(unique_indices)}/{args.codebook_size})")
+                
+                # Check if we're making progress
+                if codebook_usage > last_codebook_usage + improvement_threshold:
+                    print(f"  ✅ Codebook usage improved by {codebook_usage - last_codebook_usage:.2%}")
+                    reset_count = 0  # Reset the reset counter on improvement
+                last_codebook_usage = codebook_usage
+                
+                # Reset codebook if usage is too low (indicates mode collapse)
+                if codebook_usage < 0.1 and i > warmup_steps and reset_count < max_resets:  # Less than 10% usage after warmup
+                    print(f"  ⚠️ Low codebook usage detected! Resetting codebook... (Attempt {reset_count + 1}/{max_resets})")
+                    model.vq.reset_codebook()
+                    reset_count += 1
+                    # Also reset the optimizer for the codebook to help it escape the local minimum
+                    for param_group in optimizer.param_groups:
+                        if 'vq' in str(param_group) or 'embedding' in str(param_group):
+                            param_group['lr'] *= 2.0  # Temporarily increase learning rate
+                elif codebook_usage < 0.1 and reset_count >= max_resets:
+                    print(f"  ⚠️ Maximum resets reached. Continuing with current codebook...")
             print("---")
 
         # print variance of x_hat across the batch dimension

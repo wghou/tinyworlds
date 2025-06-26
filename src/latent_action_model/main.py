@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
     parser.add_argument("--action_dim", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
-    parser.add_argument("--dataset", type=str, default="PONG")
+    parser.add_argument("--dataset", type=str, default="SONIC")
     parser.add_argument("--seq_length", type=int, default=8, help="Length of frame sequences")
     
     # Add save arguments

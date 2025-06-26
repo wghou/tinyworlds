@@ -247,10 +247,11 @@ class VectorQuantizer(nn.Module):
         
         self.embedding = nn.Embedding(self.codebook_size, self.latent_dim)
         
-        # Use simple, stable initialization instead of Gram-Schmidt
+        # Use better initialization to prevent mode collapse
         with torch.no_grad():
-            # Initialize with small random values
-            self.embedding.weight.data.uniform_(-1.0 / self.codebook_size, 1.0 / self.codebook_size)
+            # Initialize with larger random values to encourage diversity
+            # This helps prevent the model from getting stuck in a single mode
+            self.embedding.weight.data.uniform_(-0.5, 0.5)
 
     def forward(self, z):
         """
@@ -301,8 +302,12 @@ class VectorQuantizer(nn.Module):
     def reset_codebook(self):
         """Reset codebook to stable initialization if it gets stuck"""
         with torch.no_grad():
-            # Use simple, stable initialization
-            self.embedding.weight.data.uniform_(-1.0 / self.codebook_size, 1.0 / self.codebook_size)
+            # Use better initialization to encourage diversity
+            self.embedding.weight.data.uniform_(-0.5, 0.5)
+            
+            # Add some noise to break symmetry and encourage diversity
+            noise = torch.randn_like(self.embedding.weight.data) * 0.1
+            self.embedding.weight.data += noise
 
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
@@ -411,4 +416,4 @@ class Video_Tokenizer(nn.Module):
         # Decode quantized latents back to frames
         x_hat = self.decoder(z_q)  # [batch_size, seq_len, channels, height, width]
         
-        return x_hat, vq_loss
+        return x_hat, vq_loss, min_encoding_indices

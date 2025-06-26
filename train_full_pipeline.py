@@ -123,18 +123,20 @@ def main():
     video_tokenizer_cmd = [
         sys.executable, "src/vqvae/main.py",
         "--dataset", "SONIC",
-        "--batch_size", "16",
-        "--n_updates", "2000",  # Reduced for faster training
-        "--learning_rate", "1e-4",
+        "--batch_size", "20",
+        "--n_updates", "8000",  # Reduced for faster training
+        "--learning_rate", "3e-4",  # Increased from 1e-4 for better convergence
         "--log_interval", "100",
         "--context_length", "4",
-        "--patch_size", "8",
+        "--patch_size", "4",
         "--embed_dim", "128",
         "--num_heads", "4",
         "--hidden_dim", "512",
         "--num_blocks", "2",
-        "--latent_dim", "16",
-        "--dropout", "0.1"
+        "--latent_dim", "32",
+        "--dropout", "0.1",
+        "--codebook_size", "128",  # Reduced from 512 to make it easier to use more codes
+        "--beta", "0.01"  # Drastically reduced from 0.25 to prevent mode collapse
     ]
     
     if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
@@ -159,8 +161,9 @@ def main():
         "--num_heads", "4",
         "--hidden_dim", "512",
         "--num_blocks", "2",
-        "--action_dim", "16",
-        "--dropout", "0.1"
+        "--action_dim", "32",
+        "--dropout", "0.1",
+        "--n_actions", "4"
     ]
     
     if not run_command(lam_cmd, "LAM Training"):

@@ -32,7 +32,7 @@ parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--n_updates", type=int, default=10000)
 parser.add_argument("--learning_rate", type=float, default=1e-4)
 parser.add_argument("--log_interval", type=int, default=250)
-parser.add_argument("--dataset",  type=str, default='PONG')
+parser.add_argument("--dataset",  type=str, default='SONIC')
 parser.add_argument("--context_length", type=int, default=4)
 
 # Model architecture parameters - must match the video tokenizer parameters
