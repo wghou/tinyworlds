@@ -43,7 +43,8 @@ parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimensio
 parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
 parser.add_argument("--latent_dim", type=int, default=16, help="Latent dimension")
 parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
-parser.add_argument("--codebook_size", type=int, default=256, help="Codebook size for vector quantization")
+parser.add_argument("--codebook_size", type=int, default=256, help="Number of bins per dimension for finite scalar quantization")
+parser.add_argument("--ema_decay", type=float, default=0.99, help="EMA decay rate for bin updates")
 
 # whether or not to save model
 parser.add_argument("-save", action="store_true", default=True)
@@ -95,8 +96,9 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'num_blocks': args.num_blocks,
             'latent_dim': args.latent_dim,
             'dropout': args.dropout,
-            'codebook_size': args.codebook_size,
-            'beta': args.beta
+            'num_bins_per_dim': args.codebook_size,
+            'beta': args.beta,
+            'quantization_method': 'Finite Scalar Quantization (FSQ)'
         },
         'training_parameters': {
             'batch_size': args.batch_size,
@@ -169,7 +171,8 @@ model = Video_Tokenizer(
     latent_dim=args.latent_dim,
     dropout=args.dropout, 
     codebook_size=args.codebook_size,
-    beta=args.beta
+    beta=args.beta,
+    ema_decay=args.ema_decay
 ).to(device)
 
 """
@@ -235,25 +238,25 @@ def train():
         x = x.to(device)
         optimizer.zero_grad()
 
-        x_hat, vq_loss, min_encoding_indices = model(x)
+        x_hat, fsq_loss, bin_indices = model(x)
 
         recon_loss = torch.mean((x_hat - x)**2) / x_train_var
         
         # More aggressive warmup and better loss balancing
         if i < warmup_steps:
-            # During warmup, gradually increase VQ loss but keep it very small
-            vq_weight = args.beta * (i / warmup_steps) ** 2  # Quadratic warmup
+            # During warmup, gradually increase FSQ loss but keep it very small
+            fsq_weight = args.beta * (i / warmup_steps) ** 2  # Quadratic warmup
         else:
-            vq_weight = args.beta
+            fsq_weight = args.beta
             
-        # Add a diversity penalty to encourage codebook usage
+        # Add a diversity penalty to encourage bin usage
         with torch.no_grad():
-            unique_indices = torch.unique(min_encoding_indices)
-            diversity_penalty = 1.0 - (len(unique_indices) / args.codebook_size)
-        diversity_loss = diversity_penalty * 0.001  # Small penalty for low diversity
+            codebook_usage = model.vq.get_codebook_usage(bin_indices)
+            diversity_penalty = 1.0 - codebook_usage
+        diversity_loss = diversity_penalty * 0  # Small penalty for low diversity
             
-        # Proper VQ-VAE loss weighting to prevent mode collapse
-        loss = recon_loss + vq_weight * vq_loss + diversity_loss
+        # Proper FSQ loss weighting to prevent mode collapse
+        loss = recon_loss + fsq_weight * fsq_loss + diversity_loss
         loss.backward()
         
         # Clip gradients to prevent instability
@@ -261,6 +264,12 @@ def train():
         
         optimizer.step()
         scheduler.step()  # Step the learning rate scheduler
+        
+        # Update EMA statistics for bin maintenance
+        with torch.no_grad():
+            # Get flattened encoder outputs for EMA updates
+            z_flat = model.encoder(x).view(-1, args.latent_dim)
+            model.vq.update_ema(z_flat, bin_indices.view(-1, args.latent_dim))
 
         results["recon_errors"].append(recon_loss.cpu().detach().numpy())
         results["loss_vals"].append(loss.cpu().detach().numpy())
@@ -271,20 +280,24 @@ def train():
             print(f"Iteration {i}:")
             print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
             print(f"  Recon Loss: {recon_loss.item():.6f}")
-            print(f"  VQ Loss: {vq_loss.item():.6f}")
-            print(f"  VQ Weight: {vq_weight:.4f}")
+            print(f"  FSQ Loss: {fsq_loss.item():.6f}")
+            print(f"  FSQ Weight: {fsq_weight:.4f}")
             print(f"  Diversity Loss: {diversity_loss}")
             print(f"  Total Loss: {loss.item():.6f}")
-            print(f"  VQ/Recon Ratio: {vq_loss.item()/recon_loss.item():.2f}")
+            print(f"  FSQ/Recon Ratio: {fsq_loss.item()/recon_loss.item():.2f}")
             print(f"  x_hat variance: {torch.var(x_hat, dim=0).mean().item():.6f}")
             print(f"  x variance: {torch.var(x, dim=0).mean().item():.6f}")
             
             # Monitor codebook usage
             with torch.no_grad():
-                # Get unique codebook indices used in this batch
-                unique_indices = torch.unique(min_encoding_indices)
-                codebook_usage = len(unique_indices) / args.codebook_size
-                print(f"  Codebook usage: {codebook_usage:.2%} ({len(unique_indices)}/{args.codebook_size})")
+                # Get codebook usage using the FSQ method
+                codebook_usage = model.vq.get_codebook_usage(bin_indices)
+                print(f"  Codebook usage: {codebook_usage:.2%}")
+                
+                # Monitor EMA statistics
+                active_bins = (model.vq.ema_bin_usage > 0.1).sum().item()
+                total_bins = args.latent_dim * args.codebook_size
+                print(f"  Active bins (EMA): {active_bins}/{total_bins}")
                 
                 # Check if we're making progress
                 if codebook_usage > last_codebook_usage + improvement_threshold:
@@ -293,9 +306,11 @@ def train():
                 last_codebook_usage = codebook_usage
                 
                 # Reset codebook if usage is too low (indicates mode collapse)
-                if codebook_usage < 0.1 and i > warmup_steps and reset_count < max_resets:  # Less than 10% usage after warmup
-                    print(f"  ⚠️ Low codebook usage detected! Resetting codebook... (Attempt {reset_count + 1}/{max_resets})")
-                    model.vq.reset_codebook()
+                if codebook_usage < 0.1 and reset_count < max_resets:  # Less than 10% usage after warmup
+                    print(f"  ⚠️ Low codebook usage detected! Smart reinitializing... (Attempt {reset_count + 1}/{max_resets})")
+                    # Use smart reinitialization with actual encoder outputs
+                    z_flat = model.encoder(x).view(-1, args.latent_dim)
+                    model.vq.smart_reinitialize(z_flat, bin_indices.view(-1, args.latent_dim))
                     reset_count += 1
                     # Also reset the optimizer for the codebook to help it escape the local minimum
                     for param_group in optimizer.param_groups:
@@ -324,7 +339,7 @@ def train():
             print('Update #', i, 'Recon Error:',
                   np.mean(results["recon_errors"][-args.log_interval:]),
                   'Loss', np.mean(results["loss_vals"][-args.log_interval:]),
-                  'VQ Loss:', vq_loss.cpu().detach().numpy())
+                  'FSQ Loss:', fsq_loss.cpu().detach().numpy())
 
 
 if __name__ == "__main__":
