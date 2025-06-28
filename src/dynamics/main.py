@@ -28,20 +28,20 @@ Hyperparameters
 """
 timestamp = readable_timestamp()
 
-parser.add_argument("--batch_size", type=int, default=32)
-parser.add_argument("--n_updates", type=int, default=10000)
+parser.add_argument("--batch_size", type=int, default=16)
+parser.add_argument("--n_updates", type=int, default=2000)
 parser.add_argument("--learning_rate", type=float, default=1e-4)
-parser.add_argument("--log_interval", type=int, default=250)
+parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--dataset",  type=str, default='SONIC')
 parser.add_argument("--context_length", type=int, default=4)
 
 # Model architecture parameters - must match the video tokenizer parameters
-parser.add_argument("--patch_size", type=int, default=8)  # Match video tokenizer
+parser.add_argument("--patch_size", type=int, default=4)  # Match video tokenizer
 parser.add_argument("--embed_dim", type=int, default=128)  # Match video tokenizer
 parser.add_argument("--num_heads", type=int, default=4)   # Match video tokenizer
 parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
 parser.add_argument("--num_blocks", type=int, default=2)  # Match video tokenizer
-parser.add_argument("--latent_dim", type=int, default=16)  # Match video tokenizer latent_dim
+parser.add_argument("--latent_dim", type=int, default=32)  # Match video tokenizer latent_dim
 parser.add_argument("--dropout", type=float, default=0.1)
 
 # Paths to pre-trained models
@@ -177,7 +177,7 @@ video_tokenizer = Video_Tokenizer(
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
     dropout=args.dropout, 
-    codebook_size=256,
+    codebook_size=64,
     beta=0.01
 ).to(device)
 
@@ -193,13 +193,13 @@ else:
 print("Loading pre-trained latent action model...")
 lam = LAM(
     frame_size=(64, 64),
-    n_actions=4,
-    patch_size=args.patch_size,
+    n_actions=8,  # Match full pipeline
+    patch_size=8,  # Match full pipeline
     embed_dim=args.embed_dim,
     num_heads=args.num_heads,
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
-    action_dim=args.latent_dim,
+    action_dim=32,  # Match full pipeline
     dropout=args.dropout
 ).to(device)
 
@@ -289,10 +289,10 @@ def train():
             _, quantized_actions_flat, _ = lam.quantizer(actions_flat)
             quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
             
-            # Pad actions to match video latents sequence length
+            # Pad the quantized actions to match the sequence length
             batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape
-            zero_action = torch.zeros(batch_size, 1, latent_dim, device=device)
-            quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1)  # [batch_size, seq_len, latent_dim]
+            zero_action = torch.zeros(batch_size, 1, 32, device=device)  # Use action_dim=32
+            quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1)
             
             # Expand action latents to match patch dimension
             quantized_actions_padded = quantized_actions_padded.unsqueeze(2).expand(-1, -1, num_patches, -1)  # [batch_size, seq_len, num_patches, latent_dim]

@@ -153,7 +153,7 @@ def main():
         sys.executable, "src/latent_action_model/main.py",
         "--dataset", "SONIC",
         "--batch_size", "16",
-        "--n_updates", "2000",  # Reduced for faster training
+        "--n_updates", "1000",  # Reduced for faster training
         "--learning_rate", "3e-3",
         "--log_interval", "50",
         "--seq_length", "8",
@@ -164,7 +164,8 @@ def main():
         "--num_blocks", "2",
         "--action_dim", "32",
         "--dropout", "0.1",
-        "--n_actions", "4"
+        "--n_actions", "8",  # Exactly 8 actions for SONIC (up, down, left, right, up-left, up-right, down-left, down-right)
+        "--beta", "1.0"  # VQ loss weight
     ]
     
     if not run_command(lam_cmd, "LAM Training"):

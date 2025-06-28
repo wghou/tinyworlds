@@ -1,13 +1,9 @@
 import torch
 import matplotlib.pyplot as plt
 import os
-from torch.utils.data import DataLoader
-from torchvision import transforms
-from datasets.pong_sequence import PongSequenceDataset
 
 def normalize_for_display(tensor):
     """Scale tensor values to [0,1] range for display"""
-    print(f"tensor shape: {tensor.shape}")
     b, c, h, w = tensor.shape
     tensor = tensor.view(b, c, -1)
     min_vals = tensor.min(dim=2, keepdim=True)[0]
@@ -141,7 +137,7 @@ def plot_action_distribution(model, test_frames, save_path=None):
             
         # Plot histogram
         plt.figure(figsize=(10, 5))
-        plt.hist(actions, bins=range(model.quantizer.embedding.num_embeddings + 1), 
+        plt.hist(actions, bins=range(model.quantizer.n_e + 1), 
                 align='left', rwidth=0.8)
         plt.title('Distribution of Inferred Actions')
         plt.xlabel('Action Index')
@@ -197,41 +193,3 @@ def visualize_reconstructions(prev_frames, next_frames, pred_next, save_path=Non
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path)
         plt.close()
-
-def reshape_frame(x):
-    """Reshape frame to correct dimensions if needed"""
-    if x.shape[-1] != 3:
-        return x.reshape(64, 64, 3)
-    return x
-
-def load_sequence_dataset(batch_size, seq_length=8):
-    """
-    Load sequence dataset for Pong
-    
-    Args:
-        batch_size: Batch size for data loader
-        seq_length: Length of sequences to return
-        
-    Returns:
-        sequence_loader: DataLoader for sequence data
-    """
-    # Set up transforms
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
-    
-    # Load dataset
-    data_path = os.path.join('data', 'pong_frames.h5')
-    sequence_data = PongSequenceDataset(data_path, seq_length=seq_length, transform=transform)
-    
-    # Create data loader
-    sequence_loader = DataLoader(
-        sequence_data,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-    )
-    
-    return sequence_loader 

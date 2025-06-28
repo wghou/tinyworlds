@@ -22,28 +22,28 @@ Hyperparameters
 """
 timestamp = utils.readable_timestamp()
 
-parser.add_argument("--batch_size", type=int, default=32)
-parser.add_argument("--n_updates", type=int, default=10000)
+parser.add_argument("--batch_size", type=int, default=16)
+parser.add_argument("--n_updates", type=int, default=2000)
 parser.add_argument("--n_hiddens", type=int, default=128)
 parser.add_argument("--n_residual_hiddens", type=int, default=8)
 parser.add_argument("--n_residual_layers", type=int, default=2)
 parser.add_argument("--embedding_dim", type=int, default=64)
 parser.add_argument("--n_embeddings", type=int, default=512)
-parser.add_argument("--beta", type=float, default=.25)
-parser.add_argument("--learning_rate", type=float, default=1e-5)
-parser.add_argument("--log_interval", type=int, default=250)
+parser.add_argument("--beta", type=float, default=0.01)
+parser.add_argument("--learning_rate", type=float, default=4e-4)
+parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--dataset",  type=str, default='SONIC')
 parser.add_argument("--context_length", type=int, default=4)
 
 # Model architecture parameters
-parser.add_argument("--patch_size", type=int, default=8, help="Patch size for ST-Transformer")
+parser.add_argument("--patch_size", type=int, default=4, help="Patch size for ST-Transformer")
 parser.add_argument("--embed_dim", type=int, default=128, help="Embedding dimension for ST-Transformer")
 parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads")
 parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
 parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
-parser.add_argument("--latent_dim", type=int, default=16, help="Latent dimension")
+parser.add_argument("--latent_dim", type=int, default=32, help="Latent dimension")
 parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
-parser.add_argument("--codebook_size", type=int, default=256, help="Number of bins per dimension for finite scalar quantization")
+parser.add_argument("--codebook_size", type=int, default=64, help="Number of bins per dimension for finite scalar quantization")
 parser.add_argument("--ema_decay", type=float, default=0.99, help="EMA decay rate for bin updates")
 
 # whether or not to save model
