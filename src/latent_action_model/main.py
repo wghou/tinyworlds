@@ -162,10 +162,10 @@ def main():
         optimizer.step()
         
         # Track results
-        results["total_losses"].append(loss.cpu().detach().numpy())
-        results["recon_losses"].append(loss_dict['recon_loss'].cpu().detach().numpy())
-        results["vq_losses"].append(loss_dict['vq_loss'].cpu().detach().numpy())
-        results["diversity_losses"].append(loss_dict['diversity_loss'].cpu().detach().numpy())
+        results["total_losses"].append(loss.cpu().detach())
+        results["recon_losses"].append(loss_dict['recon_loss'].cpu().detach())
+        results["vq_losses"].append(loss_dict['vq_loss'].cpu().detach())
+        results["diversity_losses"].append(loss_dict['diversity_loss'].cpu().detach())
         results["n_updates"] = epoch
         
         # Print progress every 50 steps

@@ -16,6 +16,7 @@ from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 import json
+from einops import rearrange
 
 parser = argparse.ArgumentParser()
 
@@ -278,24 +279,24 @@ def train():
         with torch.no_grad():
             video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
             # Apply vector quantization to get discrete latents
-            _, quantized_video_latents, _ = video_tokenizer.vq(video_latents)
+            _, quantized_video_latents, _ = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
         
         # Get action latents for frame transitions
         with torch.no_grad():
             # Encode frame sequences to get actions
             actions, _ = lam.encoder(x)  # [batch_size, seq_len-1, action_dim]
             # Quantize actions
-            actions_flat = actions.reshape(-1, actions.size(-1))
-            _, quantized_actions_flat, _ = lam.quantizer(actions_flat)
+            actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
+            _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
             quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
             
-            # Pad the quantized actions to match the sequence length
-            batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape
-            zero_action = torch.zeros(batch_size, 1, 32, device=device)  # Use action_dim=32
-            quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1)
+            # Pad the quantized actions at the end to match the sequence length
+            batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape # [batch_size, seq_len, num_patches, latent_dim]
+            zero_action = torch.zeros(batch_size, 1, 32, device=device)  # [batch_size, 1, action_dim]
+            quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1) # [batch_size, seq_len, action_dim]
             
             # Expand action latents to match patch dimension
-            quantized_actions_padded = quantized_actions_padded.unsqueeze(2).expand(-1, -1, num_patches, -1)  # [batch_size, seq_len, num_patches, latent_dim]
+            quantized_actions_padded = rearrange(quantized_actions_padded, 'b s a -> b s 1 a')  # [batch_size, seq_len, 1, action_dim]
 
         # Combine video latents and action latents
         combined_latents = quantized_video_latents + quantized_actions_padded  # [batch_size, seq_len, num_patches, latent_dim]
@@ -319,8 +320,8 @@ def train():
         
         optimizer.step()
 
-        results["dynamics_losses"].append(dynamics_loss.cpu().detach().numpy())
-        results["loss_vals"].append(loss.cpu().detach().numpy())
+        results["dynamics_losses"].append(dynamics_loss.cpu().detach())
+        results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
         # Debug prints
@@ -352,8 +353,8 @@ def train():
                     visualize_reconstruction(target_frames[:16], predicted_frames[:16], save_path)
 
             print('Update #', i, 'Dynamics Loss:',
-                  np.mean(results["dynamics_losses"][-args.log_interval:]),
-                  'Total Loss', np.mean(results["loss_vals"][-args.log_interval:]))
+                  torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),
+                  'Total Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
 
 if __name__ == "__main__":

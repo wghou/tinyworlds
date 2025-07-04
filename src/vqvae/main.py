@@ -271,8 +271,8 @@ def train():
             z_flat = model.encoder(x).view(-1, args.latent_dim)
             model.vq.update_ema(z_flat, bin_indices.view(-1, args.latent_dim))
 
-        results["recon_errors"].append(recon_loss.cpu().detach().numpy())
-        results["loss_vals"].append(loss.cpu().detach().numpy())
+        results["recon_errors"].append(recon_loss.cpu().detach())
+        results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
         # Debug loss balance
@@ -337,8 +337,8 @@ def train():
                 visualize_reconstruction(x[:16], x_hat[:16], save_path)  # Visualize first 16 images
 
             print('Update #', i, 'Recon Error:',
-                  np.mean(results["recon_errors"][-args.log_interval:]),
-                  'Loss', np.mean(results["loss_vals"][-args.log_interval:]),
+                  torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item(),
+                  'Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item(),
                   'FSQ Loss:', fsq_loss.cpu().detach().numpy())
 
 

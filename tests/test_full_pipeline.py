@@ -177,22 +177,23 @@ class TestFullPipeline:
     def test_pipeline_error_handling(self, temp_dir, mock_pong_dataset):
         """Test pipeline error handling"""
         from train_full_pipeline import main
-        
+        import subprocess
+
         # Mock successful first step, failed second step
         with patch('subprocess.run') as mock_run, \
              patch('os.path.exists', side_effect=lambda x: True), \
              patch('os.getcwd', return_value=temp_dir), \
              patch('builtins.print') as mock_print:
-            
-            # First call succeeds, second call fails
+
+            # First call succeeds, second call raises CalledProcessError
             mock_run.side_effect = [
                 MagicMock(returncode=0),  # Video tokenizer succeeds
-                MagicMock(returncode=1)   # LAM fails
+                subprocess.CalledProcessError(returncode=1, cmd='lam')  # LAM fails
             ]
-            
+
             # Run the pipeline
             main()
-            
+
             # Should stop after LAM failure
             assert mock_run.call_count == 2
     
