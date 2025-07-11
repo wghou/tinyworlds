@@ -65,7 +65,7 @@ class SonicDataset(Dataset):
         frames = []
         
         # Maybe skip frames to reduce dataset size
-        frame_skip = 2  # Only keep every 2nd frame
+        frame_skip = 10  # Only keep every 10th frame, so 6 Hz
         
         for i in tqdm(range(0, total_frames, frame_skip), desc="Processing video frames"):
             video.set(cv2.CAP_PROP_POS_FRAMES, i)

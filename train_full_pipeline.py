@@ -124,7 +124,7 @@ def main():
         sys.executable, "src/vqvae/main.py",
         "--dataset", "SONIC",
         "--batch_size", "16",
-        "--n_updates", "2000",  # Reduced for faster training
+        "--n_updates", "5000",  # Reduced for faster training
         "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
         "--log_interval", "100",
         "--context_length", "4",
@@ -157,7 +157,7 @@ def main():
         "--learning_rate", "3e-3",
         "--log_interval", "50",
         "--seq_length", "8",
-        "--patch_size", "8",
+        "--patch_size", "4",  # Match video tokenizer patch_size
         "--embed_dim", "128",
         "--num_heads", "4",
         "--hidden_dim", "512",
@@ -202,16 +202,16 @@ def main():
         "--lam_path", lam_checkpoint,
         "--dataset", "SONIC",
         "--batch_size", "16",
-        "--n_updates", "3000",  # Reduced for faster training
+        "--n_updates", "10000",
         "--learning_rate", "1e-4",
         "--log_interval", "100",
         "--context_length", "4",
-        "--patch_size", "8",
+        "--patch_size", "4",  # Match video tokenizer patch_size
         "--embed_dim", "128",
         "--num_heads", "4",
         "--hidden_dim", "512",
         "--num_blocks", "2",
-        "--latent_dim", "16",
+        "--latent_dim", "32",
         "--dropout", "0.1"
     ]
     

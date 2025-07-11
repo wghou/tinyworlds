@@ -11,8 +11,8 @@ import os
 import cv2
 import numpy as np
 
-def predict_next_tokens(dynamics_model, video_latents, action_latent):
-    """Use dynamics model to predict next video tokens"""
+def predict_next_tokens(dynamics_model, video_latents, action_latent, temperature=1.0):
+    """Use dynamics model to predict next video tokens with temperature sampling"""
     with torch.no_grad():
         # Prepare inputs for dynamics model
         # video_latents: [1, seq_len, num_patches, latent_dim]
@@ -31,10 +31,41 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent):
         # Predict next video tokens using the dynamics model
         next_video_latents = dynamics_model(combined_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
         
+        # Apply temperature sampling to reduce variance
+        if temperature != 1.0:
+            # Add noise scaled by temperature
+            noise = torch.randn_like(next_video_latents) * (temperature - 1.0) * 0.1
+            next_video_latents = next_video_latents + noise
+        
         # Return the last timestep prediction (next frame)
         next_video_latents = next_video_latents[:, -1, :, :]  # [1, num_patches, latent_dim]
         
         return next_video_latents
+
+def sample_action_with_diversity(lam, previous_actions, n_actions, diversity_weight=0.1):
+    """Sample action with diversity to avoid getting stuck in loops"""
+    if len(previous_actions) < 2:
+        # Just sample randomly for first few actions
+        return torch.randint(0, n_actions, (1,))
+    
+    # Get recent action distribution
+    recent_actions = previous_actions[-5:]  # Last 5 actions
+    action_counts = torch.bincount(torch.tensor([a.item() for a in recent_actions]), minlength=n_actions)
+    
+    # Calculate diversity penalty (favor less frequent actions)
+    diversity_penalty = action_counts.float() / len(recent_actions)
+    
+    # Sample with diversity
+    if torch.rand(1).item() < diversity_weight:
+        # Sample from less frequent actions
+        min_count = action_counts.min()
+        candidate_actions = torch.where(action_counts == min_count)[0]
+        action_index = candidate_actions[torch.randint(0, len(candidate_actions), (1,))]
+    else:
+        # Sample randomly
+        action_index = torch.randint(0, n_actions, (1,))
+    
+    return action_index
 
 def load_models(video_tokenizer_path, lam_path, dynamics_path, device):
     """Load all three trained models"""
@@ -71,7 +102,7 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device):
     lam = LAM(
         frame_size=(64, 64),
         n_actions=8,
-        patch_size=8,  # Match checkpoint (was 4)
+        patch_size=4,  # Match video tokenizer patch_size
         embed_dim=128,
         num_heads=4,
         hidden_dim=512,
@@ -259,13 +290,14 @@ def save_frames_as_mp4(frames, output_path, fps=2):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sat_jun_28_00_44_40_2025/checkpoints/videotokenizer_checkpoint_sat_jun_28_00_44_40_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jun_28_12_51_06_2025/checkpoints/lam_checkpoint_Sat_Jun_28_12_51_06_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sat_Jun_28_13_05_43_2025/checkpoints/dynamics_checkpoint_Sat_Jun_28_13_05_43_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_10_13_02_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_10_13_02_2025.pth")
+    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Thu_Jul_10_14_33_08_2025/checkpoints/lam_checkpoint_Thu_Jul_10_14_33_08_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Thu_Jul_10_15_18_57_2025/checkpoints/dynamics_checkpoint_Thu_Jul_10_15_18_57_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--generation_steps", type=int, default=10)
     parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
+    parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     return parser.parse_args()
 
 def get_model_context_sizes(video_tokenizer, dynamics_model):
@@ -306,7 +338,7 @@ def main(args):
 
     for i in range(args.generation_steps):
         # sample action
-        action_index = sample_random_action(n_actions)
+        action_index = sample_action_with_diversity(lam, inferred_actions, n_actions)
         inferred_actions.append(action_index)
         action_latent = get_lam_latent_from_action_index(lam, action_index)
 
@@ -324,7 +356,7 @@ def main(args):
             video_latents = video_latents[:, -context_window:, :, :]  # Keep last context_window latents
 
         # predict next video tokens using all current video latents
-        next_video_latents = predict_next_tokens(dynamics_model, video_latents, action_latent)  # [1, num_patches, latent_dim]
+        next_video_latents = predict_next_tokens(dynamics_model, video_latents, action_latent, temperature=args.temperature)  # [1, num_patches, latent_dim]
 
         # decode next video tokens to frames
         next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]

@@ -195,7 +195,7 @@ print("Loading pre-trained latent action model...")
 lam = LAM(
     frame_size=(64, 64),
     n_actions=8,  # Match full pipeline
-    patch_size=8,  # Match full pipeline
+    patch_size=args.patch_size,  # Use command line patch_size
     embed_dim=args.embed_dim,
     num_heads=args.num_heads,
     hidden_dim=args.hidden_dim,
