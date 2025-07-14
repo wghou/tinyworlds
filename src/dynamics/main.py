@@ -59,6 +59,9 @@ parser.add_argument("--filename",  type=str, default=timestamp)
 parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
 parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
 
+# use actions or not
+parser.add_argument("--use_actions", action="store_true", default=False)
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -265,7 +268,7 @@ dynamics_model.train()
 if args.save:
     save_run_configuration(args, run_dir, timestamp, device)
 
-def train():
+def train(use_actions=False):
     start_iter = max(args.start_iteration, results['n_updates'])
 
     print(f"Starting dynamics model training")
@@ -281,28 +284,31 @@ def train():
             # Apply vector quantization to get discrete latents
             quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
         
-        # Get action latents for frame transitions
-        with torch.no_grad():
-            # Encode frame sequences to get actions
-            actions, _ = lam.encoder(x)  # [batch_size, seq_len-1, action_dim]
-            # Quantize actions
-            actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
-            _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
-            quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
-            
-            # Pad the quantized actions at the end to match the sequence length
-            batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape # [batch_size, seq_len, num_patches, latent_dim]
-            zero_action = torch.zeros(batch_size, 1, 32, device=device)  # [batch_size, 1, action_dim]
-            quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1) # [batch_size, seq_len, action_dim]
-            
-            # Expand action latents to match patch dimension
-            quantized_actions_padded = rearrange(quantized_actions_padded, 'b s a -> b s 1 a')  # [batch_size, seq_len, 1, action_dim]
+        if use_actions:
+            # Get action latents for frame transitions
+            with torch.no_grad():
+                # Encode frame sequences to get actions
+                actions, _ = lam.encoder(x)  # [batch_size, seq_len-1, action_dim]
+                # Quantize actions
+                actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
+                _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
+                quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
+                
+                # Pad the quantized actions at the end to match the sequence length
+                batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape # [batch_size, seq_len, num_patches, latent_dim]
+                zero_action = torch.zeros(batch_size, 1, 32, device=device)  # [batch_size, 1, action_dim]
+                quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1) # [batch_size, seq_len, action_dim]
+                
+                # Expand action latents to match patch dimension
+                quantized_actions_padded = rearrange(quantized_actions_padded, 'b s a -> b s 1 a')  # [batch_size, seq_len, 1, action_dim]
 
-        # Combine video latents and action latents
-        combined_latents = quantized_video_latents + quantized_actions_padded  # [batch_size, seq_len, num_patches, latent_dim]
-        
+            # Combine video latents and action latents
+            input_latents = quantized_video_latents + quantized_actions_padded  # [batch_size, seq_len, num_patches, latent_dim]
+        else:
+            input_latents = quantized_video_latents
+
         # Predict next frame latents using dynamics model
-        predicted_next_latents = dynamics_model(combined_latents, training=True)  # [batch_size, seq_len, num_patches, latent_dim]
+        predicted_next_latents = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, latent_dim]
         
         # Get target next frame latents (shift by 1)
         target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
@@ -326,13 +332,7 @@ def train():
 
         # Debug prints
         if i % 10 == 0:  # Print every 10 iterations
-            print(f"Iteration {i}:")
-            print(f"  Dynamics Loss: {dynamics_loss.item():.6f}")
-            print(f"  Video latents variance: {torch.var(quantized_video_latents).item():.6f}")
-            print(f"  Action latents variance: {torch.var(quantized_actions_padded).item():.6f}")
-            print(f"  Combined latents variance: {torch.var(combined_latents).item():.6f}")
-            print(f"  Predicted next latents variance: {torch.var(predicted_next_latents).item():.6f}")
-            print("---")
+            print(f"Iteration {i}, Dynamics Loss: {dynamics_loss.item():.6f}")
 
         if i % args.log_interval == 0:
             """
@@ -340,8 +340,9 @@ def train():
             """
             if args.save:
                 hyperparameters = args.__dict__
-                checkpoint_path = save_dynamics_model_and_results(
-                    dynamics_model, optimizer, results, hyperparameters, args.filename, checkpoints_dir)
+                save_dynamics_model_and_results(
+                    dynamics_model, optimizer, results, hyperparameters, args.filename, checkpoints_dir
+                )
                 
                 # Add visualization - decode predicted latents back to frames
                 with torch.no_grad():

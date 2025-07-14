@@ -13,12 +13,14 @@ class SonicDataset(Dataset):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
+        self.fps = 10
+        self.frame_skip = 60 // self.fps
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
-            n_frames = len(frames) // 60 # for debugging/development
+            n_frames = len(frames)
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM
@@ -80,12 +82,20 @@ class SonicDataset(Dataset):
         return np.array(frames)
 
     def __len__(self):
-        # Adjust length to account for sequence requirements
-        return max(0, len(self.data) - self.num_frames + 1)
+        max_valid_index = len(self.data) - (self.num_frames * self.frame_skip)
+        return max(0, max_valid_index + 1)
     
     def __getitem__(self, index):
+        # Ensure index is within bounds
+        if index >= len(self):
+            raise IndexError(f"Index {index} out of bounds for dataset of length {len(self)}")
+        
         # Get sequence of frames starting from index
-        frame_sequence = self.data[index:index + self.num_frames]
+        frame_sequence = self.data[index:index + (self.num_frames * self.frame_skip):self.frame_skip]
+        
+        # Verify we got the expected number of frames
+        if len(frame_sequence) != self.num_frames:
+            raise ValueError(f"Expected {self.num_frames} frames, got {len(frame_sequence)} frames")
         
         # Convert to float and normalize to [0, 1]
         frame_sequence = frame_sequence.astype(np.float32) / 255.0
