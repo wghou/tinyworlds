@@ -18,7 +18,7 @@ class SonicDataset(Dataset):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
-            n_frames = len(frames) // 20 # for debugging/development
+            n_frames = len(frames) // 60 # for debugging/development
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM
@@ -65,7 +65,7 @@ class SonicDataset(Dataset):
         frames = []
         
         # Maybe skip frames to reduce dataset size
-        frame_skip = 10  # Only keep every 10th frame, so 6 Hz
+        frame_skip = 60  # Only keep every 60th frame, so 1 Hz
         
         for i in tqdm(range(0, total_frames, frame_skip), desc="Processing video frames"):
             video.set(cv2.CAP_PROP_POS_FRAMES, i)

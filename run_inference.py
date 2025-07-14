@@ -42,7 +42,7 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent, temperatur
         
         return next_video_latents
 
-def sample_action_with_diversity(lam, previous_actions, n_actions, diversity_weight=0.1):
+def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1):
     """Sample action with diversity to avoid getting stuck in loops"""
     if len(previous_actions) < 2:
         # Just sample randomly for first few actions
@@ -164,12 +164,11 @@ def encode_frame_to_tokens(video_tokenizer, frame):
         print(f"latent shape: {latent.shape}")
         
         # Quantize to get video tokens
-        _, quantized_latent, token_indices = video_tokenizer.vq(latent)
+        quantized_latent = video_tokenizer.vq(latent)
 
         print(f"quantized_latent shape: {quantized_latent.shape}")
-        print(f"token_indices shape: {token_indices.shape}")
         
-        return quantized_latent, token_indices 
+        return quantized_latent
     
 def sample_first_frame_from_dataloader(dataloader):
     for batch in dataloader:
@@ -288,18 +287,6 @@ def save_frames_as_mp4(frames, output_path, fps=2):
     # Release video writer
     out.release()
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_10_13_02_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_10_13_02_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Thu_Jul_10_14_33_08_2025/checkpoints/lam_checkpoint_Thu_Jul_10_14_33_08_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Thu_Jul_10_15_18_57_2025/checkpoints/dynamics_checkpoint_Thu_Jul_10_15_18_57_2025.pth")
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--generation_steps", type=int, default=10)
-    parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
-    parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
-    parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
-    return parser.parse_args()
-
 def get_model_context_sizes(video_tokenizer, dynamics_model):
     """Get the context window sizes for both models"""
     # Since models don't have explicit max_seq_len, use the default context lengths
@@ -338,14 +325,14 @@ def main(args):
 
     for i in range(args.generation_steps):
         # sample action
-        action_index = sample_action_with_diversity(lam, inferred_actions, n_actions)
+        action_index = sample_action_with_diversity(inferred_actions, n_actions)
         inferred_actions.append(action_index)
         action_latent = get_lam_latent_from_action_index(lam, action_index)
 
         print(f"frames shape: {frames.shape}")
 
         # encode all current frames to video tokens
-        video_latents, _ = encode_frame_to_tokens(video_tokenizer, frames)  # [1, seq_len, num_patches, latent_dim]
+        video_latents = encode_frame_to_tokens(video_tokenizer, frames)  # [1, seq_len, num_patches, latent_dim]
 
         print(f"video_latents shape: {video_latents.shape}")
         
@@ -368,6 +355,18 @@ def main(args):
         print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {frames.shape[1]}")
     
     visualize_inference(frames, inferred_actions, args.fps)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_22_28_46_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_22_28_46_2025.pth")
+    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sat_Jul_12_16_41_02_2025/checkpoints/dynamics_checkpoint_Sat_Jul_12_16_41_02_2025.pth")
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--generation_steps", type=int, default=10)
+    parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
+    parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
+    parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
+    return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()

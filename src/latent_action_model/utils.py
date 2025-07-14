@@ -158,8 +158,10 @@ def visualize_reconstructions(prev_frames, next_frames, pred_next, save_path=Non
         save_path: Path to save visualization
     """
     with torch.no_grad():  # Add this to prevent gradient tracking
-        # Take first 4 examples
-        n_examples = 4
+        # Use actual batch size, but limit to 4 for visualization
+        batch_size = prev_frames.shape[0]
+        n_examples = min(4, batch_size)
+        
         prev_frames = prev_frames[:n_examples].detach()  # Add detach()
         next_frames = next_frames[:n_examples].detach()  # Add detach()
         pred_next = pred_next[:n_examples].detach()  # Add detach()
@@ -171,6 +173,10 @@ def visualize_reconstructions(prev_frames, next_frames, pred_next, save_path=Non
         
         # Create figure with 3 rows (prev, next, pred) and n_examples columns
         fig, axs = plt.subplots(3, n_examples, figsize=(3*n_examples, 9))
+        
+        # Handle single subplot case
+        if n_examples == 1:
+            axs = axs.reshape(3, 1)
         
         for i in range(n_examples):
             # Show previous frame

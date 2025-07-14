@@ -222,103 +222,33 @@ model.train()
 def train():
     start_iter = max(args.start_iteration, results['n_updates'])
 
-    print(f"Starting training")
-    
-    # Warmup for VQ loss to prevent early mode collapse
-    warmup_steps = min(2000, args.n_updates // 2)  # Longer warmup - first 50% of training
-    
-    # Track reset attempts to prevent infinite loops
-    reset_count = 0
-    max_resets = 5
-    last_codebook_usage = 0.0
-    improvement_threshold = 0.05  # 5% improvement
-    
     for i in tqdm(range(start_iter, args.n_updates)):
         (x, _) = next(iter(training_loader))
         x = x.to(device)
         optimizer.zero_grad()
 
-        x_hat, fsq_loss, bin_indices = model(x)
+        x_hat = model(x)
 
         recon_loss = torch.mean((x_hat - x)**2) / x_train_var
-        
-        # More aggressive warmup and better loss balancing
-        if i < warmup_steps:
-            # During warmup, gradually increase FSQ loss but keep it very small
-            fsq_weight = args.beta * (i / warmup_steps) ** 2  # Quadratic warmup
-        else:
-            fsq_weight = args.beta
-            
-        # Add a diversity penalty to encourage bin usage
-        with torch.no_grad():
-            codebook_usage = model.vq.get_codebook_usage(bin_indices)
-            diversity_penalty = 1.0 - codebook_usage
-        diversity_loss = diversity_penalty * 0  # Small penalty for low diversity
-            
-        # Proper FSQ loss weighting to prevent mode collapse
-        loss = recon_loss + fsq_weight * fsq_loss + diversity_loss
-        loss.backward()
+        recon_loss.backward()
         
         # Clip gradients to prevent instability
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         optimizer.step()
         scheduler.step()  # Step the learning rate scheduler
-        
-        # Update EMA statistics for bin maintenance
-        with torch.no_grad():
-            # Get flattened encoder outputs for EMA updates
-            z_flat = model.encoder(x).view(-1, args.latent_dim)
-            model.vq.update_ema(z_flat, bin_indices.view(-1, args.latent_dim))
 
         results["recon_errors"].append(recon_loss.cpu().detach())
-        results["loss_vals"].append(loss.cpu().detach())
+        results["loss_vals"].append(recon_loss.cpu().detach())
         results["n_updates"] = i
 
         # Debug loss balance
         if i % 10 == 0:  # Print every 10 iterations
             print(f"Iteration {i}:")
             print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
-            print(f"  Recon Loss: {recon_loss.item():.6f}")
-            print(f"  FSQ Loss: {fsq_loss.item():.6f}")
-            print(f"  FSQ Weight: {fsq_weight:.4f}")
-            print(f"  Diversity Loss: {diversity_loss}")
-            print(f"  Total Loss: {loss.item():.6f}")
-            print(f"  FSQ/Recon Ratio: {fsq_loss.item()/recon_loss.item():.2f}")
+            print(f"  Total Loss: {recon_loss.item():.6f}")
             print(f"  x_hat variance: {torch.var(x_hat, dim=0).mean().item():.6f}")
             print(f"  x variance: {torch.var(x, dim=0).mean().item():.6f}")
-            
-            # Monitor codebook usage
-            with torch.no_grad():
-                # Get codebook usage using the FSQ method
-                codebook_usage = model.vq.get_codebook_usage(bin_indices)
-                print(f"  Codebook usage: {codebook_usage:.2%}")
-                
-                # Monitor EMA statistics
-                active_bins = (model.vq.ema_bin_usage > 0.1).sum().item()
-                total_bins = args.latent_dim * args.codebook_size
-                print(f"  Active bins (EMA): {active_bins}/{total_bins}")
-                
-                # Check if we're making progress
-                if codebook_usage > last_codebook_usage + improvement_threshold:
-                    print(f"  ✅ Codebook usage improved by {codebook_usage - last_codebook_usage:.2%}")
-                    reset_count = 0  # Reset the reset counter on improvement
-                last_codebook_usage = codebook_usage
-                
-                # Reset codebook if usage is too low (indicates mode collapse)
-                if codebook_usage < 0.1 and reset_count < max_resets:  # Less than 10% usage after warmup
-                    print(f"  ⚠️ Low codebook usage detected! Smart reinitializing... (Attempt {reset_count + 1}/{max_resets})")
-                    # Use smart reinitialization with actual encoder outputs
-                    z_flat = model.encoder(x).view(-1, args.latent_dim)
-                    model.vq.smart_reinitialize(z_flat, bin_indices.view(-1, args.latent_dim))
-                    reset_count += 1
-                    # Also reset the optimizer for the codebook to help it escape the local minimum
-                    for param_group in optimizer.param_groups:
-                        if 'vq' in str(param_group) or 'embedding' in str(param_group):
-                            param_group['lr'] *= 2.0  # Temporarily increase learning rate
-                elif codebook_usage < 0.1 and reset_count >= max_resets:
-                    print(f"  ⚠️ Maximum resets reached. Continuing with current codebook...")
-            print("---")
 
         # print variance of x_hat across the batch dimension
         print(f"Variance of x_hat: {torch.var(x_hat, dim=0).mean().item()}")
@@ -338,8 +268,7 @@ def train():
 
             print('Update #', i, 'Recon Error:',
                   torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item(),
-                  'Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item(),
-                  'FSQ Loss:', fsq_loss.cpu().detach().numpy())
+                  'Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
 
 if __name__ == "__main__":

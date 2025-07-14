@@ -240,180 +240,41 @@ class STTransformer(nn.Module):
 
 class FiniteScalarQuantizer(nn.Module):
     """
-    Finite Scalar Quantizer - quantizes each dimension independently
-    This helps prevent token collapse by allowing more flexible quantization
+    Finite Scalar Quantization from https://arxiv.org/pdf/2309.15505
+    Quantizes each dimension independently by bounding to 0, num_bins then rounding to nearest integer
+    Prevents token collapse and no auxiliary losses necessary 
     """
-    def __init__(self, latent_dim, num_bins=256, beta=1.0, ema_decay=0.99):
+    def __init__(self, num_bins=4):
         super().__init__()
-        self.latent_dim = latent_dim
         self.num_bins = num_bins
-        self.beta = beta
-        self.ema_decay = ema_decay
         
-        # Each dimension has its own set of bins
-        self.bins = nn.Parameter(torch.randn(latent_dim, num_bins) * 0.1)
-        
-        # EMA tracking for bin updates
-        self.register_buffer('ema_bin_usage', torch.zeros(latent_dim, num_bins))
-        self.register_buffer('ema_bin_means', torch.zeros(latent_dim, num_bins))
-        
-        # Initialize bins to cover a reasonable range
-        with torch.no_grad():
-            # Initialize bins to be evenly spaced in [-1, 1] for each dimension
-            for dim in range(latent_dim):
-                self.bins.data[dim] = torch.linspace(-1.0, 1.0, num_bins)
-
     def forward(self, z):
         """
         Args:
             z: [batch_size, seq_len, num_patches, latent_dim]
         Returns:
-            loss: scalar
-            z_q: [batch_size, seq_len, num_patches, latent_dim]
-            bin_indices: [batch_size, seq_len, num_patches, latent_dim]
+            quantized_z: quantized z with num_bins bins per dimension [batch_size, seq_len, num_patches, latent_dim]
         """
-        batch_size, seq_len, num_patches, latent_dim = z.shape
-        
-        # Reshape to [batch_size * seq_len * num_patches, latent_dim] for quantization
-        z_flat = z.view(-1, latent_dim)  # [batch_size * seq_len * num_patches, latent_dim]
-        
-        # Quantize each dimension independently
-        z_q_flat = torch.zeros_like(z_flat)
-        bin_indices_flat = torch.zeros(z_flat.shape[0], latent_dim, dtype=torch.long, device=z.device)
-        
-        commitment_loss = 0.0
-        codebook_loss = 0.0
-        
-        for dim in range(latent_dim):
-            # Get values for this dimension
-            z_dim = z_flat[:, dim]  # [batch_size * seq_len * num_patches]
-            bins_dim = self.bins[dim]  # [num_bins]
-            
-            # Find nearest bin for each value
-            distances = torch.abs(z_dim.unsqueeze(1) - bins_dim.unsqueeze(0))  # [N, num_bins]
-            bin_indices = torch.argmin(distances, dim=1)  # [N]
-            
-            # Get quantized values
-            z_q_dim = bins_dim[bin_indices]  # [N]
-            
-            # Store results
-            z_q_flat[:, dim] = z_q_dim
-            bin_indices_flat[:, dim] = bin_indices
-            
-            # Compute losses for this dimension
-            commitment_loss += torch.mean((z_dim - z_q_dim.detach())**2)
-            codebook_loss += torch.mean((z_dim.detach() - z_q_dim)**2)
-        
-        # Average losses across dimensions
-        commitment_loss /= latent_dim
-        codebook_loss /= latent_dim
-        
-        # Total FSQ loss
-        fsq_loss = commitment_loss + self.beta * codebook_loss
-        
-        # Reshape back to original shape
-        z_q = z_q_flat.view(batch_size, seq_len, num_patches, latent_dim)
-        bin_indices = bin_indices_flat.view(batch_size, seq_len, num_patches, latent_dim)
-        
-        # Straight-through estimator for gradients
-        z_q = z + (z_q - z).detach()
-        
-        return fsq_loss, z_q, bin_indices
+        # apply self.num_bins / 2 * tanh(z)
+        bounded_z = (self.num_bins / 2) * torch.tanh(z)
 
-    def reset_bins(self):
-        """Reset bins to stable initialization if they get stuck"""
-        with torch.no_grad():
-            # Reinitialize bins to be evenly spaced
-            for dim in range(self.latent_dim):
-                self.bins.data[dim] = torch.linspace(-1.0, 1.0, self.num_bins)
-            
-            # Add some noise to break symmetry
-            noise = torch.randn_like(self.bins.data) * 0.1
-            self.bins.data += noise
+        # round to nearest integer
+        rounded_z = torch.round(bounded_z)
 
-    def smart_reinitialize(self, z_flat, bin_indices):
-        """
-        Smart reinitialization using actual encoder outputs
-        
-        Args:
-            z_flat: [batch_size * seq_len * num_patches, latent_dim] - encoder outputs
-            bin_indices: [batch_size * seq_len * num_patches, latent_dim] - current bin assignments
-        """
-        with torch.no_grad():
-            # For each dimension, check bin usage and reinitialize unused bins
-            for dim in range(self.latent_dim):
-                z_dim = z_flat[:, dim]
-                bin_indices_dim = bin_indices[:, dim]
-                
-                # Count usage of each bin
-                usage_counts = torch.bincount(bin_indices_dim, minlength=self.num_bins)
-                
-                # Find dead bins (unused or very rarely used)
-                dead_threshold = max(1, len(z_dim) // (self.num_bins * 5))  # Allow 20% of bins to be "rare"
-                dead_bins = usage_counts < dead_threshold
-                
-                if dead_bins.sum() == 0:
-                    continue  # No dead bins in this dimension
-                
-                print(f"  🔄 Reinitializing {dead_bins.sum().item()} dead bins in dimension {dim}...")
-                
-                # For each dead bin, find a good replacement
-                for dead_bin_idx in torch.where(dead_bins)[0]:
-                    # Find encoder outputs that are far from existing bins
-                    distances_to_bins = torch.abs(z_dim.unsqueeze(1) - self.bins[dim].unsqueeze(0))
-                    min_distances = distances_to_bins.min(dim=1)[0]
-                    
-                    # Find encoder outputs that are far from all existing bins
-                    far_threshold = min_distances.mean() + min_distances.std()
-                    far_indices = torch.where(min_distances > far_threshold)[0]
-                    
-                    if len(far_indices) > 0:
-                        # Pick a random far encoder output
-                        replacement_idx = far_indices[torch.randint(0, len(far_indices), (1,))]
-                        self.bins.data[dim, dead_bin_idx] = z_dim[replacement_idx]
-                    else:
-                        # Fallback: use a random encoder output
-                        replacement_idx = torch.randint(0, len(z_dim), (1,))
-                        self.bins.data[dim, dead_bin_idx] = z_dim[replacement_idx]
-            
-            # Add small noise to break any remaining symmetries
-            noise = torch.randn_like(self.bins.data) * 0.01
-            self.bins.data += noise
+        # apply stopgrad
+        quantized_z = bounded_z + (rounded_z - bounded_z).detach()
 
-    def update_ema(self, z_flat, bin_indices):
-        """
-        Update EMA statistics for bin maintenance
-        """
-        with torch.no_grad():
-            # Update usage counts and means for each dimension
-            for dim in range(self.latent_dim):
-                z_dim = z_flat[:, dim]
-                bin_indices_dim = bin_indices[:, dim]
-                
-                # Update usage counts
-                usage_counts = torch.bincount(bin_indices_dim, minlength=self.num_bins)
-                self.ema_bin_usage.data[dim].mul_(self.ema_decay).add_((1 - self.ema_decay) * usage_counts)
-                
-                # Update bin means
-                for bin_idx in range(self.num_bins):
-                    mask = (bin_indices_dim == bin_idx)
-                    if mask.sum() > 0:
-                        bin_mean = z_dim[mask].mean()
-                        self.ema_bin_means.data[dim, bin_idx].mul_(self.ema_decay).add_((1 - self.ema_decay) * bin_mean)
+        return quantized_z
 
-    def get_codebook_usage(self, bin_indices):
+    def get_codebook_usage(self, quantized_z):
         """
         Calculate codebook usage across all dimensions
-        """
-        batch_size, seq_len, num_patches, latent_dim = bin_indices.shape
-        bin_indices_flat = bin_indices.view(-1, latent_dim)
-        
+        """        
         total_used_bins = 0
-        total_bins = latent_dim * self.num_bins
+        total_bins = self.num_bins
         
-        for dim in range(latent_dim):
-            unique_bins = torch.unique(bin_indices_flat[:, dim])
-            total_used_bins += len(unique_bins)
+        unique_bins = torch.unique(quantized_z)
+        total_used_bins += len(unique_bins)
         
         return total_used_bins / total_bins
 
@@ -511,7 +372,7 @@ class Video_Tokenizer(nn.Module):
         super().__init__()
         self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
-        self.vq = FiniteScalarQuantizer(latent_dim, codebook_size, beta, ema_decay)
+        self.vq = FiniteScalarQuantizer(int(math.log2(codebook_size) // 3))
         
     def forward(self, frames):
             
@@ -519,9 +380,9 @@ class Video_Tokenizer(nn.Module):
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
         
         # Apply vector quantization
-        fsq_loss, z_q, bin_indices = self.vq(embeddings)
+        quantized_z = self.vq(embeddings)
         
         # Decode quantized latents back to frames
-        x_hat = self.decoder(z_q)  # [batch_size, seq_len, channels, height, width]
+        x_hat = self.decoder(quantized_z)  # [batch_size, seq_len, channels, height, width]
         
-        return x_hat, fsq_loss, bin_indices
+        return x_hat

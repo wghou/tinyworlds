@@ -111,8 +111,8 @@ def encode_frame_to_tokens(video_tokenizer, frame):
     with torch.no_grad():
         # frame: [batch_size, seq_len, C, H, W]
         video_latents = video_tokenizer.encoder(frame)  # [batch_size, seq_len, num_patches, latent_dim]
-        _, quantized_video_latents, _ = video_tokenizer.vq(video_latents)  # [batch_size, seq_len, num_patches, latent_dim]
-        return quantized_video_latents, video_latents
+        quantized_video_latents = video_tokenizer.vq(video_latents)  # [batch_size, seq_len, num_patches, latent_dim]
+        return quantized_video_latents
 
 def get_action_from_frame_transition(lam, frame1, frame2):
     """Get action latent from real frame transition"""
@@ -286,7 +286,7 @@ def test_with_real_context(video_tokenizer, lam, dynamics_model, dataloader, dev
             action_latent = get_action_from_frame_transition(lam, context_frames[:, -1:], target_frame)
             
             # Encode context frames to video tokens
-            video_latents, _ = encode_frame_to_tokens(video_tokenizer, context_frames)
+            video_latents = encode_frame_to_tokens(video_tokenizer, context_frames)
             
             # Predict next frame using dynamics model
             predicted_next_latents = predict_next_tokens(dynamics_model, video_latents, action_latent)
@@ -454,9 +454,9 @@ def create_quality_progression_plot(results, save_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Test inference with real data context")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sat_jun_28_00_44_40_2025/checkpoints/videotokenizer_checkpoint_sat_jun_28_00_44_40_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jun_28_12_51_06_2025/checkpoints/lam_checkpoint_Sat_Jun_28_12_51_06_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sat_Jun_28_13_05_43_2025/checkpoints/dynamics_checkpoint_Sat_Jun_28_13_05_43_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_22_28_46_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_22_28_46_2025.pth")
+    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sat_Jul_12_16_41_02_2025/checkpoints/dynamics_checkpoint_Sat_Jul_12_16_41_02_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num_tests", type=int, default=20)
     parser.add_argument("--test_masking", action="store_true", help="Test with masking applied")

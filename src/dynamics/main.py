@@ -279,7 +279,7 @@ def train():
         with torch.no_grad():
             video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
             # Apply vector quantization to get discrete latents
-            _, quantized_video_latents, _ = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
+            quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
         
         # Get action latents for frame transitions
         with torch.no_grad():
