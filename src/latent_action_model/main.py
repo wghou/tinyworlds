@@ -14,6 +14,13 @@ from src.vqvae.utils import load_data_and_data_loaders
 import multiprocessing
 import time
 import json
+# Import wandb if available
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("⚠️ wandb not available. Install with: pip install wandb")
 
 def readable_timestamp():
     """Generate a readable timestamp for filenames"""
@@ -92,6 +99,11 @@ def main():
     parser.add_argument("--filename", type=str, default=readable_timestamp())
     parser.add_argument("--log_interval", type=int, default=50, help="Interval for saving model and logging")
     
+    # W&B arguments
+    parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
+    
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -137,10 +149,57 @@ def main():
         'diversity_losses': [],
     }
 
-    print(f"Initial VQ codebook variance: {torch.var(model.quantizer.embedding.weight).item():.6f}")
-
     if args.save:
         save_run_configuration(args, run_dir, args.filename, device)
+
+    # Initialize W&B if enabled and available
+    if args.use_wandb and WANDB_AVAILABLE:
+        # Create model configuration
+        model_config = {
+            'frame_size': (args.frame_size, args.frame_size),
+            'n_actions': args.n_actions,
+            'patch_size': args.patch_size,
+            'embed_dim': args.embed_dim,
+            'num_heads': args.num_heads,
+            'hidden_dim': args.hidden_dim,
+            'num_blocks': args.num_blocks,
+            'action_dim': args.action_dim,
+            'dropout': args.dropout,
+            'beta': args.beta
+        }
+        
+        # Create W&B config
+        wandb_config = {
+            'batch_size': args.batch_size,
+            'n_updates': args.n_updates,
+            'learning_rate': args.learning_rate,
+            'log_interval': args.log_interval,
+            'dataset': args.dataset,
+            'seq_length': args.seq_length,
+            'model_architecture': model_config,
+            'device': str(device),
+            'timestamp': args.filename
+        }
+        
+        # Initialize W&B
+        run_name = args.wandb_run_name or f"lam_{args.filename}"
+        wandb.init(
+            project=args.wandb_project,
+            config=wandb_config,
+            name=run_name,
+            tags=["lam", "training"]
+        )
+        
+        # Watch model for gradients and parameters
+        wandb.watch(model, log="all", log_freq=args.log_interval)
+        
+        print(f"🚀 W&B run initialized: {wandb.run.name}")
+        print(f"📊 Project: {args.wandb_project}")
+        print(f"🔗 View at: {wandb.run.get_url()}")
+    elif args.use_wandb and not WANDB_AVAILABLE:
+        print("❌ W&B requested but not available. Install with: pip install wandb")
+
+    print(f"Initial VQ codebook variance: {torch.var(model.quantizer.embedding.weight).item():.6f}")
 
     # Training loop
     train_iter = iter(training_loader)
@@ -168,6 +227,32 @@ def main():
         results["diversity_losses"].append(loss_dict['diversity_loss'].cpu().detach())
         results["n_updates"] = epoch
         
+        # Log to W&B if enabled and available
+        if args.use_wandb and WANDB_AVAILABLE:
+            # Log training metrics
+            wandb.log({
+                'train/total_loss': loss.item(),
+                'train/recon_loss': loss_dict['recon_loss'].item(),
+                'train/vq_loss': loss_dict['vq_loss'].item(),
+                'train/diversity_loss': loss_dict['diversity_loss'].item(),
+                'step': epoch
+            })
+            
+            # Log system metrics
+            if torch.cuda.is_available():
+                wandb.log({
+                    'system/gpu_memory_allocated': torch.cuda.memory_allocated() / 1024**3,  # GB
+                    'system/gpu_memory_reserved': torch.cuda.memory_reserved() / 1024**3,    # GB
+                    'step': epoch
+                })
+            
+            # Log learning rate
+            for j, param_group in enumerate(optimizer.param_groups):
+                wandb.log({
+                    f'learning_rate/group_{j}': param_group['lr'],
+                    'step': epoch
+                })
+        
         # Print progress every 50 steps
         if (epoch + 1) % 50 == 0:
             with torch.no_grad():
@@ -180,6 +265,28 @@ def main():
                 
                 # Get warmup beta for monitoring
                 warmup_beta = model.quantizer.get_warmup_beta(epoch)
+                
+                # Log codebook and action statistics to W&B
+                if args.use_wandb and WANDB_AVAILABLE:
+                    wandb.log({
+                        "lam/codebook_usage": codebook_usage,
+                        "lam/encoder_variance": z_e_var,
+                        "lam/vq_variance": vq_var,
+                        "lam/warmup_beta": warmup_beta,
+                        "step": epoch
+                    })
+                    
+                    # Log action distribution
+                    action_indices_cpu = action_indices.detach().cpu().numpy()
+                    action_counts = torch.bincount(torch.tensor(action_indices_cpu.flatten()), minlength=args.n_actions)
+                    action_probs = action_counts.float() / action_counts.sum()
+                    
+                    wandb.log({
+                        "action_distribution": wandb.Histogram(action_indices_cpu.flatten()),
+                        "action_entropy": -torch.sum(action_probs * torch.log(action_probs + 1e-8)),
+                        "unique_actions": len(torch.unique(torch.tensor(action_indices_cpu))),
+                        "step": epoch
+                    })
                 
                 print(f"Epoch {epoch+1}: Codebook usage: {codebook_usage:.2%}, "
                       f"Encoder variance: {z_e_var:.4f}, VQ variance: {vq_var:.4f}, "
@@ -197,10 +304,65 @@ def main():
                 os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename}.png')
             )
             
+            # Log reconstruction comparison to W&B
+            if args.use_wandb and WANDB_AVAILABLE:
+                # Ensure tensors are on CPU and in the right format
+                original = frame_sequences[:, -1].detach().cpu()
+                reconstructed = pred_frames[:, -1].detach().cpu()
+                
+                # Denormalize from [-1, 1] to [0, 1] if needed
+                if original.min() < 0:
+                    original = (original + 1) / 2
+                    reconstructed = (reconstructed + 1) / 2
+                
+                # Clamp to valid range
+                original = torch.clamp(original, 0, 1)
+                reconstructed = torch.clamp(reconstructed, 0, 1)
+                
+                # Create comparison images
+                comparison_images = []
+                for k in range(min(16, original.shape[0])):
+                    # Stack original and reconstructed side by side
+                    comparison = torch.cat([original[k], reconstructed[k]], dim=2)  # Concatenate horizontally
+                    comparison_images.append(comparison)
+                
+                # Stack all comparisons vertically
+                if comparison_images:
+                    full_comparison = torch.stack(comparison_images, dim=0)
+                    
+                    # Log to wandb
+                    wandb.log({
+                        "reconstruction_comparison": wandb.Image(
+                            full_comparison,
+                            caption=f"Original (left) vs Reconstructed (right) - Step {epoch}"
+                        ),
+                        "step": epoch
+                    })
+                
+                # Log video sequence
+                video = frame_sequences[:1].detach().cpu()  # Take first batch item
+                if video.min() < 0:
+                    video = (video + 1) / 2
+                video = torch.clamp(video, 0, 1)
+                
+                wandb.log({
+                    "video_sequence": wandb.Video(
+                        video[0].numpy(),  # [T, C, H, W]
+                        fps=2,
+                        caption=f"Training Sequence - Step {epoch}"
+                    ),
+                    "step": epoch
+                })
+            
             print(f'Epoch {epoch}: Total Loss: {loss.item():.4f}, '
                   f'Recon Loss: {loss_dict["recon_loss"].item():.4f}, '
                   f'VQ Loss: {loss_dict["vq_loss"].item():.4f}, '
                   f'Diversity Loss: {loss_dict["diversity_loss"].item():.4f}')
+    
+    # Finish W&B run
+    if args.use_wandb and WANDB_AVAILABLE:
+        wandb.finish()
+        print("✅ W&B run finished")
 
     # Verification: Test if similar transitions map to same actions
     print("\nVerifying model behavior...")

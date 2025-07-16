@@ -57,29 +57,30 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device):
     print("✅ Video tokenizer loaded")
     
     # Load LAM
-    print(f"Loading LAM from {lam_path}")
-    lam = LAM(
-        frame_size=(64, 64),
-        n_actions=8,
-        patch_size=4,  # Match video tokenizer patch_size
-        embed_dim=128,
-        num_heads=4,
-        hidden_dim=512,
-        num_blocks=2,
-        action_dim=32,
-        dropout=0.1,
-        beta=1.0
-    ).to(device)
+    # print(f"Loading LAM from {lam_path}")
+    # lam = LAM(
+    #     frame_size=(64, 64),
+    #     n_actions=8,
+    #     patch_size=4,  # Match video tokenizer patch_size
+    #     embed_dim=128,
+    #     num_heads=4,
+    #     hidden_dim=512,
+    #     num_blocks=2,
+    #     action_dim=32,
+    #     dropout=0.1,
+    #     beta=1.0
+    # ).to(device)
     
-    try:
-        checkpoint = torch.load(lam_path, map_location=device, weights_only=True)
-    except Exception as e:
-        print(f"weights_only=True failed, trying weights_only=False: {e}")
-        checkpoint = torch.load(lam_path, map_location=device, weights_only=False)
+    # try:
+    #     checkpoint = torch.load(lam_path, map_location=device, weights_only=True)
+    # except Exception as e:
+    #     print(f"weights_only=True failed, trying weights_only=False: {e}")
+    #     checkpoint = torch.load(lam_path, map_location=device, weights_only=False)
     
-    lam.load_state_dict(checkpoint['model'])
-    lam.eval()
-    print("✅ LAM loaded")
+    # lam.load_state_dict(checkpoint['model'])
+    # lam.eval()
+    # print("✅ LAM loaded")
+    lam = None
     
     # Load dynamics model
     print(f"Loading dynamics model from {dynamics_path}")
@@ -130,10 +131,10 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent):
         batch_size, seq_len, num_patches, latent_dim = video_latents.shape
         
         # Expand action to match video latents shape
-        action_expanded = action_latent.unsqueeze(1).unsqueeze(1).expand(-1, seq_len, num_patches, -1)
+        # action_expanded = action_latent.unsqueeze(1).unsqueeze(1).expand(-1, seq_len, num_patches, -1)
         
         # Add action latents to video latents
-        combined_latents = video_latents + action_expanded
+        combined_latents = video_latents
         
         # Predict next video tokens
         next_video_latents = dynamics_model(combined_latents, training=False)
@@ -283,11 +284,12 @@ def test_with_real_context(video_tokenizer, lam, dynamics_model, dataloader, dev
             target_frame = frames[:, frame_idx:frame_idx+1, :, :, :]   # [batch_size, 1, C, H, W]
             
             # Get action from real frame transition (frame_idx -> frame_idx+1)
-            action_latent = get_action_from_frame_transition(lam, context_frames[:, -1:], target_frame)
+            # action_latent = get_action_from_frame_transition(lam, context_frames[:, -1:], target_frame)
             
             # Encode context frames to video tokens
             video_latents = encode_frame_to_tokens(video_tokenizer, context_frames)
             
+            action_latent = None
             # Predict next frame using dynamics model
             predicted_next_latents = predict_next_tokens(dynamics_model, video_latents, action_latent)
             
@@ -316,7 +318,7 @@ def test_with_real_context(video_tokenizer, lam, dynamics_model, dataloader, dev
                     'mse_loss': mse_loss,
                     'psnr': psnr.item(),
                     'latent_var': latent_var,
-                    'action_mean': action_latent.mean().item(),
+                    # 'action_mean': action_latent.mean().item(),
                     'predicted_frame': predicted_frames.clone(),
                     'target_frame': target_frame.clone(),
                     'context_frames_data': context_frames.clone()
@@ -330,7 +332,7 @@ def test_with_real_context(video_tokenizer, lam, dynamics_model, dataloader, dev
         results['sequence_mse_losses'].append(total_mse / (seq_len - 1))  # Average MSE per frame
         results['sequence_psnr_values'].append(total_psnr / (seq_len - 1))  # Average PSNR per frame
         results['latent_variances'].extend([fr['latent_var'] for fr in frame_results])
-        results['action_distribution'].extend([fr['action_mean'] for fr in frame_results])
+        # results['action_distribution'].extend([fr['action_mean'] for fr in frame_results])
         
         print(f"  Sequence Average MSE: {total_mse / (seq_len - 1):.6f}")
         print(f"  Sequence Average PSNR: {total_psnr / (seq_len - 1):.2f} dB")
@@ -347,7 +349,7 @@ def test_with_real_context(video_tokenizer, lam, dynamics_model, dataloader, dev
     print(f"Average Sequence MSE Loss: {np.mean(results['sequence_mse_losses']):.6f} ± {np.std(results['sequence_mse_losses']):.6f}")
     print(f"Average Sequence PSNR: {np.mean(results['sequence_psnr_values']):.2f} ± {np.std(results['sequence_psnr_values']):.2f} dB")
     print(f"Average Latent Variance: {np.mean(results['latent_variances']):.6f} ± {np.std(results['latent_variances']):.6f}")
-    print(f"Action Distribution Mean: {np.mean(results['action_distribution']):.6f} ± {np.std(results['action_distribution']):.6f}")
+    # print(f"Action Distribution Mean: {np.mean(results['action_distribution']):.6f} ± {np.std(results['action_distribution']):.6f}")
     
     # Print per-frame statistics
     print(f"\n📈 Per-Frame Statistics:")
@@ -454,18 +456,19 @@ def create_quality_progression_plot(results, save_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Test inference with real data context")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_22_28_46_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_22_28_46_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sat_Jul_12_16_41_02_2025/checkpoints/dynamics_checkpoint_Sat_Jul_12_16_41_02_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_13_21_01_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_13_21_01_32_2025.pth")
+    # parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jun_28_00_10_36_2025/checkpoints/lam_checkpoint_Sat_Jun_28_00_10_36_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Mon_Jul_14_00_00_12_2025/checkpoints/dynamics_checkpoint_Mon_Jul_14_00_00_12_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num_tests", type=int, default=20)
     parser.add_argument("--test_masking", action="store_true", help="Test with masking applied")
     
     args = parser.parse_args()
     
+    lam_path = None
     # Load models
     video_tokenizer, lam, dynamics_model = load_models(
-        args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device
+        args.video_tokenizer_path, lam_path, args.dynamics_path, args.device
     )
     
     # Load data

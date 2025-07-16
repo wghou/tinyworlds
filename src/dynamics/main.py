@@ -5,6 +5,9 @@ import argparse
 import sys
 import os
 import time
+import json
+from tqdm import tqdm
+from einops import rearrange
 
 # Add the project root to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -17,6 +20,21 @@ from src.vqvae.utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 import json
 from einops import rearrange
+
+# Import wandb utilities
+from src.utils.wandb_utils import (
+    init_wandb, log_training_metrics, log_model_gradients, log_model_parameters,
+    log_learning_rate, log_reconstruction_comparison, log_video_sequence,
+    log_system_metrics, finish_wandb, create_wandb_config
+)
+
+# Import wandb if available
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("⚠️ wandb not available. Install with: pip install wandb")
 
 parser = argparse.ArgumentParser()
 
@@ -48,7 +66,7 @@ parser.add_argument("--dropout", type=float, default=0.1)
 # Paths to pre-trained models
 parser.add_argument("--video_tokenizer_path", type=str, required=True, 
                    help="Path to pre-trained video tokenizer checkpoint")
-parser.add_argument("--lam_path", type=str, required=True, 
+parser.add_argument("--lam_path", type=str, required=False, 
                    help="Path to pre-trained latent action model checkpoint")
 
 # whether or not to save model
@@ -61,6 +79,11 @@ parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to
 
 # use actions or not
 parser.add_argument("--use_actions", action="store_true", default=False)
+
+# W&B arguments
+parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
+parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
+parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
 
 args = parser.parse_args()
 
@@ -194,27 +217,27 @@ if os.path.isfile(args.video_tokenizer_path):
 else:
     raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
-print("Loading pre-trained latent action model...")
-lam = LAM(
-    frame_size=(64, 64),
-    n_actions=8,  # Match full pipeline
-    patch_size=args.patch_size,  # Use command line patch_size
-    embed_dim=args.embed_dim,
-    num_heads=args.num_heads,
-    hidden_dim=args.hidden_dim,
-    num_blocks=args.num_blocks,
-    action_dim=32,  # Match full pipeline
-    dropout=args.dropout
-).to(device)
+# print("Loading pre-trained latent action model...")
+# lam = LAM(
+#     frame_size=(64, 64),
+#     n_actions=8,  # Match full pipeline
+#     patch_size=args.patch_size,  # Use command line patch_size
+#     embed_dim=args.embed_dim,
+#     num_heads=args.num_heads,
+#     hidden_dim=args.hidden_dim,
+#     num_blocks=args.num_blocks,
+#     action_dim=32,  # Match full pipeline
+#     dropout=args.dropout
+# ).to(device)
 
-# Load LAM checkpoint
-if os.path.isfile(args.lam_path):
-    print(f"Loading LAM from {args.lam_path}")
-    checkpoint = torch.load(args.lam_path, map_location=device)
-    lam.load_state_dict(checkpoint['model'])
-    lam.eval()  # Set to evaluation mode
-else:
-    raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
+# # Load LAM checkpoint
+# if os.path.isfile(args.lam_path):
+#     print(f"Loading LAM from {args.lam_path}")
+#     checkpoint = torch.load(args.lam_path, map_location=device)
+#     lam.load_state_dict(checkpoint['model'])
+#     lam.eval()  # Set to evaluation mode
+# else:
+#     raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
 
 """
 Set up dynamics model
@@ -262,11 +285,57 @@ if args.checkpoint:
     else:
         print(f"No checkpoint found at {args.checkpoint}")
 
-dynamics_model.train()
-
 # Save configuration after model setup
 if args.save:
     save_run_configuration(args, run_dir, timestamp, device)
+
+# Initialize W&B if enabled and available
+if args.use_wandb and WANDB_AVAILABLE:
+    # Create model configuration
+    model_config = {
+        'frame_size': (64, 64),
+        'patch_size': args.patch_size,
+        'embed_dim': args.embed_dim,
+        'num_heads': args.num_heads,
+        'hidden_dim': args.hidden_dim,
+        'num_blocks': args.num_blocks,
+        'latent_dim': args.latent_dim,
+        'dropout': args.dropout,
+        'use_actions': args.use_actions
+    }
+    
+    # Create W&B config
+    wandb_config = {
+        'batch_size': args.batch_size,
+        'n_updates': args.n_updates,
+        'learning_rate': args.learning_rate,
+        'log_interval': args.log_interval,
+        'dataset': args.dataset,
+        'context_length': args.context_length,
+        'model_architecture': model_config,
+        'device': str(device),
+        'timestamp': timestamp
+    }
+    
+    # Initialize W&B
+    run_name = args.wandb_run_name or f"dynamics_{timestamp}"
+    wandb.init(
+        project=args.wandb_project,
+        config=wandb_config,
+        name=run_name,
+        tags=["dynamics", "training"]
+    )
+
+    # Watch model for gradients and parameters
+    wandb.watch(dynamics_model, log="all", log_freq=args.log_interval)
+    
+    print(f"🚀 W&B run initialized: {wandb.run.name}")
+    print(f"📊 Project: {args.wandb_project}")
+    print(f"🔗 View at: {wandb.run.get_url()}")
+elif args.use_wandb and not WANDB_AVAILABLE:
+    print("❌ W&B requested but not available. Install with: pip install wandb")
+
+dynamics_model.train()
 
 def train(use_actions=False):
     start_iter = max(args.start_iteration, results['n_updates'])
@@ -330,6 +399,19 @@ def train(use_actions=False):
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
+        # Log to W&B if enabled
+        if args.use_wandb:
+            # Log training metrics
+            metrics = {
+                'dynamics_loss': dynamics_loss.item(),
+                'total_loss': loss.item()
+            }
+            log_training_metrics(i, metrics, prefix="train")
+            # Log system metrics
+            log_system_metrics(i)
+            # Log learning rate
+            log_learning_rate(optimizer, i)
+
         # Debug prints
         if i % 10 == 0:  # Print every 10 iterations
             print(f"Iteration {i}, Dynamics Loss: {dynamics_loss.item():.6f}")
@@ -357,6 +439,9 @@ def train(use_actions=False):
                   torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),
                   'Total Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
+    # Finish W&B run
+    if args.use_wandb:
+        finish_wandb()
 
 if __name__ == "__main__":
     train()

@@ -12,8 +12,8 @@ import utils
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from utils import visualize_reconstruction
 from tqdm import tqdm
-import time
 import json
+import wandb
 
 parser = argparse.ArgumentParser()
 
@@ -53,6 +53,10 @@ parser.add_argument("--filename",  type=str, default=timestamp)
 # Add checkpoint arguments
 parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
 parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
+
+parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
+parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
+parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
 
 args = parser.parse_args()
 
@@ -217,6 +221,52 @@ if args.checkpoint:
 if args.save:
     save_run_configuration(args, run_dir, timestamp, device)
 
+# Initialize W&B if enabled and available
+if args.use_wandb:
+    # Create model configuration
+    model_config = {
+        'frame_size': (64, 64),
+        'patch_size': args.patch_size,
+        'embed_dim': args.embed_dim,
+        'num_heads': args.num_heads,
+        'hidden_dim': args.hidden_dim,
+        'num_blocks': args.num_blocks,
+        'latent_dim': args.latent_dim,
+        'dropout': args.dropout,
+        'codebook_size': args.codebook_size,
+        'beta': args.beta,
+        'ema_decay': args.ema_decay
+    }
+    
+    # Create W&B config
+    wandb_config = {
+        'batch_size': args.batch_size,
+        'n_updates': args.n_updates,
+        'learning_rate': args.learning_rate,
+        'log_interval': args.log_interval,
+        'dataset': args.dataset,
+        'context_length': args.context_length,
+        'model_architecture': model_config,
+        'device': str(device),
+        'timestamp': timestamp
+    }
+    
+    # Initialize W&B
+    run_name = args.wandb_run_name or f"video_tokenizer_{timestamp}"
+    wandb.init(
+        project=args.wandb_project,
+        config=wandb_config,
+        name=run_name,
+        tags=["video-tokenizer", "training"]
+    )
+    
+    # Watch model for gradients and parameters
+    wandb.watch(model, log="all", log_freq=args.log_interval)
+    
+    print(f"🚀 W&B run initialized: {wandb.run.name}")
+    print(f"📊 Project: {args.wandb_project}")
+    print(f"🔗 View at: {wandb.run.get_url()}")
+
 model.train()
 
 def train():
@@ -242,6 +292,32 @@ def train():
         results["loss_vals"].append(recon_loss.cpu().detach())
         results["n_updates"] = i
 
+        # Log to W&B if enabled and available
+        if args.use_wandb:
+            # Log training metrics
+            wandb.log({
+                'train/loss': recon_loss.item(),
+                'train/learning_rate': scheduler.get_last_lr()[0],
+                'train/x_hat_variance': torch.var(x_hat, dim=0).mean().item(),
+                'train/x_variance': torch.var(x, dim=0).mean().item(),
+                'step': i
+            })
+            
+            # Log system metrics
+            if torch.cuda.is_available():
+                wandb.log({
+                    'system/gpu_memory_allocated': torch.cuda.memory_allocated() / 1024**3,  # GB
+                    'system/gpu_memory_reserved': torch.cuda.memory_reserved() / 1024**3,    # GB
+                    'step': i
+                })
+            
+            # Log learning rate
+            for j, param_group in enumerate(optimizer.param_groups):
+                wandb.log({
+                    f'learning_rate/group_{j}': param_group['lr'],
+                    'step': i
+                })
+
         # Debug loss balance
         if i % 10 == 0:  # Print every 10 iterations
             print(f"Iteration {i}:")
@@ -265,11 +341,37 @@ def train():
                 # Add visualization
                 save_path = os.path.join(visualizations_dir, f'reconstruction_step_{i}_{args.filename}.png')
                 visualize_reconstruction(x[:16], x_hat[:16], save_path)  # Visualize first 16 images
-
+                
+                # Log reconstruction comparison to W&B
+                if args.use_wandb:
+                    # Ensure tensors are on CPU and in the right format
+                    original = x[:16].detach().cpu()
+                    reconstructed = x_hat[:16].detach().cpu()
+                    
+                    # Denormalize from [-1, 1] to [0, 1] if needed
+                    if original.min() < 0:
+                        original = (original + 1) / 2
+                        reconstructed = (reconstructed + 1) / 2
+                    
+                    # Clamp to valid range
+                    original = torch.clamp(original, 0, 1)
+                    reconstructed = torch.clamp(reconstructed, 0, 1)
+                    
+                    # Create comparison images
+                    comparison_images = []
+                    for k in range(min(16, original.shape[0])):
+                        # Stack original and reconstructed side by side
+                        comparison = torch.cat([original[k], reconstructed[k]], dim=2)  # Concatenate horizontally
+                        comparison_images.append(comparison)
+                    
             print('Update #', i, 'Recon Error:',
                   torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item(),
                   'Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
-
+    
+    # Finish W&B run
+    if args.use_wandb:
+        wandb.finish()
+        print("✅ W&B run finished")
 
 if __name__ == "__main__":
     train()

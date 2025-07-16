@@ -33,6 +33,7 @@ import os
 import time
 import glob
 from pathlib import Path
+import argparse
 
 def readable_timestamp():
     """Generate a readable timestamp for filenames"""
@@ -54,6 +55,7 @@ def find_latest_checkpoint(base_dir, model_name):
     results_dirs = glob.glob(pattern)
     
     if not results_dirs:
+        print(f"No checkpoints found for {model_name}")
         return None
     
     # Get the most recent directory (latest timestamp)
@@ -64,6 +66,7 @@ def find_latest_checkpoint(base_dir, model_name):
     checkpoint_files = glob.glob(checkpoint_pattern)
     
     if not checkpoint_files:
+        print(f"No checkpoint files found for {model_name}")
         return None
     
     # Return the most recent checkpoint
@@ -97,8 +100,20 @@ def run_command(cmd, description):
         return False
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Full Pipeline Training Script")
+    parser.add_argument("--use_wandb", action="store_true", default=False, 
+                       help="Enable Weights & Biases logging for all models")
+    parser.add_argument("--wandb_project", type=str, default="nano-genie-pipeline",
+                       help="Base project name for W&B (each model will have its own project)")
+    args = parser.parse_args()
+    
     print("🚀 Starting Full Pipeline Training on SONIC Dataset")
     print(f"Timestamp: {readable_timestamp()}")
+    
+    if args.use_wandb:
+        print("📊 W&B logging enabled")
+        print(f"📈 Base project: {args.wandb_project}")
     
     # Check if we're in the right directory
     if not os.path.exists("src"):
@@ -116,33 +131,40 @@ def main():
     print(f"✅ Found SONIC dataset at {sonic_data_path}")
     
     # Step 1: Train Video Tokenizer
-    # print("\n" + "="*60)
-    # print("STEP 1: Training Video Tokenizer on SONIC")
-    # print("="*60)
+    print("\n" + "="*60)
+    print("STEP 1: Training Video Tokenizer on SONIC")
+    print("="*60)
     
-    # video_tokenizer_cmd = [
-    #     sys.executable, "src/vqvae/main.py",
-    #     "--dataset", "SONIC",
-    #     "--batch_size", "16",
-    #     "--n_updates", "5000",  # Reduced for faster training
-    #     "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
-    #     "--log_interval", "100",
-    #     "--context_length", "4",
-    #     "--patch_size", "4",
-    #     "--embed_dim", "128",
-    #     "--num_heads", "4",
-    #     "--hidden_dim", "512",
-    #     "--num_blocks", "2",
-    #     "--latent_dim", "32",
-    #     "--dropout", "0.1",
-    #     "--codebook_size", "64",  # Number of bins per dimension for FSQ
-    #     "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
-    #     "--ema_decay", "0.99"  # EMA decay for stable bin updates
-    # ]
+    video_tokenizer_cmd = [
+        sys.executable, "src/vqvae/main.py",
+        "--dataset", "SONIC",
+        "--batch_size", "16",
+        "--n_updates", "5000",  # Reduced for faster training
+        "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
+        "--log_interval", "100",
+        "--context_length", "4",
+        "--patch_size", "4",
+        "--embed_dim", "128",
+        "--num_heads", "4",
+        "--hidden_dim", "512",
+        "--num_blocks", "2",
+        "--latent_dim", "32",
+        "--dropout", "0.1",
+        "--codebook_size", "64",  # Number of bins per dimension for FSQ
+        "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
+        "--ema_decay", "0.99"  # EMA decay for stable bin updates
+    ]
     
-    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
-    #     return
+    # # Add W&B arguments if enabled
+    if args.use_wandb:
+        video_tokenizer_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}"
+        ])
+    
+    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+        print("❌ Video tokenizer training failed. Stopping pipeline.")
+        return
     
     # Step 2: Train LAM
     # print("\n" + "="*60)
@@ -168,6 +190,13 @@ def main():
     #     "--beta", "1.0"  # VQ loss weight
     # ]
     
+    # # Add W&B arguments if enabled
+    # if args.use_wandb:
+    #     lam_cmd.extend([
+    #         "--use_wandb",
+    #         "--wandb_project", f"{args.wandb_project}-lam"
+    #     ])
+    
     # if not run_command(lam_cmd, "LAM Training"):
     #     print("❌ LAM training failed. Stopping pipeline.")
     #     return
@@ -178,18 +207,18 @@ def main():
     print("="*60)
     
     video_tokenizer_checkpoint = find_latest_checkpoint(".", "videotokenizer")
-    lam_checkpoint = find_latest_checkpoint(".", "lam")
+    # lam_checkpoint = find_latest_checkpoint(".", "lam")
     
     if not video_tokenizer_checkpoint:
         print("❌ Could not find video tokenizer checkpoint")
         return
     
-    if not lam_checkpoint:
-        print("❌ Could not find LAM checkpoint")
-        return
+    # if not lam_checkpoint:
+    #     print("❌ Could not find LAM checkpoint")
+    #     return
     
     print(f"✅ Found video tokenizer checkpoint: {video_tokenizer_checkpoint}")
-    print(f"✅ Found LAM checkpoint: {lam_checkpoint}")
+    # print(f"✅ Found LAM checkpoint: {lam_checkpoint}")
     
     # Step 4: Train Dynamics Model
     print("\n" + "="*60)
@@ -199,7 +228,7 @@ def main():
     dynamics_cmd = [
         sys.executable, "src/dynamics/main.py",
         "--video_tokenizer_path", video_tokenizer_checkpoint,
-        "--lam_path", lam_checkpoint,
+        # "--lam_path", lam_checkpoint,
         "--dataset", "SONIC",
         "--batch_size", "16",
         "--n_updates", "10000",
@@ -212,8 +241,16 @@ def main():
         "--hidden_dim", "512",
         "--num_blocks", "2",
         "--latent_dim", "32",
-        "--dropout", "0.1"
+        "--dropout", "0.1",
+        "--use_wandb"
     ]
+    
+    # Add W&B arguments if enabled
+    if args.use_wandb:
+        dynamics_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}-dynamics"
+        ])
     
     if not run_command(dynamics_cmd, "Dynamics Model Training"):
         print("❌ Dynamics model training failed.")
@@ -236,6 +273,12 @@ def main():
     print("src/vqvae/results/videotokenizer_*/")
     print("src/latent_action_model/results/lam_*/")
     print("src/dynamics/results/dynamics_*/")
+    
+    if args.use_wandb:
+        print(f"\n📈 W&B Projects:")
+        print(f"Video Tokenizer: {args.wandb_project}-video-tokenizer")
+        print(f"LAM: {args.wandb_project}-lam")
+        print(f"Dynamics: {args.wandb_project}-dynamics")
     
     print("\n🎯 Next Steps:")
     print("1. Check the visualizations in each model's visualizations/ directory")

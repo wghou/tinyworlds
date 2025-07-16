@@ -2,7 +2,6 @@ import torch
 from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
-from einops import rearrange
 import argparse
 from src.vqvae.utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt
@@ -10,6 +9,7 @@ import time
 import os
 import cv2
 import numpy as np
+import random
 
 def predict_next_tokens(dynamics_model, video_latents, action_latent=None, temperature=1.0, use_actions=True):
     """Use dynamics model to predict next video tokens with temperature sampling"""
@@ -36,10 +36,12 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent=None, tempe
         next_video_latents = dynamics_model(combined_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
         
         # Apply temperature sampling to reduce variance
-        if temperature != 1.0:
-            # Add noise scaled by temperature
-            noise = torch.randn_like(next_video_latents) * (temperature - 1.0) * 0.1
-            next_video_latents = next_video_latents + noise
+        # if temperature != 1.0:
+        #     # Add noise scaled by temperature
+        #     noise = torch.randn_like(next_video_latents) * (temperature - 1.0) * 0.1
+        #     next_video_latents = next_video_latents + noise
+        
+        print(f"next_video_latents shape: {next_video_latents.shape}")
         
         # Return the last timestep prediction (next frame)
         next_video_latents = next_video_latents[:, -1, :, :]  # [1, num_patches, latent_dim]
@@ -179,9 +181,8 @@ def encode_frame_to_tokens(video_tokenizer, frame):
         return quantized_latent
     
 def sample_first_frame_from_dataloader(dataloader):
-    for batch in dataloader:
-        frame = batch[0]
-        break
+    batch = next(iter(dataloader))
+    frame = batch[0]
     return frame
     
 def sample_random_action(n_actions):
@@ -342,7 +343,7 @@ def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
     # Load data and get first frame
-    _, _, _, validation_loader, _ = load_data_and_data_loaders(dataset='SONIC', batch_size=1, num_frames=1)
+    _, _, _, validation_loader, _ = load_data_and_data_loaders(dataset='SONIC', batch_size=1, num_frames=2)
     frame = sample_first_frame_from_dataloader(validation_loader)
     frame = frame.to(args.device)
     frames = frame  # [1, 1, C, H, W] - add sequence dimension
@@ -408,9 +409,9 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with the trained video generation pipeline")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_thu_jul_10_22_28_46_2025/checkpoints/videotokenizer_checkpoint_thu_jul_10_22_28_46_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_13_21_01_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_13_21_01_32_2025.pth")
     parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_13_17_19_55_2025/checkpoints/dynamics_checkpoint_Sun_Jul_13_17_19_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Mon_Jul_14_00_00_12_2025/checkpoints/dynamics_checkpoint_Mon_Jul_14_00_00_12_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--generation_steps", type=int, default=10, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
