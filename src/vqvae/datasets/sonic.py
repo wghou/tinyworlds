@@ -13,7 +13,7 @@ class SonicDataset(Dataset):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
-        self.fps = 10
+        self.fps = 4
         self.frame_skip = 60 // self.fps
         self.fraction_of_frames = 0.1
         
@@ -84,7 +84,7 @@ class SonicDataset(Dataset):
 
     def __len__(self):
         max_valid_index = len(self.data) - (self.num_frames * self.frame_skip)
-        return max(0, max_valid_index + 1)
+        return max(0, max_valid_index + 1) // 5
     
     def __getitem__(self, index):
         # Ensure index is within bounds

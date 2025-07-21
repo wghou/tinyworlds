@@ -139,7 +139,7 @@ def main():
         sys.executable, "src/vqvae/main.py",
         "--dataset", "SONIC",
         "--batch_size", "16",
-        "--n_updates", "5000",  # Reduced for faster training
+        "--n_updates", "1000",  # Reduced for faster training
         "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
         "--log_interval", "100",
         "--context_length", "4",
@@ -152,7 +152,8 @@ def main():
         "--dropout", "0.1",
         "--codebook_size", "64",  # Number of bins per dimension for FSQ
         "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
-        "--ema_decay", "0.99"  # EMA decay for stable bin updates
+        "--ema_decay", "0.99",  # EMA decay for stable bin updates
+        "--use_wandb"
     ]
     
     # # Add W&B arguments if enabled
@@ -231,7 +232,7 @@ def main():
         # "--lam_path", lam_checkpoint,
         "--dataset", "SONIC",
         "--batch_size", "16",
-        "--n_updates", "10000",
+        "--n_updates", "2000",
         "--learning_rate", "1e-4",
         "--log_interval", "100",
         "--context_length", "4",

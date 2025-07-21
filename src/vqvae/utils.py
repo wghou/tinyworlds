@@ -189,7 +189,7 @@ def save_model_and_results(model, optimizer, results, hyperparameters, timestamp
 
 def visualize_reconstruction(original, reconstruction, save_path=None):
     """
-    Visualizes original images and their reconstructions side by side
+    Visualizes original sequences and their reconstructions side by side
     
     Args:
         original: Tensor of original images (B, C, H, W) or sequences (B, seq_len, C, H, W)
@@ -200,31 +200,41 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     original = original.detach().cpu()
     reconstruction = reconstruction.detach().cpu()
     
-    # Handle sequences by taking the first frame from each sequence
-    if original.dim() == 5:  # (B, seq_len, C, H, W)
-        original = original[:, 0]  # Take first frame from each sequence
-    if reconstruction.dim() == 5:  # (B, seq_len, C, H, W)
-        reconstruction = reconstruction[:, 0]  # Take first frame from each sequence
+    # Handle single frames by expanding to sequences
+    if original.dim() == 4:  # (B, C, H, W)
+        original = original.unsqueeze(1)  # Add sequence dimension
+    if reconstruction.dim() == 4:  # (B, C, H, W)
+        reconstruction = reconstruction.unsqueeze(1)  # Add sequence dimension
+    
+    # Take first 4 sequences, each of length 4 (or available length)
+    num_sequences = min(4, original.shape[0])
+    seq_length = min(4, original.shape[1])
+    
+    original = original[:num_sequences, :seq_length]  # (4, seq_len, C, H, W)
+    reconstruction = reconstruction[:num_sequences, :seq_length]  # (4, seq_len, C, H, W)
     
     # Create a figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
     
-    # Show original images
-    grid_orig = make_grid(original, nrow=4, normalize=True, padding=2)
+    # For original sequences
+    # Reshape to (num_sequences * seq_length, C, H, W) for make_grid
+    orig_flat = original.reshape(-1, *original.shape[2:])  # (4*seq_len, C, H, W)
+    grid_orig = make_grid(orig_flat, nrow=seq_length, normalize=True, padding=2)
     ax1.imshow(grid_orig.permute(1, 2, 0))
     ax1.axis('off')
-    ax1.set_title('Original Images')
+    ax1.set_title(f'Original Sequences (4 sequences × {seq_length} frames)')
     
-    # Show reconstructed images
-    grid_recon = make_grid(reconstruction, nrow=4, normalize=True, padding=2)
+    # For reconstructed sequences
+    recon_flat = reconstruction.reshape(-1, *reconstruction.shape[2:])  # (4*seq_len, C, H, W)
+    grid_recon = make_grid(recon_flat, nrow=seq_length, normalize=True, padding=2)
     ax2.imshow(grid_recon.permute(1, 2, 0))
     ax2.axis('off')
-    ax2.set_title('Reconstructed Images')
+    ax2.set_title(f'Reconstructed Sequences (4 sequences × {seq_length} frames)')
     
     plt.tight_layout()
     
     if save_path:
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
