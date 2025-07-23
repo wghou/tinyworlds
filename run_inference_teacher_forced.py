@@ -456,9 +456,9 @@ def create_quality_progression_plot(results, save_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Test inference with real data context")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_13_21_01_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_13_21_01_32_2025.pth")
-    # parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jun_28_00_10_36_2025/checkpoints/lam_checkpoint_Sat_Jun_28_00_10_36_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Mon_Jul_14_00_00_12_2025/checkpoints/dynamics_checkpoint_Mon_Jul_14_00_00_12_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_20_18_16_29_2025/checkpoints/videotokenizer_checkpoint_sun_jul_20_18_16_29_2025.pth")
+    # parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_20_18_39_32_2025/checkpoints/dynamics_checkpoint_Sun_Jul_20_18_39_32_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num_tests", type=int, default=20)
     parser.add_argument("--test_masking", action="store_true", help="Test with masking applied")

@@ -50,7 +50,7 @@ timestamp = readable_timestamp()
 parser.add_argument("--batch_size", type=int, default=16)
 parser.add_argument("--n_updates", type=int, default=2000)
 parser.add_argument("--learning_rate", type=float, default=1e-4)
-parser.add_argument("--log_interval", type=int, default=100)
+parser.add_argument("--log_interval", type=int, default=10)
 parser.add_argument("--dataset",  type=str, default='SONIC')
 parser.add_argument("--context_length", type=int, default=4)
 
@@ -74,7 +74,7 @@ parser.add_argument("-save", action="store_true", default=True)
 parser.add_argument("--filename",  type=str, default=timestamp)
 
 # Add checkpoint arguments
-parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
+parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from", default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_20_18_39_32_2025/checkpoints/dynamics_checkpoint_Sun_Jul_20_18_39_32_2025.pth")
 parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
 
 # use actions or not
@@ -271,19 +271,21 @@ results = {
     'loss_vals': [],
 }
 
+start_iter = args.start_iteration
 if args.checkpoint:
     if os.path.isfile(args.checkpoint):
         print(f"Loading checkpoint from {args.checkpoint}")
         checkpoint = torch.load(args.checkpoint, map_location=device)
         dynamics_model.load_state_dict(checkpoint['model'])
-        results = checkpoint['results']
-        print(f"Resuming from update {results['n_updates']}")
-        
-        # Restore optimizer state if available
         if 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'results' in checkpoint:
+            results = checkpoint['results']
+        if 'n_updates' in results:
+            start_iter = results['n_updates'] + 1  # Resume from next iteration
+        print(f"Resuming from update {results.get('n_updates', 0)}")
     else:
-        print(f"No checkpoint found at {args.checkpoint}")
+        print(f"⚠️ No checkpoint found at {args.checkpoint}. Starting from scratch.")
 
 # Save configuration after model setup
 if args.save:
@@ -338,9 +340,8 @@ elif args.use_wandb and not WANDB_AVAILABLE:
 dynamics_model.train()
 
 def train(use_actions=False):
-    start_iter = max(args.start_iteration, results['n_updates'])
-
-    print(f"Starting dynamics model training")
+    global start_iter  # Use the start_iter set above
+    print(f"Starting dynamics model training from iteration {start_iter}")
     
     for i in tqdm(range(start_iter, args.n_updates)):
         (x, _) = next(iter(training_loader))
@@ -376,13 +377,15 @@ def train(use_actions=False):
         else:
             input_latents = quantized_video_latents
 
+        # [a,b,c,d] -> [a,b,c] to predict [b,c,d]
+        input_latents = input_latents[:, :-1] # [batch_size, seq_len-1, num_patches, latent_dim]
+        target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
+
         # Predict next frame latents using dynamics model
         predicted_next_latents = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, latent_dim]
         
-        # Get target next frame latents (shift by 1)
-        target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
-        predicted_next_latents = predicted_next_latents[:, :-1]  # [batch_size, seq_len-1, num_patches, latent_dim]
-        
+        print(f"pred next latents shape: {predicted_next_latents.shape}")
+        print(f"target next latents shape: {target_next_latents.shape}")
         # Compute dynamics loss
         dynamics_loss = torch.mean((predicted_next_latents - target_next_latents)**2)
         
@@ -426,14 +429,14 @@ def train(use_actions=False):
                     dynamics_model, optimizer, results, hyperparameters, args.filename, checkpoints_dir
                 )
                 
-                # Add visualization - decode predicted latents back to frames
-                with torch.no_grad():
-                    # Use video tokenizer decoder to convert predicted latents back to frames
-                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # First 16 samples
-                    target_frames = x[:16, 1:]  # Target frames (shifted by 1)
-                    
-                    save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
-                    visualize_reconstruction(target_frames[:16], predicted_frames[:16], save_path)
+                # Decode predicted latents (predicted_next_latents: [B, seq_len-1, ...])
+                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, seq_len-1, ...]
+ 
+                # Ground truth frames
+                target_frames_full = x[:16, 1:]  # [B, seq_len, ...]
+
+                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
+                visualize_reconstruction(target_frames_full[:16], predicted_frames[:16], save_path)
 
             print('Update #', i, 'Dynamics Loss:',
                   torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),

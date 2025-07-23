@@ -131,41 +131,41 @@ def main():
     print(f"✅ Found SONIC dataset at {sonic_data_path}")
     
     # Step 1: Train Video Tokenizer
-    print("\n" + "="*60)
-    print("STEP 1: Training Video Tokenizer on SONIC")
-    print("="*60)
+    # print("\n" + "="*60)
+    # print("STEP 1: Training Video Tokenizer on SONIC")
+    # print("="*60)
     
-    video_tokenizer_cmd = [
-        sys.executable, "src/vqvae/main.py",
-        "--dataset", "SONIC",
-        "--batch_size", "16",
-        "--n_updates", "1000",  # Reduced for faster training
-        "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
-        "--log_interval", "100",
-        "--context_length", "4",
-        "--patch_size", "4",
-        "--embed_dim", "128",
-        "--num_heads", "4",
-        "--hidden_dim", "512",
-        "--num_blocks", "2",
-        "--latent_dim", "32",
-        "--dropout", "0.1",
-        "--codebook_size", "64",  # Number of bins per dimension for FSQ
-        "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
-        "--ema_decay", "0.99",  # EMA decay for stable bin updates
-        "--use_wandb"
-    ]
+    # video_tokenizer_cmd = [
+    #     sys.executable, "src/vqvae/main.py",
+    #     "--dataset", "SONIC",
+    #     "--batch_size", "16",
+    #     "--n_updates", "1000",  # Reduced for faster training
+    #     "--learning_rate", "4e-4",  # Increased from 1e-4 for better convergence
+    #     "--log_interval", "100",
+    #     "--context_length", "4",
+    #     "--patch_size", "4",
+    #     "--embed_dim", "128",
+    #     "--num_heads", "4",
+    #     "--hidden_dim", "512",
+    #     "--num_blocks", "4",
+    #     "--latent_dim", "32",
+    #     "--dropout", "0.1",
+    #     "--codebook_size", "4",  # Number of bins per dimension for FSQ
+    #     "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
+    #     "--ema_decay", "0.99",  # EMA decay for stable bin updates
+    #     "--use_wandb"
+    # ]
     
-    # # Add W&B arguments if enabled
-    if args.use_wandb:
-        video_tokenizer_cmd.extend([
-            "--use_wandb",
-            "--wandb_project", f"{args.wandb_project}"
-        ])
+    # # # Add W&B arguments if enabled
+    # if args.use_wandb:
+    #     video_tokenizer_cmd.extend([
+    #         "--use_wandb",
+    #         "--wandb_project", f"{args.wandb_project}"
+    #     ])
     
-    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-        print("❌ Video tokenizer training failed. Stopping pipeline.")
-        return
+    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
+    #     return
     
     # Step 2: Train LAM
     # print("\n" + "="*60)
@@ -243,7 +243,8 @@ def main():
         "--num_blocks", "2",
         "--latent_dim", "32",
         "--dropout", "0.1",
-        "--use_wandb"
+        "--use_wandb",
+        "--checkpoint", "/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_20_18_39_32_2025/checkpoints/dynamics_checkpoint_Sun_Jul_20_18_39_32_2025.pth"
     ]
     
     # Add W&B arguments if enabled
@@ -267,7 +268,7 @@ def main():
     
     print("\n📁 Results Summary:")
     print(f"Video Tokenizer: {video_tokenizer_checkpoint}")
-    print(f"LAM: {lam_checkpoint}")
+    # print(f"LAM: {lam_checkpoint}")
     print(f"Dynamics Model: {dynamics_checkpoint}")
     
     print("\n📊 Directory Structure Created:")

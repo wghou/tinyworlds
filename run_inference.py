@@ -43,9 +43,6 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent=None, tempe
         
         print(f"next_video_latents shape: {next_video_latents.shape}")
         
-        # Return the last timestep prediction (next frame)
-        next_video_latents = next_video_latents[:, -1, :, :]  # [1, num_patches, latent_dim]
-        
         return next_video_latents
 
 def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1):
@@ -180,10 +177,10 @@ def encode_frame_to_tokens(video_tokenizer, frame):
         
         return quantized_latent
     
-def sample_first_frame_from_dataloader(dataloader):
-    batch = next(iter(dataloader))
-    frame = batch[0]
-    return frame
+# def sample_first_frame_from_dataloader(dataloader):
+#     batch = next(iter(dataloader))
+#     frame = batch[0]
+#     return frame
     
 def sample_random_action(n_actions):
     random_action = torch.randint(0, n_actions, (1,))
@@ -194,70 +191,63 @@ def get_lam_latent_from_action_index(lam, action_index):
         action_latent = lam.quantizer.embedding.weight[action_index] # get the latent action embedding in the codebook at action index
         return action_latent
     
-def visualize_inference(frames, inferred_actions, fps, use_actions=True):
+def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions, fps, use_actions=True):
     """
-    Visualize the inference results showing frames alternating with their inferred action numbers.
-    Also save an MP4 file showing just the frames in order.
+    Visualize the inference results showing ground truth vs predicted frames side by side.
+    Also save an MP4 file showing just the predicted frames in order.
     
     Args:
-        frames: Tensor of shape [batch_size, num_frames, C, H, W] 
+        predicted_frames: Tensor of shape [batch_size, num_frames, C, H, W] - predicted frames
+        ground_truth_frames: Tensor of shape [batch_size, num_frames, C, H, W] - ground truth frames
         inferred_actions: List of action indices
         fps: Frames per second for the MP4 video
         use_actions: Whether actions were used in generation
     """
     # Move to CPU and convert to numpy
-    frames = frames.detach().cpu()
+    predicted_frames = predicted_frames.detach().cpu()
+    ground_truth_frames = ground_truth_frames.detach().cpu()
     
     # Denormalize frames from [-1, 1] to [0, 1]
-    frames = (frames + 1) / 2
-    frames = torch.clamp(frames, 0, 1)
+    predicted_frames = (predicted_frames + 1) / 2
+    predicted_frames = torch.clamp(predicted_frames, 0, 1)
+    ground_truth_frames = (ground_truth_frames + 1) / 2
+    ground_truth_frames = torch.clamp(ground_truth_frames, 0, 1)
+
+    # predicted_frames = predicted_frames.unsqueeze(1) # This line was removed as per the edit hint
     
     # Get dimensions
-    batch_size, num_frames, C, H, W = frames.shape
+    batch_size, num_frames, C, H, W = predicted_frames.shape
+
+    _, num_gt_frames, _, _, _ = ground_truth_frames.shape
     
-    if use_actions:
-        # Create figure with alternating frames and action numbers
-        fig, axes = plt.subplots(1, num_frames * 2 - 1, figsize=(4 * (num_frames * 2 - 1), 4))
-        
-        # Handle single subplot case
-        if num_frames == 1:
-            axes = [axes]
-        
-        for i in range(num_frames):
-            # Plot frame
-            frame_idx = i * 2
-            frame = frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
-            axes[frame_idx].imshow(frame)
-            axes[frame_idx].set_title(f'Frame {i+1}', fontsize=12)
-            axes[frame_idx].axis('off')
-            
-            # Plot action number (except for the last frame)
-            if i < len(inferred_actions):
-                action_idx = frame_idx + 1
-                if action_idx < len(axes):
-                    axes[action_idx].text(0.5, 0.5, f'Action\n{inferred_actions[i].item()}', 
-                                        ha='center', va='center', fontsize=20, fontweight='bold',
-                                        transform=axes[action_idx].transAxes)
-                    axes[action_idx].set_title(f'Action {i+1}', fontsize=12)
-                    axes[action_idx].axis('off')
-        
-        plt.suptitle('Video Generation with Inferred Actions', fontsize=16, fontweight='bold')
-    else:
-        # Create figure with just frames (no actions)
-        fig, axes = plt.subplots(1, num_frames, figsize=(4 * num_frames, 4))
-        
-        # Handle single subplot case
-        if num_frames == 1:
-            axes = [axes]
-        
-        for i in range(num_frames):
-            frame = frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
-            axes[i].imshow(frame)
-            axes[i].set_title(f'Frame {i+1}', fontsize=12)
-            axes[i].axis('off')
-        
-        plt.suptitle('Video Generation (No Actions)', fontsize=16, fontweight='bold')
+    # Create figure with ground truth and predictions side by side
+    fig, axes = plt.subplots(2, num_frames, figsize=(4 * num_frames, 8))
     
+    # Handle single subplot case
+    if num_frames == 1:
+        axes = axes.reshape(2, 1)
+
+    print(f"ground_truth_frames shape: {ground_truth_frames.shape}")
+    print(f"predicted_frames shape: {predicted_frames.shape}")
+    
+    # Plot ground truth frames (top row)
+    for i in range(num_gt_frames):
+        frame = ground_truth_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
+        axes[0, i].imshow(frame)
+        axes[0, i].set_title(f'Ground Truth {i+1}', fontsize=12, color='green')
+        axes[0, i].axis('off')
+    
+    # Plot predicted frames (bottom row)
+    for i in range(num_frames):
+        frame = predicted_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
+        axes[1, i].imshow(frame)
+        title = f'Predicted {i+1}'
+        if use_actions and i < len(inferred_actions):
+            title += f'\nAction {inferred_actions[i].item()}' if i < len(inferred_actions) else ''
+        axes[1, i].set_title(title, fontsize=12, color='red')
+        axes[1, i].axis('off')
+    
+    plt.suptitle('Ground Truth vs Predicted Frames', fontsize=16, fontweight='bold')
     plt.tight_layout()
     
     # Save the visualization
@@ -266,24 +256,25 @@ def visualize_inference(frames, inferred_actions, fps, use_actions=True):
     os.makedirs(save_dir, exist_ok=True)
     
     if use_actions:
-        save_path = os.path.join(save_dir, f"inference_results_{timestamp}.png")
+        save_path = os.path.join(save_dir, f"inference_results_gt_vs_pred_{timestamp}.png")
         mp4_path = os.path.join(save_dir, f"inference_video_{timestamp}.mp4")
     else:
-        save_path = os.path.join(save_dir, f"inference_results_no_actions_{timestamp}.png")
+        save_path = os.path.join(save_dir, f"inference_results_gt_vs_pred_no_actions_{timestamp}.png")
         mp4_path = os.path.join(save_dir, f"inference_video_no_actions_{timestamp}.mp4")
     
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
     print(f"Visualization saved to: {save_path}")
+
+    all_frames = torch.cat([ground_truth_frames, predicted_frames], dim=1)
+    save_frames_as_mp4(all_frames, mp4_path, fps)
     
-    # Save MP4 video of just the frames
-    save_frames_as_mp4(frames, mp4_path, fps)
-    print(f"MP4 video saved to: {mp4_path}")
-    
-    # Also display some statistics
+    # Calculate and display reconstruction error
+    mse_error = torch.mean((predicted_frames - ground_truth_frames) ** 2).item()
     print(f"\nInference Statistics:")
     print(f"Total frames generated: {num_frames}")
+    print(f"Mean Squared Error (GT vs Pred): {mse_error:.6f}")
     if use_actions:
         print(f"Actions used: {[action.item() for action in inferred_actions]}")
         print(f"Action distribution: {torch.bincount(torch.tensor([action.item() for action in inferred_actions]))}")
@@ -293,35 +284,36 @@ def visualize_inference(frames, inferred_actions, fps, use_actions=True):
 def save_frames_as_mp4(frames, output_path, fps=2):
     """
     Save frames as an MP4 video file.
-    
     Args:
         frames: Tensor of shape [batch_size, num_frames, C, H, W] with values in [0, 1]
         output_path: Path to save the MP4 file
         fps: Frames per second for the video
     """
-    # Get dimensions
+    import cv2
+    import numpy as np
+
     batch_size, num_frames, C, H, W = frames.shape
-    
-    # Set up video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+    # OpenCV expects (W, H)
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')
     out = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
-    
-    # Convert each frame and write to video
+
     for i in range(num_frames):
-        # Get frame and convert to numpy
-        frame = frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
-        
-        # Convert from RGB to BGR (OpenCV format)
+        frame = frames[0, i].detach().cpu().permute(1, 2, 0).numpy()  # [H, W, C]
+        # Ensure float32
+        frame = frame.astype(np.float32)
+        # Clamp and scale
+        frame = np.clip(frame, 0, 1)
+        frame = (frame * 255).astype(np.uint8)
+        # If grayscale, convert to 3 channels
+        if frame.shape[2] == 1:
+            frame = np.repeat(frame, 3, axis=2)
+        # Convert RGB to BGR for OpenCV
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        
-        # Convert from float [0, 1] to uint8 [0, 255]
-        frame_uint8 = (frame_bgr * 255).astype(np.uint8)
-        
-        # Write frame to video
-        out.write(frame_uint8)
-    
-    # Release video writer
+        out.write(frame_bgr)
+
     out.release()
+    print(f"MP4 video saved to: {output_path}")
 
 def get_model_context_sizes(video_tokenizer, dynamics_model):
     """Get the context window sizes for both models"""
@@ -342,11 +334,17 @@ def get_model_context_sizes(video_tokenizer, dynamics_model):
 def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
-    # Load data and get first frame
-    _, _, _, validation_loader, _ = load_data_and_data_loaders(dataset='SONIC', batch_size=1, num_frames=2)
-    frame = sample_first_frame_from_dataloader(validation_loader)
-    frame = frame.to(args.device)
-    frames = frame  # [1, 1, C, H, W] - add sequence dimension
+    # Load data and get ground truth sequence
+    _, _, data_loader, _, _ = load_data_and_data_loaders(dataset='SONIC', batch_size=1, num_frames=4)  # +1 for initial frame
+    random_idx = random.randint(0, len(data_loader.dataset) - 1)
+    ground_truth_sequence = data_loader.dataset[random_idx][0]  # Get the full sequence
+    ground_truth_sequence = ground_truth_sequence.unsqueeze(0).to(args.device)  # [1, seq_len, C, H, W]
+    
+    print(f"Loaded ground truth sequence with shape: {ground_truth_sequence.shape}")
+    
+    # Start with the first frame from ground truth
+    context_frames = ground_truth_sequence
+    generated_frames = context_frames  # List to store generated frames (excluding initial)
 
     # Initialize action tracking
     if args.use_actions:
@@ -364,6 +362,16 @@ def main(args):
         context_window = args.context_window
         print(f"Overriding with command line context window: {context_window}")
 
+    # Only use last context_window frames for model input
+    # if context_frames.shape[1] > context_window:
+    #     model_input_frames = context_frames[:, -context_window:, :, :, :]
+    # else:
+    print(f"context_window: {context_window}")
+    print(f"context_frames shape: {context_frames.shape}")
+    model_input_frames = context_frames
+
+    video_latent_sequence = encode_frame_to_tokens(video_tokenizer, model_input_frames)  # [1, seq_len, num_patches, latent_dim]
+    print(f"video_latent_sequence shape: {video_latent_sequence.shape}")
     for i in range(args.generation_steps):
         # Sample action only if using actions
         if args.use_actions:
@@ -374,51 +382,106 @@ def main(args):
             action_index = None
             action_latent = None
 
-        print(f"frames shape: {frames.shape}")
+        print(f"context_frames shape: {context_frames.shape}")
 
-        # encode all current frames to video tokens
-        video_latents = encode_frame_to_tokens(video_tokenizer, frames)  # [1, seq_len, num_patches, latent_dim]
-
+        # Only use last context_window frames for model input
+        video_latents = video_latent_sequence  # [1, seq_len, num_patches, latent_dim]
         print(f"video_latents shape: {video_latents.shape}")
-        
-        # Maintain sliding window: remove oldest frames if sequence is too long
-        if video_latents.shape[0] > context_window:
-            # Remove oldest frame from both frames and video_latents
-            frames = frames[:, -context_window:, :, :, :]  # Keep last context_window frames
-            video_latents = video_latents[:, -context_window:, :, :]  # Keep last context_window latents
 
         # predict next video tokens using all current video latents
         next_video_latents = predict_next_tokens(
             dynamics_model, video_latents, action_latent, 
             temperature=args.temperature, use_actions=args.use_actions
-        )  # [1, num_patches, latent_dim]
+        )  # [1, seq_len, num_patches, latent_dim]
 
+        print(f"next_video_latents shape: {next_video_latents.shape}")
+
+        latents_to_decode = next_video_latents
+        print(f"latents_to_decode shape: {latents_to_decode.shape}")
         # decode next video tokens to frames
-        next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
-        next_frames = video_tokenizer.decoder(next_video_latents)  # [1, 1, C, H, W]
+        # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
+        next_frames = video_tokenizer.decoder(latents_to_decode)  # [1, seq_len, C, H, W]
+
+        print(f"next_frames shape: {next_frames.shape}")
+        print(f"ground_truth_sequence shape: {ground_truth_sequence.shape}")
+        # visualize next frames and ground truth frames side by side
+        visualize_decoded_frames(next_frames, generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
-        # add next frames to frames
-        frames = torch.cat([frames, next_frames], dim=1)  # [1, seq_len+1, C, H, W]
+        generated_frames = torch.cat([generated_frames, next_frames[:, -1:, :, :]], dim=1)  # Store for visualization/MSE
+        video_latent_sequence = next_video_latents
         
         if args.use_actions:
-            print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {frames.shape[1]}")
+            print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {context_frames.shape[1]}")
         else:
-            print(f"Step {i+1}: Generated frame (no actions), sequence length: {frames.shape[1]}")
+            print(f"Step {i+1}: Generated frame (no actions), sequence length: {context_frames.shape[1]}")
     
-    visualize_inference(frames, inferred_actions, args.fps, use_actions=args.use_actions)
+    # Stack all generated frames (excluding initial frame)
+    predicted_frames = generated_frames[:, -args.generation_steps:, :, :, :]
+    # predicted_frames shape: [1, generation_steps, C, H, W]
+    ground_truth_frames = ground_truth_sequence  # [1, generation_steps, C, H, W]
+    
+    print(f"Ground truth frames shape: {ground_truth_frames.shape}")
+    print(f"Predicted frames shape: {predicted_frames.shape}")
+    
+    visualize_inference(predicted_frames, ground_truth_frames, inferred_actions, args.fps, use_actions=args.use_actions)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with the trained video generation pipeline")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_13_21_01_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_13_21_01_32_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_20_21_50_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_20_21_50_32_2025.pth")
     parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Mon_Jul_14_00_00_12_2025/checkpoints/dynamics_checkpoint_Mon_Jul_14_00_00_12_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Tue_Jul_22_20_08_24_2025/checkpoints/dynamics_checkpoint_Tue_Jul_22_20_08_24_2025.pth")
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--generation_steps", type=int, default=10, help="Number of frames to generate")
+    parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
     return parser.parse_args()
+
+def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
+    """
+    Visualize predicted and ground truth sequences side by side.
+    Args:
+        predicted_frames: [1, seq_len, 3, H, W]
+        ground_truth_frames: [1, seq_len, 3, H, W]
+    """
+    import matplotlib.pyplot as plt
+    import os
+    import time
+    # Move to CPU and clamp
+    predicted_frames = predicted_frames.detach().cpu()
+    ground_truth_frames = ground_truth_frames.detach().cpu()
+    if predicted_frames.min() < 0:
+        predicted_frames = (predicted_frames + 1) / 2
+    if ground_truth_frames.min() < 0:
+        ground_truth_frames = (ground_truth_frames + 1) / 2
+    predicted_frames = torch.clamp(predicted_frames, 0, 1)
+    ground_truth_frames = torch.clamp(ground_truth_frames, 0, 1)
+    # Get sequence length
+    seq_len = predicted_frames.shape[1]
+    fig, axes = plt.subplots(2, seq_len, figsize=(3*seq_len, 6))
+    if seq_len == 1:
+        axes = axes.reshape(2, 1)
+    for i in range(seq_len):
+        gt_img = ground_truth_frames[0, i].permute(1, 2, 0).numpy()
+        pred_img = predicted_frames[0, i].permute(1, 2, 0).numpy()
+        axes[0, i].imshow(gt_img)
+        axes[0, i].set_title(f"GT {i+1}")
+        axes[0, i].axis('off')
+        axes[1, i].imshow(pred_img)
+        axes[1, i].set_title(f"Pred {i+1}")
+        axes[1, i].axis('off')
+    axes[0, 0].set_ylabel("Ground Truth", fontsize=14)
+    axes[1, 0].set_ylabel("Predicted", fontsize=14)
+    plt.suptitle("Decoded Sequence: Ground Truth vs Predicted", fontsize=16, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    save_dir = "inference_results"
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f"decoded_comparison_{time.strftime('%Y%m%d_%H%M%S')}_step_{step}.png")
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Decoded sequence visualization saved to: {save_path}")
+
 
 if __name__ == "__main__":
     args = parse_args()

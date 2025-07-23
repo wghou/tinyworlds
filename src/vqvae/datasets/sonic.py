@@ -9,11 +9,11 @@ import numpy as np
 import torch
 
 class SonicDataset(Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
-        self.fps = 4
+        self.fps = 15
         self.frame_skip = 60 // self.fps
         self.fraction_of_frames = 0.1
         
