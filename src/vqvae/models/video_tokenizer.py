@@ -244,9 +244,23 @@ class FiniteScalarQuantizer(nn.Module):
     Quantizes each dimension independently by bounding to 0, num_bins then rounding to nearest integer
     Prevents token collapse and no auxiliary losses necessary 
     """
-    def __init__(self, num_bins=4):
+    def __init__(self, latent_dim=6, num_bins=4):
         super().__init__()
         self.num_bins = num_bins
+        self.levels_np = torch.tensor(latent_dim * [num_bins])
+        self.basis = num_bins**torch.arange(latent_dim)
+
+    def scale_and_shift(self, z):
+        """
+        Scale and shift z from [-1, 1] to [0, num_bins - 1]
+        """
+        return 0.5 * (z + 1) * (self.num_bins - 1)
+    
+    def unscale_and_unshift(self, z):
+        """
+        Unscale and unshift z from [0, num_bins - 1] to [-1, 1]
+        """
+        return 2 * z / (self.num_bins - 1) - 1
         
     def forward(self, z):
         """
@@ -255,14 +269,19 @@ class FiniteScalarQuantizer(nn.Module):
         Returns:
             quantized_z: quantized z with num_bins bins per dimension [batch_size, seq_len, num_patches, latent_dim]
         """
-        # apply self.num_bins / 2 * tanh(z)
-        bounded_z = (self.num_bins / 2) * torch.tanh(z)
+        tanh_z = torch.tanh(z)
+
+        # apply 0.5 * (tanh(z) + 1) to go from z dimension to [0, num_bins - 1]
+        bounded_z = self.scale_and_shift(tanh_z)
 
         # round to nearest integer
         rounded_z = torch.round(bounded_z)
 
         # apply stopgrad
         quantized_z = bounded_z + (rounded_z - bounded_z).detach()
+
+        # normalize back to [-1, 1]
+        quantized_z = self.unscale_and_unshift(quantized_z)
 
         return quantized_z
 
@@ -277,11 +296,43 @@ class FiniteScalarQuantizer(nn.Module):
         total_used_bins += len(unique_bins)
         
         return total_used_bins / total_bins
+    
+    def get_indices_from_latents(self, latents, dim=-1):
+        """
+        Get the index of a latent in the codebook
+
+        latents: [batch_size, seq_len, num_patches, latent_dim]
+        Returns:
+            indices: [batch_size, seq_len, num_patches]
+        """
+        # go from [-1, 1] to [0, num_bins - 1] in each dimension
+        unnormalized_latents = self.scale_and_shift(latents)
+
+        # get indices for each latent by summing (value * L^current_dim_idx) along latent dim
+        indices = torch.sum(unnormalized_latents * self.basis, dim=dim)
+
+        return indices.long()
+
+    def get_latents_from_indices(self, indices, dim=-1):
+        """
+        Get the latents from the codebook indices
+
+        indices: [batch_size, seq_len, num_patches]
+        Returns:
+            latents: [batch_size, seq_len, num_patches, latent_dim]
+        """
+        # recover each entry of latent in range [0, num_bins - 1] by repeatedly dividing by L^current_dim and taking mod
+        digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins   # [batch_size, seq_len, num_patches, latent_dim]
+
+        # go from [0, num_bins - 1] to [-1, 1] in each dimension
+        latents = self.unscale_and_unshift(digits)
+
+        return latents
 
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
-    def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8, 
-                 hidden_dim=1024, num_blocks=6, latent_dim=32, dropout=0.1):
+    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8, 
+                 hidden_dim=1024, num_blocks=6, latent_dim=6, dropout=0.1):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
@@ -311,7 +362,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
-    def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
+    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
                  hidden_dim=2048, num_blocks=6, latent_dim=64, dropout=0.1, height=64, width=64, channels=3):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
@@ -368,14 +419,14 @@ class Decoder(nn.Module):
 
 class Video_Tokenizer(nn.Module):
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=32, dropout=0.1, codebook_size=512, beta=1.0, ema_decay=0.99):
+                 hidden_dim=2048, num_blocks=6, latent_dim=6, dropout=0.1, num_bins=4, ):
         super().__init__()
         self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
-        self.vq = FiniteScalarQuantizer(int(math.log2(codebook_size) // 3))
-        
+        self.vq = FiniteScalarQuantizer(latent_dim, num_bins)
+        self.codebook_size = num_bins**latent_dim
+
     def forward(self, frames):
-            
         # Encode frames to latent representations
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
         

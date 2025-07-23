@@ -130,7 +130,7 @@ def main():
     
     print(f"✅ Found SONIC dataset at {sonic_data_path}")
     
-    # Step 1: Train Video Tokenizer
+    # # Step 1: Train Video Tokenizer
     # print("\n" + "="*60)
     # print("STEP 1: Training Video Tokenizer on SONIC")
     # print("="*60)
@@ -147,12 +147,10 @@ def main():
     #     "--embed_dim", "128",
     #     "--num_heads", "4",
     #     "--hidden_dim", "512",
-    #     "--num_blocks", "4",
-    #     "--latent_dim", "32",
+    #     "--num_blocks", "2",
+    #     "--latent_dim", "6",
     #     "--dropout", "0.1",
-    #     "--codebook_size", "4",  # Number of bins per dimension for FSQ
-    #     "--beta", "0.01",  # Drastically reduced from 0.25 to prevent mode collapse
-    #     "--ema_decay", "0.99",  # EMA decay for stable bin updates
+    #     "--num_bins", "4",  # Number of bins per dimension for FSQ
     #     "--use_wandb"
     # ]
     
@@ -185,7 +183,7 @@ def main():
     #     "--num_heads", "4",
     #     "--hidden_dim", "512",
     #     "--num_blocks", "2",
-    #     "--action_dim", "32",
+    #     "--action_dim", "6",
     #     "--dropout", "0.1",
     #     "--n_actions", "8",  # Exactly 8 actions for SONIC (up, down, left, right, up-left, up-right, down-left, down-right)
     #     "--beta", "1.0"  # VQ loss weight
@@ -241,10 +239,10 @@ def main():
         "--num_heads", "4",
         "--hidden_dim", "512",
         "--num_blocks", "2",
-        "--latent_dim", "32",
+        "--latent_dim", "6",
+        "--num_bins", "4",
         "--dropout", "0.1",
         "--use_wandb",
-        "--checkpoint", "/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_20_18_39_32_2025/checkpoints/dynamics_checkpoint_Sun_Jul_20_18_39_32_2025.pth"
     ]
     
     # Add W&B arguments if enabled

@@ -46,9 +46,9 @@ class TestVideoTokenizer:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            latent_dim=16,
+            latent_dim=6,
             dropout=0.1,
-            codebook_size=256,
+            num_bins=4,
             beta=0.01
         )
         return model
@@ -217,9 +217,9 @@ class TestVideoTokenizer:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            latent_dim=16,
+            latent_dim=6,
             dropout=0.1,
-            codebook_size=256,
+            num_bins=4,
             beta=0.01
         )
         new_model.load_state_dict(torch.load(save_path))

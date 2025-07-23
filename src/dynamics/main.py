@@ -8,6 +8,7 @@ import time
 import json
 from tqdm import tqdm
 from einops import rearrange
+import torch.nn.functional as F
 
 # Add the project root to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -60,7 +61,8 @@ parser.add_argument("--embed_dim", type=int, default=128)  # Match video tokeniz
 parser.add_argument("--num_heads", type=int, default=4)   # Match video tokenizer
 parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
 parser.add_argument("--num_blocks", type=int, default=2)  # Match video tokenizer
-parser.add_argument("--latent_dim", type=int, default=32)  # Match video tokenizer latent_dim
+parser.add_argument("--latent_dim", type=int, default=6)  # Match video tokenizer latent_dim
+parser.add_argument("--num_bins", type=int, default=4)  # Match video tokenizer num_bins
 parser.add_argument("--dropout", type=float, default=0.1)
 
 # Paths to pre-trained models
@@ -74,7 +76,7 @@ parser.add_argument("-save", action="store_true", default=True)
 parser.add_argument("--filename",  type=str, default=timestamp)
 
 # Add checkpoint arguments
-parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from", default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Sun_Jul_20_18_39_32_2025/checkpoints/dynamics_checkpoint_Sun_Jul_20_18_39_32_2025.pth")
+parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
 parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
 
 # use actions or not
@@ -204,8 +206,7 @@ video_tokenizer = Video_Tokenizer(
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
     dropout=args.dropout, 
-    codebook_size=64,
-    beta=0.01
+    num_bins=args.num_bins
 ).to(device)
 
 # Load video tokenizer checkpoint
@@ -252,9 +253,6 @@ dynamics_model = DynamicsModel(
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
     dropout=args.dropout,
-    height=64,
-    width=64,
-    channels=3
 ).to(device)
 
 """
@@ -382,13 +380,18 @@ def train(use_actions=False):
         target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
 
         # Predict next frame latents using dynamics model
-        predicted_next_latents = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, latent_dim]
+        predicted_next_token_probs = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
         
-        print(f"pred next latents shape: {predicted_next_latents.shape}")
-        print(f"target next latents shape: {target_next_latents.shape}")
-        # Compute dynamics loss
-        dynamics_loss = torch.mean((predicted_next_latents - target_next_latents)**2)
-        
+        # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
+        # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
+        # codebook size = L^latent_dim
+        target_next_tokens = video_tokenizer.vq.get_indices_from_latents(target_next_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
+        print(f"codebook utilization: {torch.unique(target_next_tokens).numel() / video_tokenizer.codebook_size}")
+        target_one_hot = F.one_hot(target_next_tokens, num_classes=video_tokenizer.codebook_size).float() # [batch_size, seq_len-1, num_patches, codebook_size]
+        # Compute dynamics loss (cross entropy between probs and one hot encoded target)
+
+        dynamics_loss = F.cross_entropy(predicted_next_token_probs, target_one_hot)
+
         # Total loss
         loss = dynamics_loss
         loss.backward()
@@ -402,6 +405,9 @@ def train(use_actions=False):
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
+        predicted_next_indices = torch.argmax(predicted_next_token_probs, dim=-1) # [batch_size, seq_len-1, num_patches]
+        predicted_next_latents = video_tokenizer.vq.get_latents_from_indices(predicted_next_indices, dim=-1) # [batch_size, seq_len-1, num_patches, latent_dim]
+        
         # Log to W&B if enabled
         if args.use_wandb:
             # Log training metrics

@@ -29,7 +29,6 @@ parser.add_argument("--n_residual_hiddens", type=int, default=8)
 parser.add_argument("--n_residual_layers", type=int, default=2)
 parser.add_argument("--embedding_dim", type=int, default=64)
 parser.add_argument("--n_embeddings", type=int, default=512)
-parser.add_argument("--beta", type=float, default=0.01)
 parser.add_argument("--learning_rate", type=float, default=4e-4)
 parser.add_argument("--log_interval", type=int, default=100)
 parser.add_argument("--dataset",  type=str, default='SONIC')
@@ -41,10 +40,9 @@ parser.add_argument("--embed_dim", type=int, default=128, help="Embedding dimens
 parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads")
 parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
 parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
-parser.add_argument("--latent_dim", type=int, default=32, help="Latent dimension")
+parser.add_argument("--latent_dim", type=int, default=6, help="Latent dimension")
 parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
-parser.add_argument("--codebook_size", type=int, default=64, help="Number of bins per dimension for finite scalar quantization")
-parser.add_argument("--ema_decay", type=float, default=0.99, help="EMA decay rate for bin updates")
+parser.add_argument("--num_bins", type=int, default=4, help="Number of bins per dimension for finite scalar quantization")
 
 # whether or not to save model
 parser.add_argument("-save", action="store_true", default=True)
@@ -100,8 +98,7 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'num_blocks': args.num_blocks,
             'latent_dim': args.latent_dim,
             'dropout': args.dropout,
-            'num_bins_per_dim': args.codebook_size,
-            'beta': args.beta,
+            'num_bins': args.num_bins,
             'quantization_method': 'Finite Scalar Quantization (FSQ)'
         },
         'training_parameters': {
@@ -174,9 +171,7 @@ model = Video_Tokenizer(
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
     dropout=args.dropout, 
-    codebook_size=args.codebook_size,
-    beta=args.beta,
-    ema_decay=args.ema_decay
+    num_bins=args.num_bins,
 ).to(device)
 
 """
@@ -233,9 +228,7 @@ if args.use_wandb:
         'num_blocks': args.num_blocks,
         'latent_dim': args.latent_dim,
         'dropout': args.dropout,
-        'codebook_size': args.codebook_size,
-        'beta': args.beta,
-        'ema_decay': args.ema_decay
+        'num_bins': args.num_bins,
     }
     
     # Create W&B config

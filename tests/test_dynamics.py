@@ -47,7 +47,7 @@ class TestDynamicsModel:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            latent_dim=16,
+            latent_dim=6,
             dropout=0.1,
             height=64,
             width=64,
@@ -65,9 +65,9 @@ class TestDynamicsModel:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            latent_dim=16,
+            latent_dim=6,
             dropout=0.1,
-            codebook_size=256,
+            num_bins=4,
             beta=0.01
         )
         return model
@@ -83,7 +83,7 @@ class TestDynamicsModel:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            action_dim=16,
+            action_dim=6,
             dropout=0.1
         )
         return model
@@ -109,7 +109,7 @@ class TestDynamicsModel:
         # Create mock latents: [batch_size, seq_len, num_patches, latent_dim]
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)  # Based on patch_size=8
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)  # latent_dim=16
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)  # latent_dim=6
         
         with torch.no_grad():
             predicted_latents = dynamics_model(latents, training=False)
@@ -124,7 +124,7 @@ class TestDynamicsModel:
         # Create mock latents
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         with torch.no_grad():
             predicted_latents = dynamics_model(latents, training=True)
@@ -171,7 +171,7 @@ class TestDynamicsModel:
         # Create mock latents
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         # Test on CPU
         dynamics_model.cpu()
@@ -197,7 +197,7 @@ class TestDynamicsModel:
         # Create mock latents
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         # Forward pass
         predicted_latents = dynamics_model(latents, training=True)
@@ -245,7 +245,7 @@ class TestDynamicsModel:
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            latent_dim=16,
+            latent_dim=6,
             dropout=0.1,
             height=64,
             width=64,
@@ -258,7 +258,7 @@ class TestDynamicsModel:
         new_model.eval()
         
         with torch.no_grad():
-            latents = torch.rand(2, 4, 64, 16)  # [batch_size, seq_len, num_patches, latent_dim]
+            latents = torch.rand(2, 4, 64, 6)  # [batch_size, seq_len, num_patches, latent_dim]
             output1 = dynamics_model(latents)
             output2 = new_model(latents)
             
@@ -271,7 +271,7 @@ class TestDynamicsModel:
         # Create mock latents
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         with torch.no_grad():
             predicted_latents = dynamics_model(latents, training=False)
@@ -291,7 +291,7 @@ class TestDynamicsModel:
         # Create mock latents
         batch_size, seq_len = mock_sequence_data.shape[:2]
         num_patches = (64 // 8) * (64 // 8)
-        latents = torch.rand(batch_size, seq_len, num_patches, 16)
+        latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         with torch.no_grad():
             # Test with training=True (should apply masking)

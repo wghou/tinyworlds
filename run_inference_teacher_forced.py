@@ -40,9 +40,9 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device):
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
         dropout=0.1,
-        codebook_size=64,
+        num_bins=4,
         beta=0.01
     ).to(device)
     
@@ -91,7 +91,7 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device):
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
         dropout=0.1
     ).to(device)
     

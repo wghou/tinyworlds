@@ -212,7 +212,7 @@ class TestFullPipeline:
                 'num_heads': 4,
                 'hidden_dim': 512,
                 'num_blocks': 2,
-                'latent_dim': 16,
+                'latent_dim': 6,
                 'dropout': 0.1
             },
             'training_parameters': {
@@ -246,7 +246,7 @@ class TestFullPipeline:
             'num_heads': 4,
             'hidden_dim': 512,
             'num_blocks': 2,
-            'latent_dim': 16,
+            'latent_dim': 6,
             'dropout': 0.1
         }
         
@@ -257,7 +257,7 @@ class TestFullPipeline:
         assert expected_params['num_heads'] == 4
         assert expected_params['hidden_dim'] == 512
         assert expected_params['num_blocks'] == 2
-        assert expected_params['latent_dim'] == 16
+        assert expected_params['latent_dim'] == 6
         assert expected_params['dropout'] == 0.1
     
     def test_pipeline_directory_structure(self, temp_dir):

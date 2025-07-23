@@ -54,10 +54,9 @@ def _initialize_models():
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
         dropout=0.1,
-        codebook_size=64,
-        beta=0.01
+        num_bins=4
     ).to(DEVICE)
     print("✅ Video tokenizer initialized")
     
@@ -86,7 +85,7 @@ def _initialize_models():
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
         dropout=0.1
     ).to(DEVICE)
     print("✅ Dynamics model initialized")
@@ -122,7 +121,7 @@ def _test_forward_passes(video_tokenizer, lam, dynamics_model):
     # Test dynamics model
     print("Testing dynamics model forward pass...")
     # Create input with video latents (action latents will be added, not concatenated)
-    video_latents = torch.randn(1, 1, 256, 32).to(DEVICE)  # [batch, seq, patches, latent_dim]
+    video_latents = torch.randn(1, 1, 256, 6).to(DEVICE)  # [batch, seq, patches, latent_dim]
     with torch.no_grad():
         next_latents = dynamics_model(video_latents, training=False)
     print(f"✅ Dynamics model: input {video_latents.shape} -> output {next_latents.shape}")
@@ -159,10 +158,9 @@ def test_checkpoint_loading():
                 num_heads=4,
                 hidden_dim=512,
                 num_blocks=2,
-                latent_dim=32,
+                latent_dim=6,
                 dropout=0.1, 
-                codebook_size=64,
-                beta=0.01,
+                num_bins=4,
                 ema_decay=0.99
             ).to(DEVICE)
             
@@ -230,7 +228,7 @@ def test_checkpoint_loading():
                 num_heads=4,
                 hidden_dim=512,
                 num_blocks=2,
-                latent_dim=32,
+                latent_dim=6,
                 dropout=0.1
             ).to(DEVICE)
             

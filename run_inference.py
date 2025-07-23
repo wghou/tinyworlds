@@ -3,7 +3,7 @@ from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
 import argparse
-from src.vqvae.utils import load_data_and_data_loaders
+from src.vqvae.utils import load_data_and_data_loaders, get_latents_from_codebook_indices
 import matplotlib.pyplot as plt
 import time
 import os
@@ -83,9 +83,9 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
         dropout=0.1,
-        codebook_size=64,
+        num_bins=4,
         beta=0.01
     ).to(device)
     
@@ -139,7 +139,8 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         num_heads=4,
         hidden_dim=512,
         num_blocks=2,
-        latent_dim=32,
+        latent_dim=6,
+        num_bins=4,
         dropout=0.1
     ).to(device)
     
@@ -392,11 +393,11 @@ def main(args):
         next_video_latents = predict_next_tokens(
             dynamics_model, video_latents, action_latent, 
             temperature=args.temperature, use_actions=args.use_actions
-        )  # [1, seq_len, num_patches, latent_dim]
+        )  # [1, seq_len, num_patches, codebook_size]
 
         print(f"next_video_latents shape: {next_video_latents.shape}")
 
-        latents_to_decode = next_video_latents
+        latents_to_decode = video_tokenizer.vq.get_latents_from_indices(next_video_latents, dim=-1)
         print(f"latents_to_decode shape: {latents_to_decode.shape}")
         # decode next video tokens to frames
         # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]

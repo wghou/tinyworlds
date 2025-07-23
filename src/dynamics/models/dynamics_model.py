@@ -5,9 +5,10 @@ from einops import rearrange
 
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
-    def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=64, dropout=0.1, height=64, width=64, channels=3):
+    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
+                 hidden_dim=2048, num_blocks=6, latent_dim=6, dropout=0.1, L=4):
         super().__init__()
+        codebook_size = L**latent_dim
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
         
@@ -15,16 +16,19 @@ class Decoder(nn.Module):
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
         # Latent head goes from embed_dim to latent_dim
         self.latent_head = nn.Linear(embed_dim, latent_dim)
+
+        self.mlp = nn.Linear(embed_dim, codebook_size)
+        self.softmax = nn.Softmax(dim=-1)
         
-    def forward(self, latents, training=True):
+    def forward(self, discrete_latents, training=True):
         """
         Args:
-            latents: [batch_size, seq_len, num_patches, latent_dim]
+            discrete_latents: [batch_size, seq_len, num_patches, latent_dim]
             training: Whether in training mode (for masking)
         Returns:
-            next_latents: [batch_size, seq_len, num_patches, latent_dim]
+            next_latents: [batch_size, seq_len, num_patches, codebook_size]
         """
-        batch_size, seq_len, num_patches, latent_dim = latents.shape
+        B, S, N, D = discrete_latents.shape
         
         # Apply random masking during training
         if training and self.training:
@@ -32,35 +36,38 @@ class Decoder(nn.Module):
             masking_rate = torch.rand(1).item() * 0.5 + 0.5  # [0.5, 1.0]
             
             # Create mask with Bernoulli distribution
-            mask = torch.bernoulli(torch.full((batch_size, seq_len), masking_rate, device=latents.device))
-            mask = mask.unsqueeze(-1).unsqueeze(-1)  # [batch_size, seq_len, 1, 1]
+            mask = torch.bernoulli(torch.full((B, S), masking_rate, device=discrete_latents.device))
+            mask = mask.unsqueeze(-1).unsqueeze(-1)  # [B, S, 1, 1]
             
             # Apply mask (zero out masked latents)
-            latents = latents * mask
+            discrete_latents = discrete_latents * mask
 
-        embeddings = self.latent_embed(latents) # [batch_size, seq_len, num_patches, embed_dim]
+        embeddings = self.latent_embed(discrete_latents) # [B, S, N, E]
     
         # The causal mask ensures each position can only attend to previous positions
-        transformed = self.transformer(embeddings)  # [batch_size, seq_len, num_patches, embed_dim]
+        transformed = self.transformer(embeddings)  # [B, S, N, E]
 
         # convert back to latent space
-        next_latents = self.latent_head(transformed)  # [batch_size, seq_len, num_patches, latent_dim]
+        next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
+
+        # softmax over codebook size
+        next_token_probs = self.softmax(next_token_logits)  # [B, S, N, L^D]
         
-        return next_latents  # [batch_size, seq_len, num_patches, latent_dim]
+        return next_token_probs  # [B, S, N, L^D]
 
 class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=64, dropout=0.1, height=64, width=64, channels=3):
+                 hidden_dim=2048, num_blocks=6, latent_dim=32, dropout=0.1, codebook_size=4):
         super().__init__()
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout, height, width, channels)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout,codebook_size)
 
-    def forward(self, latents, training=True):
+    def forward(self, discrete_latents, training=True):
         """
         Args:
-            latents: [batch_size, seq_len, num_patches, latent_dim] video latents with action latents added
+            discrete_latents: [batch_size, seq_len, num_patches, latent_dim] video latents with action latents added
             training: Whether in training mode (for masking)
         Returns:
-            next_latents: [batch_size, seq_len, num_patches, latent_dim]
+            next_latents: [batch_size, seq_len, num_patches, codebook_size]
         """
-        next_latents = self.decoder(latents, training)
+        next_latents = self.decoder(discrete_latents, training)
         return next_latents
