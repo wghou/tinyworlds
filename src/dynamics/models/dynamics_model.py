@@ -18,7 +18,6 @@ class Decoder(nn.Module):
         self.latent_head = nn.Linear(embed_dim, latent_dim)
 
         self.mlp = nn.Linear(embed_dim, codebook_size)
-        self.softmax = nn.Softmax(dim=-1)
         
     def forward(self, discrete_latents, training=True):
         """
@@ -26,7 +25,7 @@ class Decoder(nn.Module):
             discrete_latents: [batch_size, seq_len, num_patches, latent_dim]
             training: Whether in training mode (for masking)
         Returns:
-            next_latents: [batch_size, seq_len, num_patches, codebook_size]
+            next_token_logits: [batch_size, seq_len, num_patches, codebook_size]
         """
         B, S, N, D = discrete_latents.shape
         
@@ -50,10 +49,7 @@ class Decoder(nn.Module):
         # convert back to latent space
         next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
 
-        # softmax over codebook size
-        next_token_probs = self.softmax(next_token_logits)  # [B, S, N, L^D]
-        
-        return next_token_probs  # [B, S, N, L^D]
+        return next_token_logits  # [B, S, N, L^D]
 
 class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,

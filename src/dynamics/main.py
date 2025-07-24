@@ -380,17 +380,21 @@ def train(use_actions=False):
         target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
 
         # Predict next frame latents using dynamics model
-        predicted_next_token_probs = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
-        
+        predicted_next_logits = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
+
         # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
         # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
         # codebook size = L^latent_dim
         target_next_tokens = video_tokenizer.vq.get_indices_from_latents(target_next_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
-        print(f"codebook utilization: {torch.unique(target_next_tokens).numel() / video_tokenizer.codebook_size}")
-        target_one_hot = F.one_hot(target_next_tokens, num_classes=video_tokenizer.codebook_size).float() # [batch_size, seq_len-1, num_patches, codebook_size]
+        # print(f"codebook utilization: {torch.unique(target_next_tokens).numel() / video_tokenizer.codebook_size}")
+        # target_one_hot = F.one_hot(target_next_tokens, num_classes=video_tokenizer.codebook_size).float() # [batch_size, seq_len-1, num_patches, codebook_size]
         # Compute dynamics loss (cross entropy between probs and one hot encoded target)
-
-        dynamics_loss = F.cross_entropy(predicted_next_token_probs, target_one_hot)
+ 
+        print(f"target next tokens shape: {target_next_tokens.shape}, predicted next token logits shape: {predicted_next_logits.shape}")
+        dynamics_loss = F.cross_entropy(
+            predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
+            target_next_tokens.reshape(-1)  # [N]
+        )
 
         # Total loss
         loss = dynamics_loss
@@ -405,7 +409,7 @@ def train(use_actions=False):
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
-        predicted_next_indices = torch.argmax(predicted_next_token_probs, dim=-1) # [batch_size, seq_len-1, num_patches]
+        predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [batch_size, seq_len-1, num_patches]
         predicted_next_latents = video_tokenizer.vq.get_latents_from_indices(predicted_next_indices, dim=-1) # [batch_size, seq_len-1, num_patches, latent_dim]
         
         # Log to W&B if enabled
