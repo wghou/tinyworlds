@@ -56,6 +56,10 @@ parser.add_argument("--use_wandb", action="store_true", default=False, help="Ena
 parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
 parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
 
+# Learning rate scheduler parameters
+parser.add_argument("--lr_step_size", type=int, default=2000, help="Step size for learning rate decay")
+parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -107,7 +111,9 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'learning_rate': args.learning_rate,
             'log_interval': args.log_interval,
             'context_length': args.context_length,
-            'dataset': args.dataset
+            'dataset': args.dataset,
+            'lr_step_size': args.lr_step_size,
+            'lr_gamma': args.lr_gamma
         },
         'checkpoint_info': {
             'checkpoint_path': args.checkpoint,
@@ -180,7 +186,7 @@ Set up optimizer and training loop
 optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, amsgrad=True)
 
 # Add learning rate scheduler for better convergence
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.5)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
 """
 Load checkpoint if specified
