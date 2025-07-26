@@ -3,13 +3,12 @@ from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
 import argparse
-from src.vqvae.utils import load_data_and_data_loaders, get_latents_from_codebook_indices
+from src.vqvae.utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt
 import time
 import os
-import cv2
-import numpy as np
 import random
+import glob
 
 def predict_next_tokens(dynamics_model, video_latents, action_latent=None, temperature=1.0, use_actions=True):
     """Use dynamics model to predict next video tokens with temperature sampling"""
@@ -85,8 +84,7 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         num_blocks=2,
         latent_dim=6,
         dropout=0.1,
-        num_bins=4,
-        beta=0.01
+        num_bins=4
     ).to(device)
     
     # Try loading with weights_only=True first, fallback to False if it fails
@@ -390,18 +388,21 @@ def main(args):
         print(f"video_latents shape: {video_latents.shape}")
 
         # predict next video tokens using all current video latents
-        next_video_latents = predict_next_tokens(
+        next_video_logits = predict_next_tokens(
             dynamics_model, video_latents, action_latent, 
             temperature=args.temperature, use_actions=args.use_actions
         )  # [1, seq_len, num_patches, codebook_size]
 
-        print(f"next_video_latents shape: {next_video_latents.shape}")
+        print(f"next_video_latents shape: {next_video_logits.shape}")
 
-        latents_to_decode = video_tokenizer.vq.get_latents_from_indices(next_video_latents, dim=-1)
-        print(f"latents_to_decode shape: {latents_to_decode.shape}")
+        # get indices o
+        next_video_indices = torch.argmax(next_video_logits, dim=-1) # [1, seq_len, num_patches]
+
+        next_video_latents = video_tokenizer.vq.get_latents_from_indices(next_video_indices, dim=-1)
+        print(f"next_video_latents shape: {next_video_latents.shape}")
         # decode next video tokens to frames
         # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
-        next_frames = video_tokenizer.decoder(latents_to_decode)  # [1, seq_len, C, H, W]
+        next_frames = video_tokenizer.decoder(next_video_latents)  # [1, seq_len, C, H, W]
 
         print(f"next_frames shape: {next_frames.shape}")
         print(f"ground_truth_sequence shape: {ground_truth_sequence.shape}")
@@ -437,6 +438,7 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
+    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer and dynamics checkpoints.")
     return parser.parse_args()
 
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
@@ -483,7 +485,28 @@ def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
     plt.close()
     print(f"Decoded sequence visualization saved to: {save_path}")
 
+def find_latest_checkpoint(base_dir, model_name):
+    pattern = os.path.join(base_dir, f"src/*/results/{model_name}_*/checkpoints/{model_name}_checkpoint_*.pth")
+    checkpoint_files = glob.glob(pattern)
+    if not checkpoint_files:
+        print(f"No checkpoint files found for {model_name}")
+        return None
+    return max(checkpoint_files, key=os.path.getctime)
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.use_latest_checkpoints:
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+        vt_ckpt = find_latest_checkpoint(base_dir, "videotokenizer")
+        dyn_ckpt = find_latest_checkpoint(base_dir, "dynamics")
+        if vt_ckpt:
+            print(f"[INFO] Using latest video tokenizer checkpoint: {vt_ckpt}")
+            args.video_tokenizer_path = vt_ckpt
+        else:
+            print("[WARN] No video tokenizer checkpoint found, using default.")
+        if dyn_ckpt:
+            print(f"[INFO] Using latest dynamics checkpoint: {dyn_ckpt}")
+            args.dynamics_path = dyn_ckpt
+        else:
+            print("[WARN] No dynamics checkpoint found, using default.")
     main(args)

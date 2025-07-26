@@ -6,9 +6,9 @@ from einops import rearrange
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=6, dropout=0.1, L=4):
+                 hidden_dim=2048, num_blocks=6, latent_dim=6, dropout=0.1, num_bins=4):
         super().__init__()
-        codebook_size = L**latent_dim
+        codebook_size = num_bins**latent_dim
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
         
@@ -53,9 +53,9 @@ class Decoder(nn.Module):
 
 class DynamicsModel(nn.Module):
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=32, dropout=0.1, codebook_size=4):
+                 hidden_dim=2048, num_blocks=6, latent_dim=32, dropout=0.1, num_bins=4):
         super().__init__()
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout,codebook_size)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout, num_bins)
 
     def forward(self, discrete_latents, training=True):
         """

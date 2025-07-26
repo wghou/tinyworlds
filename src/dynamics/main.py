@@ -87,6 +87,10 @@ parser.add_argument("--use_wandb", action="store_true", default=False, help="Ena
 parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
 parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
 
+# Learning rate scheduler parameters
+parser.add_argument("--lr_step_size", type=int, default=1000, help="Step size for learning rate decay")
+parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -139,7 +143,9 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'learning_rate': args.learning_rate,
             'log_interval': args.log_interval,
             'context_length': args.context_length,
-            'dataset': args.dataset
+            'dataset': args.dataset,
+            'lr_step_size': args.lr_step_size,
+            'lr_gamma': args.lr_gamma
         },
         'pretrained_models': {
             'video_tokenizer_path': args.video_tokenizer_path,
@@ -259,6 +265,7 @@ dynamics_model = DynamicsModel(
 Set up optimizer and training loop
 """
 optimizer = optim.Adam(dynamics_model.parameters(), lr=args.learning_rate, amsgrad=True)
+scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
 """
 Load checkpoint if specified
@@ -404,6 +411,7 @@ def train(use_actions=False):
         torch.nn.utils.clip_grad_norm_(dynamics_model.parameters(), max_norm=1.0)
         
         optimizer.step()
+        scheduler.step()  # Step the learning rate scheduler
 
         results["dynamics_losses"].append(dynamics_loss.cpu().detach())
         results["loss_vals"].append(loss.cpu().detach())

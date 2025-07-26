@@ -272,7 +272,7 @@ def train():
 
         x_hat = model(x)
 
-        recon_loss = torch.mean((x_hat - x)**2) / x_train_var
+        recon_loss = torch.mean((x_hat - x)**2)
         recon_loss.backward()
         
         # Clip gradients to prevent instability
