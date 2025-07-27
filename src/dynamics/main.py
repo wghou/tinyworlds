@@ -13,7 +13,6 @@ import torch.nn.functional as F
 # Add the project root to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-import utils
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
 from src.dynamics.models.dynamics_model import DynamicsModel

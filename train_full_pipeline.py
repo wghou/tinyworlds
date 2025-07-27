@@ -131,39 +131,39 @@ def main():
     print(f"✅ Found SONIC dataset at {sonic_data_path}")
     
     # Step 1: Train Video Tokenizer
-    print("\n" + "="*60)
-    print("STEP 1: Training Video Tokenizer on SONIC")
-    print("="*60)
+    # print("\n" + "="*60)
+    # print("STEP 1: Training Video Tokenizer on SONIC")
+    # print("="*60)
     
-    video_tokenizer_cmd = [
-        sys.executable, "src/vqvae/main.py",
-        "--dataset", "SONIC",
-        "--batch_size", "16",
-        "--n_updates", "5000",  # Reduced for faster training
-        "--learning_rate", "1e-4",  # Increased from 1e-4 for better convergence
-        "--log_interval", "100",
-        "--context_length", "4",
-        "--patch_size", "4",
-        "--embed_dim", "256",
-        "--num_heads", "8",
-        "--hidden_dim", "512",
-        "--num_blocks", "4",
-        "--latent_dim", "6",
-        "--dropout", "0.1",
-        "--num_bins", "4",  # Number of bins per dimension for FSQ
-        "--use_wandb"
-    ]
+    # video_tokenizer_cmd = [
+    #     sys.executable, "src/vqvae/main.py",
+    #     "--dataset", "SONIC",
+    #     "--batch_size", "16",
+    #     "--n_updates", "5000",  # Reduced for faster training
+    #     "--learning_rate", "1e-4",  # Increased from 1e-4 for better convergence
+    #     "--log_interval", "100",
+    #     "--context_length", "4",
+    #     "--patch_size", "4",
+    #     "--embed_dim", "256",
+    #     "--num_heads", "8",
+    #     "--hidden_dim", "512",
+    #     "--num_blocks", "4",
+    #     "--latent_dim", "6",
+    #     "--dropout", "0.1",
+    #     "--num_bins", "4",  # Number of bins per dimension for FSQ
+    #     "--use_wandb"
+    # ]
     
-    # # Add W&B arguments if enabled
-    if args.use_wandb:
-        video_tokenizer_cmd.extend([
-            "--use_wandb",
-            "--wandb_project", f"{args.wandb_project}"
-        ])
+    # # # Add W&B arguments if enabled
+    # if args.use_wandb:
+    #     video_tokenizer_cmd.extend([
+    #         "--use_wandb",
+    #         "--wandb_project", f"{args.wandb_project}"
+    #     ])
     
-    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-        print("❌ Video tokenizer training failed. Stopping pipeline.")
-        return
+    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
+    #     return
     
     # Step 2: Train LAM
     # print("\n" + "="*60)
