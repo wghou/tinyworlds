@@ -248,7 +248,8 @@ class FiniteScalarQuantizer(nn.Module):
         super().__init__()
         self.num_bins = num_bins
         self.levels_np = torch.tensor(latent_dim * [num_bins])
-        self.basis = num_bins**torch.arange(latent_dim)
+        # Register basis as a buffer so it gets moved to the correct device
+        self.register_buffer('basis', num_bins**torch.arange(latent_dim))
 
     def scale_and_shift(self, z):
         """
