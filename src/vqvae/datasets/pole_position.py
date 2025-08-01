@@ -1,4 +1,4 @@
-"""Dataset for loading Sonic video frames using HDF5 storage"""
+"""Dataset for loading Pole Position video frames using HDF5 storage"""
 
 from torch.utils.data import Dataset
 import cv2
@@ -8,20 +8,21 @@ from tqdm import tqdm
 import numpy as np
 import torch
 
-class SonicDataset(Dataset):
+class PolePositionDataset(Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
-        self.fps = 15
+        self.fps = 30
         self.frame_skip = 60 // self.fps
-        self.fraction_of_frames = 0.1
+        self.fraction_of_frames = 1.0
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
             n_frames = int(len(frames) * self.fraction_of_frames)
+            print(f"Loading {n_frames} frames from {save_path}")
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM
@@ -68,7 +69,7 @@ class SonicDataset(Dataset):
         frames = []
         
         # Maybe skip frames to reduce dataset size
-        frame_skip = 60  # Only keep every 60th frame, so 1 Hz
+        frame_skip = 6  # Only keep every 6th frame, so 10 Hz
         
         for i in tqdm(range(0, total_frames, frame_skip), desc="Processing video frames"):
             video.set(cv2.CAP_PROP_POS_FRAMES, i)

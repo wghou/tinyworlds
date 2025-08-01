@@ -7,6 +7,7 @@ import os
 from src.vqvae.datasets.block import BlockDataset, LatentBlockDataset
 from src.vqvae.datasets.pong import PongDataset
 from src.vqvae.datasets.sonic import SonicDataset
+from src.vqvae.datasets.pole_position import PolePositionDataset
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
@@ -85,7 +86,7 @@ def load_pong(num_frames=1):
     
     return train, val
 
-def load_sonic(num_frames=1):
+def load_sonic(num_frames=4):
     """loads sonic dataset"""
     current_folder_path = os.getcwd()
     video_path = current_folder_path + '/data/sonic.mp4'
@@ -107,6 +108,29 @@ def load_sonic(num_frames=1):
                        train=False,
                        num_frames=num_frames)
     return train, val
+
+def load_pole_position(num_frames=4):
+    current_folder_path = os.getcwd()
+    video_path = current_folder_path + '/data/pole_position.mp4'
+    preprocessed_path = current_folder_path + '/data/pole_position_frames.h5'
+    
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+
+    train = PolePositionDataset(video_path, 
+                       transform=transform,
+                       save_path=preprocessed_path,
+                       train=True,
+                       num_frames=num_frames)
+    val = PolePositionDataset(video_path, 
+                       transform=transform,
+                       save_path=preprocessed_path,
+                       train=False,
+                       num_frames=num_frames)
+    return train, val
+
 
 def data_loaders(train_data, val_data, batch_size):
 
@@ -149,6 +173,12 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
         x_train_var = np.var(training_data.data)
     elif dataset == 'SONIC':
         training_data, validation_data = load_sonic(num_frames=num_frames)
+        training_loader, validation_loader = data_loaders(
+            training_data, validation_data, batch_size)
+
+        x_train_var = np.var(training_data.data)
+    elif dataset == 'POLE_POSITION':
+        training_data, validation_data = load_pole_position()
         training_loader, validation_loader = data_loaders(
             training_data, validation_data, batch_size)
 

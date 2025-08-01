@@ -124,7 +124,7 @@ def visualize_multiple_batches(dataloader, num_batches=3, save_dir="batch_visual
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize video sequence batches")
-    parser.add_argument("--dataset", type=str, default="SONIC", help="Dataset to use")
+    parser.add_argument("--dataset", type=str, default="POLE_POSITION", help="Dataset to use")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--seq_length", type=int, default=8, help="Sequence length")
     parser.add_argument("--num_batches", type=int, default=1, help="Number of batches to visualize")

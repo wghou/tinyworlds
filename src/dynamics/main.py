@@ -56,10 +56,10 @@ parser.add_argument("--context_length", type=int, default=4)
 
 # Model architecture parameters - must match the video tokenizer parameters
 parser.add_argument("--patch_size", type=int, default=4)  # Match video tokenizer
-parser.add_argument("--embed_dim", type=int, default=128)  # Match video tokenizer
-parser.add_argument("--num_heads", type=int, default=4)   # Match video tokenizer
+parser.add_argument("--embed_dim", type=int, default=256)  # Match video tokenizer
+parser.add_argument("--num_heads", type=int, default=8)   # Match video tokenizer
 parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
-parser.add_argument("--num_blocks", type=int, default=2)  # Match video tokenizer
+parser.add_argument("--num_blocks", type=int, default=4)  # Match video tokenizer
 parser.add_argument("--latent_dim", type=int, default=6)  # Match video tokenizer latent_dim
 parser.add_argument("--num_bins", type=int, default=4)  # Match video tokenizer num_bins
 parser.add_argument("--dropout", type=float, default=0.1)
@@ -223,27 +223,27 @@ if os.path.isfile(args.video_tokenizer_path):
 else:
     raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
-# print("Loading pre-trained latent action model...")
-# lam = LAM(
-#     frame_size=(64, 64),
-#     n_actions=8,  # Match full pipeline
-#     patch_size=args.patch_size,  # Use command line patch_size
-#     embed_dim=args.embed_dim,
-#     num_heads=args.num_heads,
-#     hidden_dim=args.hidden_dim,
-#     num_blocks=args.num_blocks,
-#     action_dim=32,  # Match full pipeline
-#     dropout=args.dropout
-# ).to(device)
+print("Loading pre-trained latent action model...")
+lam = LAM(
+    frame_size=(64, 64),
+    n_actions=8,  # Match full pipeline
+    patch_size=4,  # Match LAM training (updated from 2)
+    embed_dim=128,  # Match LAM training
+    num_heads=4,  # Match LAM training
+    hidden_dim=512,  # Match LAM training
+    num_blocks=2,  # Match LAM training
+    action_dim=6,  # Match LAM training
+    dropout=0.1  # Match LAM training
+).to(device)
 
-# # Load LAM checkpoint
-# if os.path.isfile(args.lam_path):
-#     print(f"Loading LAM from {args.lam_path}")
-#     checkpoint = torch.load(args.lam_path, map_location=device)
-#     lam.load_state_dict(checkpoint['model'])
-#     lam.eval()  # Set to evaluation mode
-# else:
-#     raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
+# Load LAM checkpoint
+if os.path.isfile(args.lam_path):
+    print(f"Loading LAM from {args.lam_path}")
+    checkpoint = torch.load(args.lam_path, map_location=device)
+    lam.load_state_dict(checkpoint['model'])
+    lam.eval()  # Set to evaluation mode
+else:
+    raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
 
 """
 Set up dynamics model
@@ -370,7 +370,8 @@ def train(use_actions=False):
                 
                 # Pad the quantized actions at the end to match the sequence length
                 batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape # [batch_size, seq_len, num_patches, latent_dim]
-                zero_action = torch.zeros(batch_size, 1, 32, device=device)  # [batch_size, 1, action_dim]
+                action_dim = quantized_actions.shape[-1]  # Get the actual action dimension from the LAM
+                zero_action = torch.zeros(batch_size, 1, action_dim, device=device)  # [batch_size, 1, action_dim]
                 quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1) # [batch_size, seq_len, action_dim]
                 
                 # Expand action latents to match patch dimension
@@ -464,4 +465,4 @@ def train(use_actions=False):
         finish_wandb()
 
 if __name__ == "__main__":
-    train()
+    train(use_actions=True)

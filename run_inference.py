@@ -1,3 +1,5 @@
+# python run_inference.py --use_latest_checkpoints --use_actions
+
 import torch
 from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
@@ -110,7 +112,7 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
             num_heads=4,
             hidden_dim=512,
             num_blocks=2,
-            action_dim=32,  # Match checkpoint (was 16)
+            action_dim=6,  # Match checkpoint (was 16)
             dropout=0.1,
             beta=1.0
         ).to(device)
@@ -438,7 +440,7 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
-    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer and dynamics checkpoints.")
+    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     return parser.parse_args()
 
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
@@ -498,12 +500,21 @@ if __name__ == "__main__":
     if args.use_latest_checkpoints:
         base_dir = os.path.abspath(os.path.dirname(__file__))
         vt_ckpt = find_latest_checkpoint(base_dir, "videotokenizer")
+        lam_ckpt = find_latest_checkpoint(base_dir, "lam")
         dyn_ckpt = find_latest_checkpoint(base_dir, "dynamics")
+        
         if vt_ckpt:
             print(f"[INFO] Using latest video tokenizer checkpoint: {vt_ckpt}")
             args.video_tokenizer_path = vt_ckpt
         else:
             print("[WARN] No video tokenizer checkpoint found, using default.")
+            
+        if lam_ckpt:
+            print(f"[INFO] Using latest LAM checkpoint: {lam_ckpt}")
+            args.lam_path = lam_ckpt
+        else:
+            print("[WARN] No LAM checkpoint found, using default.")
+            
         if dyn_ckpt:
             print(f"[INFO] Using latest dynamics checkpoint: {dyn_ckpt}")
             args.dynamics_path = dyn_ckpt
