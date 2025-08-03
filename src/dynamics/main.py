@@ -220,6 +220,10 @@ if os.path.isfile(args.video_tokenizer_path):
     checkpoint = torch.load(args.video_tokenizer_path, map_location=device)
     video_tokenizer.load_state_dict(checkpoint['model'])
     video_tokenizer.eval()  # Set to evaluation mode
+    # Freeze all parameters to prevent gradient computation
+    for param in video_tokenizer.parameters():
+        param.requires_grad = False
+    print("✅ Video tokenizer loaded and frozen")
 else:
     raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
@@ -242,6 +246,10 @@ if os.path.isfile(args.lam_path):
     checkpoint = torch.load(args.lam_path, map_location=device)
     lam.load_state_dict(checkpoint['model'])
     lam.eval()  # Set to evaluation mode
+    # Freeze all parameters to prevent gradient computation
+    for param in lam.parameters():
+        param.requires_grad = False
+    print("✅ LAM loaded and frozen")
 else:
     raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
 
@@ -258,6 +266,7 @@ dynamics_model = DynamicsModel(
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
     dropout=args.dropout,
+    
 ).to(device)
 
 """
@@ -352,42 +361,42 @@ def train(use_actions=False):
         x = x.to(device)  # [batch_size, seq_len, channels, height, width]
         optimizer.zero_grad()
 
-        # Get video tokenizer latents for current frames
+        # Get video tokenizer latents for current frames (frozen model)
         with torch.no_grad():
             video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
+            
             # Apply vector quantization to get discrete latents
             quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
-        
-        if use_actions:
-            # Get action latents for frame transitions
-            with torch.no_grad():
-                # Encode frame sequences to get actions
-                actions, _ = lam.encoder(x)  # [batch_size, seq_len-1, action_dim]
-                # Quantize actions
+            
+            if use_actions:
+                actions, _ = lam.encoder(x)  # [batch_size, seq_len, action_dim]
+                
+                # Quantize actions (TODO: is reshape necessary?)
                 actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
                 _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
                 quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
                 
-                # Pad the quantized actions at the end to match the sequence length
-                batch_size, seq_len, num_patches, latent_dim = quantized_video_latents.shape # [batch_size, seq_len, num_patches, latent_dim]
-                action_dim = quantized_actions.shape[-1]  # Get the actual action dimension from the LAM
-                zero_action = torch.zeros(batch_size, 1, action_dim, device=device)  # [batch_size, 1, action_dim]
-                quantized_actions_padded = torch.cat([quantized_actions, zero_action], dim=1) # [batch_size, seq_len, action_dim]
-                
-                # Expand action latents to match patch dimension
-                quantized_actions_padded = rearrange(quantized_actions_padded, 'b s a -> b s 1 a')  # [batch_size, seq_len, 1, action_dim]
+                # expand actions to add num_patches dimension
+                quantized_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
+            
+                # pad last index of seq_len dimension of quantized actions with 0
+                quantized_actions = torch.cat([quantized_actions, torch.zeros_like(quantized_actions[:, -1:])], dim=1) # [batch_size, seq_len, 1, action_dim]
 
-            # Combine video latents and action latents
-            input_latents = quantized_video_latents + quantized_actions_padded  # [batch_size, seq_len, num_patches, latent_dim]
-        else:
-            input_latents = quantized_video_latents
+                # Combine video latents and action latents
+                input_latents = quantized_video_latents + quantized_actions  # [batch_size, seq_len, num_patches, latent_dim]
+            else:
+                input_latents = quantized_video_latents
 
-        # [a,b,c,d] -> [a,b,c] to predict [b,c,d]
-        input_latents = input_latents[:, :-1] # [batch_size, seq_len-1, num_patches, latent_dim]
-        target_next_latents = quantized_video_latents[:, 1:]  # [batch_size, seq_len-1, num_patches, latent_dim]
+        target_next_latents = quantized_video_latents  # [batch_size, seq_len, num_patches, latent_dim]
 
         # Predict next frame latents using dynamics model
-        predicted_next_logits = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
+        # The masking is now handled inside the dynamics model (MaskGit-style)
+        predicted_next_logits, mask_positions = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
+        
+        if mask_positions is not None:
+            num_masked = mask_positions.sum().item()
+            total_positions = mask_positions.numel()
+            masking_rate = num_masked / total_positions
 
         # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
         # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
@@ -397,11 +406,35 @@ def train(use_actions=False):
         # target_one_hot = F.one_hot(target_next_tokens, num_classes=video_tokenizer.codebook_size).float() # [batch_size, seq_len-1, num_patches, codebook_size]
         # Compute dynamics loss (cross entropy between probs and one hot encoded target)
  
-        print(f"target next tokens shape: {target_next_tokens.shape}, predicted next token logits shape: {predicted_next_logits.shape}")
-        dynamics_loss = F.cross_entropy(
-            predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
-            target_next_tokens.reshape(-1)  # [N]
-        )
+        # Compute loss only on masked tokens (MaskGit-style)
+        if mask_positions is not None:
+            # mask_positions: [B, S, N] where True = masked, False = keep
+            # We want to compute loss only on masked tokens (True values)
+            mask_for_loss = mask_positions
+            # Flatten for loss computation
+            masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [N, codebook_size]
+            masked_targets = target_next_tokens.reshape(-1)  # [N]
+            masked_mask = mask_for_loss.reshape(-1)  # [N]
+            
+            # Only compute loss on masked tokens
+            if masked_mask.sum() > 0:  # If there are masked tokens
+                # Ensure shapes match
+                assert masked_logits.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_logits.shape[0]} vs {masked_mask.shape[0]}"
+                assert masked_targets.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_targets.shape[0]} vs {masked_mask.shape[0]}"
+                
+                masked_logits = masked_logits[masked_mask]  # [num_masked, codebook_size]
+                masked_targets = masked_targets[masked_mask]  # [num_masked]
+                
+                dynamics_loss = F.cross_entropy(masked_logits, masked_targets)
+            else:
+                # If no tokens were masked, use a small dummy loss
+                dynamics_loss = torch.tensor(0.0, device=predicted_next_logits.device, requires_grad=True)
+        else:
+            # During evaluation, compute loss on all tokens
+            dynamics_loss = F.cross_entropy(
+                predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
+                target_next_tokens.reshape(-1),  # [N]
+            )
 
         # Total loss
         loss = dynamics_loss
@@ -425,7 +458,8 @@ def train(use_actions=False):
             # Log training metrics
             metrics = {
                 'dynamics_loss': dynamics_loss.item(),
-                'total_loss': loss.item()
+                'total_loss': loss.item(),
+                'masking_rate': masking_rate
             }
             log_training_metrics(i, metrics, prefix="train")
             # Log system metrics
@@ -451,10 +485,48 @@ def train(use_actions=False):
                 predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, seq_len-1, ...]
  
                 # Ground truth frames
-                target_frames_full = x[:16, 1:]  # [B, seq_len, ...]
+                target_frames_full = x[:16, 1:]  # [B, seq_len-1, ...]
+
+                # Display the masked patches in the ground truth frames as black
+                masked_target_frames_full = target_frames_full.clone()
+                
+                # Convert mask_positions to patch-level mask for visualization
+                if mask_positions is not None:
+                    # mask_positions: [B, S, N] where N is number of patches
+                    # We need to convert this to pixel-level mask
+                    B, S, N = mask_positions.shape
+                    patch_size = 4  # Assuming 4x4 patches
+                    H, W = 64, 64  # Frame size
+                    
+                    # Create pixel-level mask for the target frames (which have seq_len-1)
+                    # We need to slice mask_positions to match target_frames_full
+                    mask_for_viz = mask_positions[:, 1:]  # Remove first timestep to match target_frames_full
+                    B_viz, S_viz, N_viz = mask_for_viz.shape
+                    
+                    # Create pixel-level mask
+                    pixel_mask = torch.zeros(B_viz, S_viz, H, W, device=mask_positions.device)
+                    
+                    # For each batch and sequence, convert patch mask to pixel mask
+                    for b in range(B_viz):
+                        for s in range(S_viz):
+                            patch_mask = mask_for_viz[b, s]  # [N]
+                            # Convert patch indices to pixel coordinates
+                            for patch_idx in range(N_viz):
+                                if patch_mask[patch_idx]:  # If patch is masked
+                                    # Calculate patch position
+                                    patch_row = (patch_idx // (W // patch_size)) * patch_size
+                                    patch_col = (patch_idx % (W // patch_size)) * patch_size
+                                    # Set patch pixels to black (0)
+                                    pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
+                    
+                    # Apply mask to frames (set masked patches to black)
+                    # pixel_mask: [B_viz, S_viz, H, W], masked_target_frames_full: [B_viz, S_viz, C, H, W]
+                    # Need to expand pixel_mask to include channel dimension
+                    pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)  # [B_viz, S_viz, C, H, W]
+                    masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
 
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
-                visualize_reconstruction(target_frames_full[:16], predicted_frames[:16], save_path)
+                visualize_reconstruction(masked_target_frames_full[:16], predicted_frames[:16], save_path)
 
             print('Update #', i, 'Dynamics Loss:',
                   torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),

@@ -123,7 +123,7 @@ def _test_forward_passes(video_tokenizer, lam, dynamics_model):
     # Create input with video latents (action latents will be added, not concatenated)
     video_latents = torch.randn(1, 1, 256, 6).to(DEVICE)  # [batch, seq, patches, latent_dim]
     with torch.no_grad():
-        next_latents = dynamics_model(video_latents, training=False)
+        next_latents, _ = dynamics_model(video_latents, training=False)
     print(f"✅ Dynamics model: input {video_latents.shape} -> output {next_latents.shape}")
     
     return True
@@ -434,7 +434,7 @@ def test_inference_pipeline():
     combined_latents = combined_latents.unsqueeze(1)  # Add sequence dimension
     
     with torch.no_grad():
-        next_video_latents = dynamics_model(combined_latents, training=False)
+        next_video_latents, _ = dynamics_model(combined_latents, training=False)
         next_video_latents = next_video_latents.squeeze(1)
     print(f"Predicted next video tokens: {next_video_latents.shape}")
     

@@ -336,7 +336,7 @@ def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
     # Load data and get ground truth sequence
-    _, _, data_loader, _, _ = load_data_and_data_loaders(dataset='SONIC', batch_size=1, num_frames=4)  # +1 for initial frame
+    _, _, data_loader, _, _ = load_data_and_data_loaders(dataset='POLE_POSITION', batch_size=1, num_frames=4)  # +1 for initial frame
     random_idx = random.randint(0, len(data_loader.dataset) - 1)
     ground_truth_sequence = data_loader.dataset[random_idx][0]  # Get the full sequence
     ground_truth_sequence = ground_truth_sequence.unsqueeze(0).to(args.device)  # [1, seq_len, C, H, W]

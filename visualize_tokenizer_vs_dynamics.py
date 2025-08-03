@@ -114,7 +114,7 @@ def main(args):
         tokenizer_recon = video_tokenizer.decoder(quantized_latents, training=False)  # [1, seq_len, C, H, W]
         print(f"Tokenizer recon shape: {tokenizer_recon.shape}")
         # Run dynamics model on quantized latents
-        predicted_latents = dynamics_model(quantized_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
+        predicted_latents, _ = dynamics_model(quantized_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
         print(f"Dynamics model predicted latents shape: {predicted_latents.shape}")
         # Detokenize (decode predicted latents)
         dynamics_recon = video_tokenizer.decoder(predicted_latents, training=False)  # [1, seq_len, C, H, W]

@@ -112,7 +112,7 @@ class TestDynamicsModel:
         latents = torch.rand(batch_size, seq_len, num_patches, 6)  # latent_dim=6
         
         with torch.no_grad():
-            predicted_latents = dynamics_model(latents, training=False)
+            predicted_latents, _ = dynamics_model(latents, training=False)
             
             # Check output shape: should be same as input latents
             assert predicted_latents.shape == latents.shape
@@ -127,7 +127,7 @@ class TestDynamicsModel:
         latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         with torch.no_grad():
-            predicted_latents = dynamics_model(latents, training=True)
+            predicted_latents, _ = dynamics_model(latents, training=True)
             
             # Check output shape
             assert predicted_latents.shape == latents.shape
@@ -160,7 +160,7 @@ class TestDynamicsModel:
             combined_latents = quantized_video_latents + quantized_actions_padded
             
             # Step 5: Predict next latents using dynamics model
-            predicted_next_latents = dynamics_model(combined_latents, training=False)
+            predicted_next_latents, _ = dynamics_model(combined_latents, training=False)
             
             # Check shapes
             assert predicted_next_latents.shape == combined_latents.shape
@@ -178,7 +178,7 @@ class TestDynamicsModel:
         dynamics_model.eval()
         
         with torch.no_grad():
-            predicted_latents = dynamics_model(latents.cpu())
+            predicted_latents, _ = dynamics_model(latents.cpu())
             assert predicted_latents.device == torch.device('cpu')
         
         # Test on GPU if available
@@ -187,7 +187,7 @@ class TestDynamicsModel:
             dynamics_model.eval()
             
             with torch.no_grad():
-                predicted_latents = dynamics_model(latents.cuda())
+                predicted_latents, _ = dynamics_model(latents.cuda())
                 assert predicted_latents.device == torch.device('cuda')
     
     def test_gradient_flow(self, dynamics_model, mock_sequence_data):
@@ -200,7 +200,7 @@ class TestDynamicsModel:
         latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         # Forward pass
-        predicted_latents = dynamics_model(latents, training=True)
+        predicted_latents, _ = dynamics_model(latents, training=True)
         
         # Compute loss
         loss = torch.mean((predicted_latents - latents)**2)
@@ -259,8 +259,8 @@ class TestDynamicsModel:
         
         with torch.no_grad():
             latents = torch.rand(2, 4, 64, 6)  # [batch_size, seq_len, num_patches, latent_dim]
-            output1 = dynamics_model(latents)
-            output2 = new_model(latents)
+            output1, _ = dynamics_model(latents)
+            output2, _ = new_model(latents)
             
             assert torch.allclose(output1, output2, atol=1e-6)
     
@@ -274,7 +274,7 @@ class TestDynamicsModel:
         latents = torch.rand(batch_size, seq_len, num_patches, 6)
         
         with torch.no_grad():
-            predicted_latents = dynamics_model(latents, training=False)
+            predicted_latents, _ = dynamics_model(latents, training=False)
             
             # Check that predicted latents have reasonable values
             assert not torch.isnan(predicted_latents).any()
@@ -295,13 +295,17 @@ class TestDynamicsModel:
         
         with torch.no_grad():
             # Test with training=True (should apply masking)
-            predicted_training = dynamics_model(latents, training=True)
+            predicted_training, mask_training = dynamics_model(latents, training=True)
             
             # Test with training=False (should not apply masking)
-            predicted_eval = dynamics_model(latents, training=False)
+            predicted_eval, mask_eval = dynamics_model(latents, training=False)
             
             # Both should have same shape
             assert predicted_training.shape == predicted_eval.shape
+            
+            # During training, mask should be returned; during eval, it should be None
+            assert mask_training is not None or not dynamics_model.training
+            assert mask_eval is None
     
     def test_checkpoint_loading(self, dynamics_model, video_tokenizer_model, lam_model, temp_dir):
         """Test checkpoint loading functionality"""
