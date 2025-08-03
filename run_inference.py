@@ -331,7 +331,11 @@ def get_model_context_sizes(video_tokenizer, dynamics_model):
 def exp_schedule_torch(t, T, N, k=5.0):
     x = t / T
     k_tensor = torch.tensor(k)
-    return N * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
+    result = N * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
+    # Ensure we reach N by the final step
+    if t == T - 1:
+        return torch.tensor(N, dtype=result.dtype)
+    return result
 
 def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
@@ -415,7 +419,6 @@ def main(args):
         if args.use_actions:
             current_latents = current_latents + action_latent # [1, seq_len, num_patches, latent_dim]
 
-        print(f"DEBUG: current_latents shape: {current_latents.shape}")
         # append mask frame
         mask_token_value = dynamics_model.decoder.mask_token.data  # Extract the actual tensor value
         # Expand mask token to match the required shape: [1, 1, N, latent_dim]
@@ -423,13 +426,11 @@ def main(args):
 
         input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
 
-        print(f"DEBUG: input_latents shape: {input_latents.shape}")
         mask = torch.full((1, 1, N, 1), True, dtype=torch.bool)  # [1, 1, num_patches, 1]
 
         n_tokens = 0
         
         masked_latents = current_latents.clone()
-        print(f"DEBUG: masked_latents shape: {masked_latents.shape}")
 
         for t in range(T):
             # Calculate how many tokens to unmask at this step
@@ -437,32 +438,30 @@ def main(args):
             # n_tokens = int(torch.cos(torch.tensor(t / T)) * N)
             # n_tokens = min(n_tokens, N)  # Ensure we don't exceed N
             prev_n_tokens = n_tokens
-            n_tokens = int(exp_schedule_torch(t, T, N))
+            n_tokens_raw = exp_schedule_torch(t, T, N)
+            n_tokens = int(n_tokens_raw)
             tokens_to_unmask = n_tokens - prev_n_tokens
-            print(f"DEBUG: t={t}, prev_n_tokens={prev_n_tokens}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
+            print(f"DEBUG: t={t}, n_tokens_raw={n_tokens_raw:.2f}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
             
             # Run dynamics model to get predictions
             with torch.no_grad():
                 predicted_logits, _ = dynamics_model(masked_latents, training=False)  # [B, S, N, codebook_size]
             
-            print(f"DEBUG: predicted_logits shape: {predicted_logits.shape}")
             # Get probabilities and top predictions
             probs = torch.softmax(predicted_logits, dim=-1)  # [B, S, N, codebook_size]
 
-            print(f"DEBUG: probs shape: {probs.shape}")
             max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, S, N]
             
             # among only the currently masked latents (check the mask tensor), 
             # 1. get the top n_tokens with highest probabilities
             # 2. unmask them in the mask tensor
-            # 3. add them to the "input_latents" tensor instead of the mask embeddings in those positions
-            
-            print(f"DEBUG: max_probs shape: {max_probs.shape}")
-            print(f"DEBUG: mask shape: {mask.shape}")
-            print(f"predicted indices shape: {predicted_indices.shape}")
-            
+            # 3. add them to the "input_latents" tensor instead of the mask embeddings in those positions        
             masked_probs = max_probs[:, -1, :]  # [B, N] - only last timestep
             masked_mask = mask[:, -1, :, 0]  # [B, N] - only last timestep
+            
+            # Ensure we unmask at least 1 token if there are still masked tokens
+            if masked_mask.sum() > 0 and tokens_to_unmask == 0:
+                tokens_to_unmask = 1
             
             if masked_mask.sum() > 0:
                 # Get indices of masked positions
@@ -480,22 +479,10 @@ def main(args):
                 # 1. Unmask selected positions in the mask tensor
                 mask[0, -1, tokens_to_unmask_indices, 0] = False
                 
-                # 2. Update input_latents with predicted values instead of mask embeddings
-                print(f"DEBUG: predicted_indices shape: {predicted_indices.shape}")
-                print(f"DEBUG: input_latents shape: {input_latents.shape}")
-                print(f"DEBUG: tokens_to_unmask_indices: {tokens_to_unmask_indices}")
-                
                 for idx in tokens_to_unmask_indices:
-                    # Get predicted latent for this position
-                    print(f"DEBUG: Processing idx={idx}")
-                    print(f"DEBUG: predicted_indices[0:1, -1:, idx:idx+1] shape: {predicted_indices[0:1, -1:, idx:idx+1].shape}")
-                    
                     predicted_latent = video_tokenizer.vq.get_latents_from_indices(
                         predicted_indices[0:1, -1:, idx:idx+1], dim=-1
                     )  # [1, 1, 1, latent_dim]
-                    
-                    print(f"DEBUG: predicted_latent shape: {predicted_latent.shape}")
-                    print(f"DEBUG: predicted_latent[0, 0, 0] shape: {predicted_latent[0, 0, 0].shape}")
                     
                     # Update input_latents at the last timestep, this position
                     input_latents[0, -1, idx] = predicted_latent[0, 0, 0]
@@ -507,15 +494,12 @@ def main(args):
             print(f"Step {t+1}/{T}: Unmasked {tokens_to_unmask} tokens")
         
         # Final result: input_latents contains the decoded sequence (last timestep)
-        # TODO: try taking and decoding only last frame (pred frame)
         next_video_latents = input_latents
-        print(f"next_video_latents shape: {next_video_latents.shape}")
+
         # decode next video tokens to frames
         # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
         next_frames = video_tokenizer.decoder(next_video_latents)  # [1, seq_len, C, H, W]
 
-        print(f"next_frames shape: {next_frames.shape}")
-        print(f"ground_truth_sequence shape: {ground_truth_sequence.shape}")
         # visualize next frames and ground truth frames side by side
         visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
