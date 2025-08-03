@@ -11,6 +11,7 @@ import time
 import os
 import random
 import glob
+from einops import rearrange
 
 def predict_next_tokens(dynamics_model, video_latents, action_latent=None, temperature=1.0, use_actions=True):
     """Use dynamics model to predict next video tokens with temperature sampling"""
@@ -34,13 +35,7 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent=None, tempe
             combined_latents = video_latents  # [1, seq_len, num_patches, latent_dim]
         
         # Predict next video tokens using the dynamics model
-        next_video_latents = dynamics_model(combined_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
-        
-        # Apply temperature sampling to reduce variance
-        # if temperature != 1.0:
-        #     # Add noise scaled by temperature
-        #     noise = torch.randn_like(next_video_latents) * (temperature - 1.0) * 0.1
-        #     next_video_latents = next_video_latents + noise
+        next_video_latents, _ = dynamics_model(combined_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
         
         print(f"next_video_latents shape: {next_video_latents.shape}")
         
@@ -332,6 +327,12 @@ def get_model_context_sizes(video_tokenizer, dynamics_model):
     
     return context_window
 
+
+def exp_schedule_torch(t, T, N, k=5.0):
+    x = t / T
+    k_tensor = torch.tensor(k)
+    return N * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
+
 def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
@@ -358,11 +359,6 @@ def main(args):
     # Get context window size from models
     context_window = get_model_context_sizes(video_tokenizer, dynamics_model)
     
-    # Override with command line argument if provided
-    if args.context_window != 4:  # Default value
-        context_window = args.context_window
-        print(f"Overriding with command line context window: {context_window}")
-
     # Only use last context_window frames for model input
     # if context_frames.shape[1] > context_window:
     #     model_input_frames = context_frames[:, -context_window:, :, :, :]
@@ -378,7 +374,21 @@ def main(args):
         if args.use_actions:
             action_index = sample_action_with_diversity(inferred_actions, n_actions)
             inferred_actions.append(action_index)
-            action_latent = get_lam_latent_from_action_index(lam, action_index)
+            new_action_latent = get_lam_latent_from_action_index(lam, action_index)
+            print(f"new_action_latent shape: {new_action_latent.shape}")
+            # to get old action latents, infer action latents using lam given 
+            actions, _ = lam.encoder(context_frames)  # [batch_size, seq_len, action_dim]
+            print(f"actions shape: {actions.shape}")
+            # Quantize actions (TODO: is reshape necessary?)
+            actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
+            _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
+            quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
+            
+            # expand actions to add num_patches dimension
+            quantized_old_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
+            print(f"quantized_old_actions shape: {quantized_old_actions.shape}")
+            action_latent = torch.cat([quantized_old_actions, new_action_latent], dim=1) # [batch_size, seq_len, 1, action_dim]
+            print(f"action_latent shape: {action_latent.shape}")
         else:
             action_index = None
             action_latent = None
@@ -389,18 +399,116 @@ def main(args):
         video_latents = video_latent_sequence  # [1, seq_len, num_patches, latent_dim]
         print(f"video_latents shape: {video_latents.shape}")
 
-        # predict next video tokens using all current video latents
-        next_video_logits = predict_next_tokens(
-            dynamics_model, video_latents, action_latent, 
-            temperature=args.temperature, use_actions=args.use_actions
-        )  # [1, seq_len, num_patches, codebook_size]
+        # Implement MaskGit-style iterative decoding
+        # for timestep t in range T: 
+        # 1. run inference with all tokens masked
+        # 2. get argmax tokens and their corresponding probabilities
+        # 3. choose top n tokens with highest probabilities and unmask them
+        
+        # scheduling: n = e^(t/T) * N, where T is num steps and N is num patches
+        T = 20  # Number of decoding steps
+        N = video_latents.shape[2]  # Number of patches
+        
+        # Start with all tokens masked
+        current_latents = video_latents.clone() # [1, seq_len, num_patches, latent_dim]
 
-        print(f"next_video_latents shape: {next_video_logits.shape}")
+        if args.use_actions:
+            current_latents = current_latents + action_latent # [1, seq_len, num_patches, latent_dim]
 
-        # get indices o
-        next_video_indices = torch.argmax(next_video_logits, dim=-1) # [1, seq_len, num_patches]
+        print(f"DEBUG: current_latents shape: {current_latents.shape}")
+        # append mask frame
+        mask_token_value = dynamics_model.decoder.mask_token.data  # Extract the actual tensor value
+        # Expand mask token to match the required shape: [1, 1, N, latent_dim]
+        mask_latents = mask_token_value.expand(1, 1, N, -1)  # [1, 1, num_patches, latent_dim]
 
-        next_video_latents = video_tokenizer.vq.get_latents_from_indices(next_video_indices, dim=-1)
+        input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
+
+        print(f"DEBUG: input_latents shape: {input_latents.shape}")
+        mask = torch.full((1, 1, N, 1), True, dtype=torch.bool)  # [1, 1, num_patches, 1]
+
+        n_tokens = 0
+        
+        masked_latents = current_latents.clone()
+        print(f"DEBUG: masked_latents shape: {masked_latents.shape}")
+
+        for t in range(T):
+            # Calculate how many tokens to unmask at this step
+            # n = e^(t/T) * N, where T is num steps and N is num patches
+            # n_tokens = int(torch.cos(torch.tensor(t / T)) * N)
+            # n_tokens = min(n_tokens, N)  # Ensure we don't exceed N
+            prev_n_tokens = n_tokens
+            n_tokens = int(exp_schedule_torch(t, T, N))
+            tokens_to_unmask = n_tokens - prev_n_tokens
+            print(f"DEBUG: t={t}, prev_n_tokens={prev_n_tokens}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
+            
+            # Run dynamics model to get predictions
+            with torch.no_grad():
+                predicted_logits, _ = dynamics_model(masked_latents, training=False)  # [B, S, N, codebook_size]
+            
+            print(f"DEBUG: predicted_logits shape: {predicted_logits.shape}")
+            # Get probabilities and top predictions
+            probs = torch.softmax(predicted_logits, dim=-1)  # [B, S, N, codebook_size]
+
+            print(f"DEBUG: probs shape: {probs.shape}")
+            max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, S, N]
+            
+            # among only the currently masked latents (check the mask tensor), 
+            # 1. get the top n_tokens with highest probabilities
+            # 2. unmask them in the mask tensor
+            # 3. add them to the "input_latents" tensor instead of the mask embeddings in those positions
+            
+            print(f"DEBUG: max_probs shape: {max_probs.shape}")
+            print(f"DEBUG: mask shape: {mask.shape}")
+            print(f"predicted indices shape: {predicted_indices.shape}")
+            
+            masked_probs = max_probs[:, -1, :]  # [B, N] - only last timestep
+            masked_mask = mask[:, -1, :, 0]  # [B, N] - only last timestep
+            
+            if masked_mask.sum() > 0:
+                # Get indices of masked positions
+                masked_indices = torch.where(masked_mask[0])[0]  # [num_masked]
+                masked_pos_probs = masked_probs[0, masked_indices]  # [num_masked]
+                
+                # Select top tokens_to_unmask tokens with highest probabilities
+                if len(masked_pos_probs) > tokens_to_unmask:
+                    top_indices = torch.topk(masked_pos_probs, tokens_to_unmask, largest=True).indices
+                    tokens_to_unmask_indices = masked_indices[top_indices]
+                else:
+                    # Unmask all remaining tokens
+                    tokens_to_unmask_indices = masked_indices
+                
+                # 1. Unmask selected positions in the mask tensor
+                mask[0, -1, tokens_to_unmask_indices, 0] = False
+                
+                # 2. Update input_latents with predicted values instead of mask embeddings
+                print(f"DEBUG: predicted_indices shape: {predicted_indices.shape}")
+                print(f"DEBUG: input_latents shape: {input_latents.shape}")
+                print(f"DEBUG: tokens_to_unmask_indices: {tokens_to_unmask_indices}")
+                
+                for idx in tokens_to_unmask_indices:
+                    # Get predicted latent for this position
+                    print(f"DEBUG: Processing idx={idx}")
+                    print(f"DEBUG: predicted_indices[0:1, -1:, idx:idx+1] shape: {predicted_indices[0:1, -1:, idx:idx+1].shape}")
+                    
+                    predicted_latent = video_tokenizer.vq.get_latents_from_indices(
+                        predicted_indices[0:1, -1:, idx:idx+1], dim=-1
+                    )  # [1, 1, 1, latent_dim]
+                    
+                    print(f"DEBUG: predicted_latent shape: {predicted_latent.shape}")
+                    print(f"DEBUG: predicted_latent[0, 0, 0] shape: {predicted_latent[0, 0, 0].shape}")
+                    
+                    # Update input_latents at the last timestep, this position
+                    input_latents[0, -1, idx] = predicted_latent[0, 0, 0]
+                
+                print(f"Step {t+1}/{T}: Unmasked {len(tokens_to_unmask_indices)} tokens (target: {tokens_to_unmask}, remaining: {masked_mask.sum().item()})")
+            else:
+                print(f"Step {t+1}/{T}: No masked tokens remaining")
+
+            print(f"Step {t+1}/{T}: Unmasked {tokens_to_unmask} tokens")
+        
+        # Final result: input_latents contains the decoded sequence (last timestep)
+        # TODO: try taking and decoding only last frame (pred frame)
+        next_video_latents = input_latents
         print(f"next_video_latents shape: {next_video_latents.shape}")
         # decode next video tokens to frames
         # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
@@ -409,7 +517,7 @@ def main(args):
         print(f"next_frames shape: {next_frames.shape}")
         print(f"ground_truth_sequence shape: {ground_truth_sequence.shape}")
         # visualize next frames and ground truth frames side by side
-        visualize_decoded_frames(next_frames, generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
+        visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
         generated_frames = torch.cat([generated_frames, next_frames[:, -1:, :, :]], dim=1)  # Store for visualization/MSE
         video_latent_sequence = next_video_latents
