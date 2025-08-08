@@ -13,21 +13,21 @@ class PolePositionDataset(Dataset):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
-        self.fps = 30
+        self.fps = 60
         self.frame_skip = 60 // self.fps
-        self.fraction_of_frames = 1.0
+        self.fraction_of_frames = 0.1
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
-            n_frames = int(len(frames) * self.fraction_of_frames)
+            n_frames = int(len(frames))
             print(f"Loading {n_frames} frames from {save_path}")
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM
             self.data = []
-            for i in tqdm(range(0, n_frames, chunk_size), desc="Loading frames"):
+            for i in tqdm(range(100, n_frames, chunk_size), desc="Loading frames"):
                 chunk = frames[i:min(i+chunk_size, n_frames)][:]  # [:] forces load into memory
                 self.data.extend(chunk)
             self.data = np.array(self.data)
@@ -40,6 +40,8 @@ class PolePositionDataset(Dataset):
             self.h5_file.close()
         else:
             frames = self.preprocess_video(video_path)
+            len_frames = len(frames)
+            frames = frames[len_frames // 50:len_frames // 4]
             if save_path:
                 print(f"Saving preprocessed frames to {save_path}")
                 with h5py.File(save_path, 'w') as f:
@@ -68,10 +70,7 @@ class PolePositionDataset(Dataset):
         total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
         frames = []
         
-        # Maybe skip frames to reduce dataset size
-        frame_skip = 6  # Only keep every 6th frame, so 10 Hz
-        
-        for i in tqdm(range(0, total_frames, frame_skip), desc="Processing video frames"):
+        for i in tqdm(range(0, total_frames), desc="Processing video frames"):
             video.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = video.read()
             if not ret:
@@ -84,8 +83,9 @@ class PolePositionDataset(Dataset):
         return np.array(frames)
 
     def __len__(self):
-        max_valid_index = len(self.data) - (self.num_frames * self.frame_skip)
-        return max(0, max_valid_index + 1) // 5
+        # how many starting positions can give us a full sequence?
+        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)) * self.fraction_of_frames)
+        return max(0, max_valid_index)          # training and val alike
     
     def __getitem__(self, index):
         # Ensure index is within bounds

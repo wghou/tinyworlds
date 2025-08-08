@@ -294,11 +294,20 @@ def train():
         # Log to W&B if enabled and available
         if args.use_wandb:
             # Log training metrics
+            # --- Codebook usage -------------------------------------------------
+            with torch.no_grad():
+                latents = model.encoder(x)                    # [B, S, N, D]
+                quantized_latents = model.vq(latents)
+                indices = model.vq.get_indices_from_latents(quantized_latents, dim=-1)
+                unique_codes = torch.unique(indices).numel()
+                codebook_usage = unique_codes / model.codebook_size
+
             wandb.log({
                 'train/loss': recon_loss.item(),
                 'train/learning_rate': scheduler.get_last_lr()[0],
                 'train/x_hat_variance': torch.var(x_hat, dim=0).mean().item(),
                 'train/x_variance': torch.var(x, dim=0).mean().item(),
+                'train/codebook_usage': codebook_usage,
                 'step': i
             })
             

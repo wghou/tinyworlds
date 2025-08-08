@@ -231,13 +231,13 @@ print("Loading pre-trained latent action model...")
 lam = LAM(
     frame_size=(64, 64),
     n_actions=8,  # Match full pipeline
-    patch_size=4,  # Match LAM training (updated from 2)
-    embed_dim=128,  # Match LAM training
-    num_heads=4,  # Match LAM training
-    hidden_dim=512,  # Match LAM training
-    num_blocks=2,  # Match LAM training
-    action_dim=6,  # Match LAM training
-    dropout=0.1  # Match LAM training
+    patch_size=args.patch_size,  # Match LAM training
+    embed_dim=args.embed_dim,  # Match LAM training
+    num_heads=args.num_heads,  # Match LAM training
+    hidden_dim=args.hidden_dim,  # Match LAM training
+    num_blocks=args.num_blocks,  # Align with checkpoint (4 blocks)
+    action_dim=args.latent_dim,  # Match LAM training
+    dropout=args.dropout  # Match LAM training
 ).to(device)
 
 # Load LAM checkpoint

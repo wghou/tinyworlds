@@ -76,9 +76,9 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         frame_size=(64, 64),
         patch_size=4,
         embed_dim=128,
-        num_heads=4,
+        num_heads=8,
         hidden_dim=512,
-        num_blocks=2,
+        num_blocks=4,
         latent_dim=6,
         dropout=0.1,
         num_bins=4
@@ -104,9 +104,9 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
             n_actions=8,
             patch_size=4,  # Match video tokenizer patch_size
             embed_dim=128,
-            num_heads=4,
+            num_heads=8,
             hidden_dim=512,
-            num_blocks=2,
+            num_blocks=4,
             action_dim=6,  # Match checkpoint (was 16)
             dropout=0.1,
             beta=1.0
@@ -131,9 +131,9 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         frame_size=(64, 64),
         patch_size=4,
         embed_dim=128,
-        num_heads=4,
+        num_heads=8,
         hidden_dim=512,
-        num_blocks=2,
+        num_blocks=4,
         latent_dim=6,
         num_bins=4,
         dropout=0.1
@@ -340,17 +340,24 @@ def exp_schedule_torch(t, T, N, k=5.0):
 def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
+    # Determine how many ground-truth frames we need: context + generation steps
+    frames_to_load = args.context_window + args.generation_steps
+
     # Load data and get ground truth sequence
-    _, _, data_loader, _, _ = load_data_and_data_loaders(dataset='POLE_POSITION', batch_size=1, num_frames=4)  # +1 for initial frame
+    _, _, data_loader, _, _ = load_data_and_data_loaders(
+        dataset='POLE_POSITION', batch_size=1, num_frames=frames_to_load)
+
     random_idx = random.randint(0, len(data_loader.dataset) - 1)
-    ground_truth_sequence = data_loader.dataset[random_idx][0]  # Get the full sequence
-    ground_truth_sequence = ground_truth_sequence.unsqueeze(0).to(args.device)  # [1, seq_len, C, H, W]
+    og_ground_truth_sequence = data_loader.dataset[random_idx][0]  # full sequence
+    og_ground_truth_sequence = og_ground_truth_sequence.unsqueeze(0).to(args.device)  # [1, frames_to_load, C, H, W]
+
+    ground_truth_sequence = og_ground_truth_sequence[:, :frames_to_load, :, :, :]  # [1, frames_to_load, C, H, W]
     
     print(f"Loaded ground truth sequence with shape: {ground_truth_sequence.shape}")
     
-    # Start with the first frame from ground truth
-    context_frames = ground_truth_sequence
-    generated_frames = context_frames  # List to store generated frames (excluding initial)
+    # Start with initial context (first context_window GT frames)
+    context_frames = ground_truth_sequence[:, :args.context_window, :, :, :]
+    generated_frames = context_frames.clone()
 
     # Initialize action tracking
     if args.use_actions:
@@ -371,9 +378,25 @@ def main(args):
     print(f"context_frames shape: {context_frames.shape}")
     model_input_frames = context_frames
 
-    video_latent_sequence = encode_frame_to_tokens(video_tokenizer, model_input_frames)  # [1, seq_len, num_patches, latent_dim]
-    print(f"video_latent_sequence shape: {video_latent_sequence.shape}")
-    for i in range(args.generation_steps):
+    # Ensure we don’t exceed available GT frames in teacher-forced mode
+    max_possible_steps = ground_truth_sequence.shape[1] - args.context_window
+    if args.teacher_forced and args.generation_steps > max_possible_steps:
+        print(f"[WARN] Requested {args.generation_steps} generation steps but only {max_possible_steps} are possible with teacher-forced context. Clamping.")
+    effective_steps = args.generation_steps if not args.teacher_forced else min(args.generation_steps, max_possible_steps)
+
+    for i in range(effective_steps):
+        # Select context depending on teacher-forced flag
+        if args.teacher_forced:
+            context_start = i  # shift window along ground truth
+            context_frames = ground_truth_sequence[:, context_start:context_start+args.context_window, :, :, :]
+        else:
+            # Autoregressive: last context_window frames from generated sequence
+            context_frames = generated_frames[:, -args.context_window:, :, :, :]
+
+        # Encode context frames each iteration
+        video_latents = encode_frame_to_tokens(video_tokenizer, context_frames)
+        print(f"video_latent_sequence shape: {video_latents.shape}")
+
         # Sample action only if using actions
         if args.use_actions:
             action_index = sample_action_with_diversity(inferred_actions, n_actions)
@@ -390,6 +413,7 @@ def main(args):
             
             # expand actions to add num_patches dimension
             quantized_old_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
+            new_action_latent = rearrange(new_action_latent, 'b a -> b 1 1 a') # [batch_size, 1, 1, action_dim]
             print(f"quantized_old_actions shape: {quantized_old_actions.shape}")
             action_latent = torch.cat([quantized_old_actions, new_action_latent], dim=1) # [batch_size, seq_len, 1, action_dim]
             print(f"action_latent shape: {action_latent.shape}")
@@ -398,10 +422,6 @@ def main(args):
             action_latent = None
 
         print(f"context_frames shape: {context_frames.shape}")
-
-        # Only use last context_window frames for model input
-        video_latents = video_latent_sequence  # [1, seq_len, num_patches, latent_dim]
-        print(f"video_latents shape: {video_latents.shape}")
 
         # Implement MaskGit-style iterative decoding
         # for timestep t in range T: 
@@ -422,15 +442,13 @@ def main(args):
         # append mask frame
         mask_token_value = dynamics_model.decoder.mask_token.data  # Extract the actual tensor value
         # Expand mask token to match the required shape: [1, 1, N, latent_dim]
-        mask_latents = mask_token_value.expand(1, 1, N, -1)  # [1, 1, num_patches, latent_dim]
+        mask_latents = mask_token_value.expand(1, 1, N, -1)  # [1, 4, num_patches, latent_dim]
 
         input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
 
-        mask = torch.full((1, 1, N, 1), True, dtype=torch.bool)  # [1, 1, num_patches, 1]
+        mask = torch.full((1, 1, N, 1), True, dtype=torch.bool)  # [1, 4, num_patches, 1]
 
         n_tokens = 0
-        
-        masked_latents = current_latents.clone()
 
         for t in range(T):
             # Calculate how many tokens to unmask at this step
@@ -445,13 +463,13 @@ def main(args):
             
             # Run dynamics model to get predictions
             with torch.no_grad():
-                predicted_logits, _ = dynamics_model(masked_latents, training=False)  # [B, S, N, codebook_size]
+                predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, S, N, codebook_size]
             
             # Get probabilities and top predictions
             probs = torch.softmax(predicted_logits, dim=-1)  # [B, S, N, codebook_size]
 
             max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, S, N]
-            
+
             # among only the currently masked latents (check the mask tensor), 
             # 1. get the top n_tokens with highest probabilities
             # 2. unmask them in the mask tensor
@@ -503,22 +521,26 @@ def main(args):
         # visualize next frames and ground truth frames side by side
         visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
-        generated_frames = torch.cat([generated_frames, next_frames[:, -1:, :, :]], dim=1)  # Store for visualization/MSE
-        video_latent_sequence = next_video_latents
+        generated_frames = torch.cat([generated_frames, next_frames[:, -1:, :, :]], dim=1)
         
         if args.use_actions:
             print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {context_frames.shape[1]}")
         else:
             print(f"Step {i+1}: Generated frame (no actions), sequence length: {context_frames.shape[1]}")
     
-    # Stack all generated frames (excluding initial frame)
-    predicted_frames = generated_frames[:, -args.generation_steps:, :, :, :]
-    # predicted_frames shape: [1, generation_steps, C, H, W]
-    ground_truth_frames = ground_truth_sequence  # [1, generation_steps, C, H, W]
+    # Determine how many frames were actually generated
+    pred_len = min(effective_steps, generated_frames.shape[1] - args.context_window)
+
+    predicted_frames = generated_frames[:, -pred_len:, :, :, :] if pred_len > 0 else generated_frames[:, :0]
+    ground_truth_frames = ground_truth_sequence[:, args.context_window:args.context_window+pred_len, :, :, :]
     
     print(f"Ground truth frames shape: {ground_truth_frames.shape}")
     print(f"Predicted frames shape: {predicted_frames.shape}")
     
+    if pred_len == 0:
+        print("[INFO] No frames generated under current settings; skipping visualization and metrics.")
+        return
+
     visualize_inference(predicted_frames, ground_truth_frames, inferred_actions, args.fps, use_actions=args.use_actions)
 
 def parse_args():
@@ -532,6 +554,8 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
+    parser.add_argument("--teacher_forced", action="store_true", default=False,
+                        help="Run teacher-forced inference (always use ground-truth context).")
     parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     return parser.parse_args()
 

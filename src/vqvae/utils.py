@@ -89,8 +89,8 @@ def load_pong(num_frames=1):
 def load_sonic(num_frames=4):
     """loads sonic dataset"""
     current_folder_path = os.getcwd()
-    video_path = current_folder_path + '/data/sonic.mp4'
-    preprocessed_path = current_folder_path + '/data/sonic_frames.h5'
+    video_path = current_folder_path + '/data/Sonic Cleaned.mp4'
+    preprocessed_path = current_folder_path + '/data/Sonic Cleaned_frames.h5'
     
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -178,7 +178,7 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
 
         x_train_var = np.var(training_data.data)
     elif dataset == 'POLE_POSITION':
-        training_data, validation_data = load_pole_position()
+        training_data, validation_data = load_pole_position(num_frames=num_frames)
         training_loader, validation_loader = data_loaders(
             training_data, validation_data, batch_size)
 

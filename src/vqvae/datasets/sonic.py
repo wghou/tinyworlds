@@ -13,7 +13,7 @@ class SonicDataset(Dataset):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
-        self.fps = 15
+        self.fps = 20
         self.frame_skip = 60 // self.fps
         self.fraction_of_frames = 0.1
         
@@ -21,15 +21,17 @@ class SonicDataset(Dataset):
             print(f"Loading preprocessed frames from {save_path}")
             self.h5_file = h5py.File(save_path, 'r')
             frames = self.h5_file['frames']
-            n_frames = int(len(frames) * self.fraction_of_frames)
+            n_frames = int(len(frames))
+            print(f"Loading {n_frames} frames from {save_path}")
             
             # Load frames into memory in chunks
             chunk_size = 1000  # Adjust based on available RAM
             self.data = []
-            for i in tqdm(range(0, n_frames, chunk_size), desc="Loading frames"):
+            for i in tqdm(range(100, n_frames, chunk_size), desc="Loading frames"):
                 chunk = frames[i:min(i+chunk_size, n_frames)][:]  # [:] forces load into memory
                 self.data.extend(chunk)
             self.data = np.array(self.data)
+            print(f"Loaded {len(self.data)} frames")
             
             # Split into train/val (90/10 split)
             split_idx = int(0.9 * len(self.data))
@@ -67,10 +69,7 @@ class SonicDataset(Dataset):
         total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
         frames = []
         
-        # Maybe skip frames to reduce dataset size
-        frame_skip = 60  # Only keep every 60th frame, so 1 Hz
-        
-        for i in tqdm(range(0, total_frames, frame_skip), desc="Processing video frames"):
+        for i in tqdm(range(0, total_frames), desc="Processing video frames"):
             video.set(cv2.CAP_PROP_POS_FRAMES, i)
             ret, frame = video.read()
             if not ret:
@@ -83,8 +82,9 @@ class SonicDataset(Dataset):
         return np.array(frames)
 
     def __len__(self):
-        max_valid_index = len(self.data) - (self.num_frames * self.frame_skip)
-        return max(0, max_valid_index + 1) // 5
+        # how many starting positions can give us a full sequence?
+        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)))
+        return max(0, max_valid_index)          # training and val alike
     
     def __getitem__(self, index):
         # Ensure index is within bounds
