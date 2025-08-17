@@ -176,7 +176,6 @@ model = Video_Tokenizer(
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
-    dropout=args.dropout, 
     num_bins=args.num_bins,
 ).to(device)
 
@@ -300,7 +299,9 @@ def train():
                 quantized_latents = model.vq(latents)
                 indices = model.vq.get_indices_from_latents(quantized_latents, dim=-1)
                 unique_codes = torch.unique(indices).numel()
+                print(f"unique codes: {unique_codes}")
                 codebook_usage = unique_codes / model.codebook_size
+                print(f"codebook usage: {codebook_usage}")
 
             wandb.log({
                 'train/loss': recon_loss.item(),

@@ -80,7 +80,6 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         hidden_dim=512,
         num_blocks=4,
         latent_dim=6,
-        dropout=0.1,
         num_bins=4
     ).to(device)
     
@@ -108,7 +107,6 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
             hidden_dim=512,
             num_blocks=4,
             action_dim=6,  # Match checkpoint (was 16)
-            dropout=0.1,
             beta=1.0
         ).to(device)
         
@@ -135,8 +133,7 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
         hidden_dim=512,
         num_blocks=4,
         latent_dim=6,
-        num_bins=4,
-        dropout=0.1
+        num_bins=4
     ).to(device)
     
     # Try loading with weights_only=True first, fallback to False if it fails
@@ -340,12 +337,12 @@ def exp_schedule_torch(t, T, N, k=5.0):
 def main(args):
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
-    # Determine how many ground-truth frames we need: context + generation steps
-    frames_to_load = args.context_window + args.generation_steps
+    # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
+    frames_to_load = args.context_window + args.generation_steps * args.prediction_horizon
 
     # Load data and get ground truth sequence
     _, _, data_loader, _, _ = load_data_and_data_loaders(
-        dataset='POLE_POSITION', batch_size=1, num_frames=frames_to_load)
+        dataset='SONIC', batch_size=1, num_frames=frames_to_load)
 
     random_idx = random.randint(0, len(data_loader.dataset) - 1)
     og_ground_truth_sequence = data_loader.dataset[random_idx][0]  # full sequence
@@ -442,11 +439,11 @@ def main(args):
         # append mask frame
         mask_token_value = dynamics_model.decoder.mask_token.data  # Extract the actual tensor value
         # Expand mask token to match the required shape: [1, 1, N, latent_dim]
-        mask_latents = mask_token_value.expand(1, 1, N, -1)  # [1, 4, num_patches, latent_dim]
+        mask_latents = mask_token_value.expand(1, args.prediction_horizon, N, -1)  # [1, 4, num_patches, latent_dim]
 
         input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
 
-        mask = torch.full((1, 1, N, 1), True, dtype=torch.bool)  # [1, 4, num_patches, 1]
+        mask = torch.full((1, args.prediction_horizon, N, 1), True, dtype=torch.bool)  # [1, 4, num_patches, 1]
 
         n_tokens = 0
 
@@ -519,9 +516,9 @@ def main(args):
         next_frames = video_tokenizer.decoder(next_video_latents)  # [1, seq_len, C, H, W]
 
         # visualize next frames and ground truth frames side by side
-        visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
+        # visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
-        generated_frames = torch.cat([generated_frames, next_frames[:, -1:, :, :]], dim=1)
+        generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
         
         if args.use_actions:
             print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {context_frames.shape[1]}")
@@ -531,8 +528,8 @@ def main(args):
     # Determine how many frames were actually generated
     pred_len = min(effective_steps, generated_frames.shape[1] - args.context_window)
 
-    predicted_frames = generated_frames[:, -pred_len:, :, :, :] if pred_len > 0 else generated_frames[:, :0]
-    ground_truth_frames = ground_truth_sequence[:, args.context_window:args.context_window+pred_len, :, :, :]
+    predicted_frames = generated_frames
+    ground_truth_frames = ground_truth_sequence
     
     print(f"Ground truth frames shape: {ground_truth_frames.shape}")
     print(f"Predicted frames shape: {predicted_frames.shape}")
@@ -557,6 +554,7 @@ def parse_args():
     parser.add_argument("--teacher_forced", action="store_true", default=False,
                         help="Run teacher-forced inference (always use ground-truth context).")
     parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
+    parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
     return parser.parse_args()
 
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):

@@ -15,7 +15,7 @@ class SonicDataset(Dataset):
         self.num_frames = num_frames
         self.fps = 20
         self.frame_skip = 60 // self.fps
-        self.fraction_of_frames = 0.1
+        self.fraction_of_frames = 0.005
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
@@ -83,7 +83,7 @@ class SonicDataset(Dataset):
 
     def __len__(self):
         # how many starting positions can give us a full sequence?
-        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)))
+        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)) * self.fraction_of_frames)
         return max(0, max_valid_index)          # training and val alike
     
     def __getitem__(self, index):

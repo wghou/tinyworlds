@@ -210,7 +210,6 @@ video_tokenizer = Video_Tokenizer(
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
-    dropout=args.dropout, 
     num_bins=args.num_bins
 ).to(device)
 
@@ -265,8 +264,6 @@ dynamics_model = DynamicsModel(
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
     latent_dim=args.latent_dim,
-    dropout=args.dropout,
-    
 ).to(device)
 
 """

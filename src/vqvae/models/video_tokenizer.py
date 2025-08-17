@@ -4,22 +4,125 @@ import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
 
+def sincos_1d(L, D, device, dtype):
+    """
+    Compute 1D sinusoidal position encodings.
+    
+    Each position i is encoded as:
+    PE[i, 2j]   = sin(i / 10000^(2j/D))  # even indices
+    PE[i, 2j+1] = cos(i / 10000^(2j/D))  # odd indices
+    
+    This creates a unique pattern for each position that:
+    - Varies smoothly with position
+    - Has different frequencies across dimensions
+    - Allows relative position to be attended to via dot products
+    
+    Args:
+        L: Length of sequence (number of positions)
+        D: Dimension of encoding (must be even)
+        device: torch device for tensors
+        dtype: data type for tensors
+    
+    Returns:
+        pe: Position encodings [L, D] where each row is a position's encoding
+    """
+    assert D % 2 == 0, "Encoding dimension must be even"
+    
+    # Generate position indices [L, 1] and dimension indices [1, D/2]
+    pos = torch.arange(L, device=device, dtype=dtype).unsqueeze(1)     # [L,1]
+    i   = torch.arange(D // 2, device=device, dtype=dtype).unsqueeze(0)# [1,D/2]
+    
+    # Compute angular frequencies: 1/10000^(2i/D) for each dimension
+    div = torch.pow(torch.tensor(10000.0, device=device, dtype=dtype), (2*i)/D)
+    
+    # Compute angles: pos * freq for each position-dimension pair
+    angles = pos / div  # [L, D/2] = [L,1] * [1,D/2] (broadcasting)
+    
+    # Fill alternating sin/cos into output
+    pe = torch.zeros(L, D, device=device, dtype=dtype)
+    pe[:, 0::2] = torch.sin(angles)  # even indices
+    pe[:, 1::2] = torch.cos(angles)  # odd indices
+    return pe
+
+def sincos_2d(Hp, Wp, D, device, dtype):
+    """
+    Compute 2D sinusoidal position encodings for a grid of patches.
+    
+    The encoding combines:
+    - Height position encoding using D/2 dimensions
+    - Width position encoding using D/2 dimensions
+    This gives each grid position (h,w) a unique encoding that:
+    - Captures both vertical and horizontal position
+    - Preserves spatial relationships in both dimensions
+    
+    Args:
+        Hp: Height in patches
+        Wp: Width in patches
+        D: Total encoding dimension (must be even, split between H and W)
+        device: torch device for tensors
+        dtype: data type for tensors
+    
+    Returns:
+        pe: Position encodings [P, D] where P = Hp*Wp is total patches,
+            each row is the encoding for patch (h,w) flattened to 1D
+    """
+    assert D % 2 == 0, "Encoding dimension must be even to split between H and W"
+    
+    # Split dimensions between height and width encodings
+    Dh = Dw = D // 2
+    
+    # Get 1D encodings for height and width positions
+    pe_h = sincos_1d(Hp, Dh, device, dtype)        # [Hp, Dh]
+    pe_w = sincos_1d(Wp, Dw, device, dtype)        # [Wp, Dw]
+    
+    # Combine into 2D grid:
+    # 1. Expand height encodings across width: [Hp,1,Dh] → [Hp,Wp,Dh]
+    # 2. Expand width encodings across height: [1,Wp,Dw] → [Hp,Wp,Dw]
+    # 3. Concatenate along feature dimension: [Hp,Wp,D]
+    pe = torch.cat([
+        pe_h[:, None, :].expand(Hp, Wp, Dh),
+        pe_w[None, :, :].expand(Hp, Wp, Dw)
+    ], dim=-1)                                     # [Hp, Wp, D]
+    
+    # Flatten spatial dimensions: [Hp,Wp,D] → [P,D]
+    return pe.reshape(Hp * Wp, D)                  # [P, D]
+
+def sincos_time(S, D, device, dtype):
+    """
+    Compute temporal position encodings for sequence steps.
+    
+    This is identical to 1D position encoding but used specifically
+    for encoding time steps in sequences. Each time step gets a unique
+    encoding that captures temporal order and relative distances.
+    
+    Args:
+        S: Sequence length (number of time steps)
+        D: Encoding dimension (must be even)
+        device: torch device for tensors
+        dtype: data type for tensors
+    
+    Returns:
+        pe: Position encodings [S, D] for each time step
+    """
+    return sincos_1d(S, D, device, dtype)  # reuse the same 1D builder
+
 class PatchEmbedding(nn.Module):
     """Convert frames to patch embeddings for ST-Transformer"""
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512):
         super().__init__()
+        H, W = frame_size
         self.frame_size = frame_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        
-        # Calculate number of patches
-        self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
+        self.Hp, self.Wp = H // patch_size, W // patch_size
+        self.num_patches = self.Hp * self.Wp
         
         # Linear projection for patches
         self.proj = nn.Linear(3 * patch_size * patch_size, embed_dim)
         
-        # Position embeddings for patches within each frame
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, embed_dim))
+        # Precompute 2D sin-cos spatial PE as a buffer (moved to device/dtype on use)
+        pe_spatial = sincos_2d(self.Hp, self.Wp, embed_dim, device='cpu', dtype=torch.float32)
+        self.register_buffer("pos_spatial", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
         
     def forward(self, frames):
         """
@@ -31,24 +134,23 @@ class PatchEmbedding(nn.Module):
         batch_size, seq_len, C, H, W = frames.shape
         
         # Reshape to patches using einops: [batch_size * seq_len, num_patches, patch_size * patch_size * channels]
-        # h and w here are actually number of patches in h and w dims, p1 and p2 are identical (patch size)
-        patches = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (h w) (c p1 p2)', 
-                          p1=self.patch_size, p2=self.patch_size)
+        x = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (h w) (c p1 p2)', 
+                      p1=self.patch_size, p2=self.patch_size)
         
         # Project to embeddings
-        embeddings = self.proj(patches) # [batch_size * seq_len, num_patches, embed_dim]
+        x = self.proj(x)  # [(b*s), P, D]
         
         # Add position embeddings
-        embeddings = embeddings + self.pos_embed # [batch_size * seq_len, num_patches, embed_dim]
+        x = x + self.pos_spatial.to(dtype=x.dtype, device=x.device)
         
         # Reshape back to sequence
-        embeddings = rearrange(embeddings, '(b s) p e -> b s p e', b=batch_size, s=seq_len) # [batch_size, seq_len, num_patches, embed_dim]
+        x = rearrange(x, '(b s) p e -> b s p e', b=batch_size, s=seq_len)
         
-        return embeddings
+        return x
 
 class SpatialAttention(nn.Module):
     """Spatial attention layer - attends over patches within each frame"""
-    def __init__(self, embed_dim, num_heads, dropout=0.1):
+    def __init__(self, embed_dim, num_heads):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -59,7 +161,6 @@ class SpatialAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
         
         self.norm = nn.LayerNorm(embed_dim)
         
@@ -84,7 +185,6 @@ class SpatialAttention(nn.Module):
         scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
         
         attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights) # TODO: do we need dropout here?
         
         # Apply attention to values: [batch, seq, num_heads, num_patches, head_dim]
         attn_output = torch.matmul(attn_weights, v)
@@ -100,7 +200,7 @@ class SpatialAttention(nn.Module):
 
 class TemporalAttention(nn.Module):
     """Temporal attention layer - attends over time steps for each patch"""
-    def __init__(self, embed_dim, num_heads, dropout=0.1, causal=True):
+    def __init__(self, embed_dim, num_heads, causal=True):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -111,7 +211,6 @@ class TemporalAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
         
         self.norm = nn.LayerNorm(embed_dim)
         self.causal = causal
@@ -143,7 +242,6 @@ class TemporalAttention(nn.Module):
             scores = scores.masked_fill(mask, float('-inf')) # [batch, num_patches, num_heads, seq, seq]
         
         attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights) # TODO: do we need dropout here?
         
         # Apply attention to values: [batch, num_patches, num_heads, seq, head_dim]
         attn_output = torch.matmul(attn_weights, v)
@@ -159,11 +257,10 @@ class TemporalAttention(nn.Module):
 
 class FeedForward(nn.Module):
     """Feed-forward network"""
-    def __init__(self, embed_dim, hidden_dim, dropout=0.1):
+    def __init__(self, embed_dim, hidden_dim):
         super().__init__()
         self.linear1 = nn.Linear(embed_dim, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(embed_dim)
         
     def forward(self, x):
@@ -181,7 +278,6 @@ class FeedForward(nn.Module):
         # Apply feed-forward
         out = self.linear1(x_reshaped)
         out = F.relu(out)
-        out = self.dropout(out)
         out = self.linear2(out)
         
         # Add residual and normalize
@@ -194,11 +290,11 @@ class FeedForward(nn.Module):
 
 class STTransformerBlock(nn.Module):
     """ST-Transformer block with spatial attention, temporal attention, and feed-forward"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, dropout=0.1, causal=True):
+    def __init__(self, embed_dim, num_heads, hidden_dim, causal=True):
         super().__init__()
-        self.spatial_attn = SpatialAttention(embed_dim, num_heads, dropout)
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, dropout, causal)
-        self.ffn = FeedForward(embed_dim, hidden_dim, dropout)
+        self.spatial_attn = SpatialAttention(embed_dim, num_heads)
+        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal)
+        self.ffn = FeedForward(embed_dim, hidden_dim)
         
     def forward(self, x):
         """
@@ -220,10 +316,10 @@ class STTransformerBlock(nn.Module):
 
 class STTransformer(nn.Module):
     """ST-Transformer with multiple blocks"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, dropout=0.1, causal=True):
+    def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True):
         super().__init__()
         self.blocks = nn.ModuleList([
-            STTransformerBlock(embed_dim, num_heads, hidden_dim, dropout, causal)
+            STTransformerBlock(embed_dim, num_heads, hidden_dim, causal)
             for _ in range(num_blocks)
         ])
         
@@ -234,6 +330,12 @@ class STTransformer(nn.Module):
         Returns:
             out: [batch_size, seq_len, num_patches, embed_dim]
         """
+        # Add temporal position encoding
+        B, S, P, E = x.shape
+        tpe = sincos_time(S, E, x.device, x.dtype)           # [s, e]
+        x = x + tpe[None, :, None, :]                        # [1,s,1,e] broadcast
+        
+        # Apply transformer blocks
         for block in self.blocks:
             x = block(x)
         return x
@@ -299,20 +401,12 @@ class FiniteScalarQuantizer(nn.Module):
         return total_used_bins / total_bins
     
     def get_indices_from_latents(self, latents, dim=-1):
-        """
-        Get the index of a latent in the codebook
-
-        latents: [batch_size, seq_len, num_patches, latent_dim]
-        Returns:
-            indices: [batch_size, seq_len, num_patches]
-        """
         # go from [-1, 1] to [0, num_bins - 1] in each dimension
-        unnormalized_latents = self.scale_and_shift(latents)
-
+        digits = torch.round(self.scale_and_shift(latents)).clamp(0, self.num_bins-1)
+        
         # get indices for each latent by summing (value * L^current_dim_idx) along latent dim
-        indices = torch.sum(unnormalized_latents * self.basis, dim=dim)
+        return torch.sum(digits * self.basis.to(latents.device), dim=dim).long()
 
-        return indices.long()
 
     def get_latents_from_indices(self, indices, dim=-1):
         """
@@ -333,10 +427,10 @@ class FiniteScalarQuantizer(nn.Module):
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8, 
-                 hidden_dim=1024, num_blocks=6, latent_dim=6, dropout=0.1):
+                 hidden_dim=1024, num_blocks=6, latent_dim=6):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         
         # Latent prediction head
         self.latent_head = nn.Sequential(
@@ -361,27 +455,49 @@ class Encoder(nn.Module):
         
         return predicted_latents
 
+class PatchWiseFrameHead(nn.Module):
+    """Efficient patch-wise frame reconstruction head"""
+    def __init__(self, embed_dim, patch_size=4, out_ch=3):
+        super().__init__()
+        self.p = patch_size
+        self.out_ch = out_ch
+        self.proj = nn.Linear(embed_dim, out_ch * patch_size * patch_size)
+
+    def forward(self, x, H, W):
+        # x: [B, S, P, E], P = (H/p)*(W/p)
+        B, S, P, E = x.shape
+        p = self.p
+        # per-patch pixels
+        y = self.proj(x)                            # [B,S,P,C*p*p]
+        # fold patches back
+        Hp, Wp = H // p, W // p
+        y = y.view(B, S, Hp, Wp, self.out_ch, p, p) # [B,S,Hp,Wp,C,p,p]
+        y = y.permute(0,1,4,2,5,3,6).contiguous()   # [B,S,C,Hp,p,Wp,p]
+        y = y.view(B, S, self.out_ch, H, W)         # [B,S,C,H,W]
+        return y
+
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=64, dropout=0.1, height=64, width=64, channels=3):
+                 hidden_dim=2048, num_blocks=6, latent_dim=64):
         super().__init__()
-        self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
+        H, W = frame_size
+        self.height = H
+        self.width = W
+        self.patch_size = patch_size
+        self.Hp, self.Wp = H // patch_size, W // patch_size
+        self.num_patches = self.Hp * self.Wp
         
-        # Latent embedding
+        # Transformer and embeddings
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
         
-        num_patches = (height // patch_size) * (width // patch_size)
-        # Frame reconstruction head goes from num_patches * embed_dim to height * width * channels
-        self.frame_head = nn.Linear(num_patches * embed_dim, height * width * channels)
-        self.height = height
-        self.width = width
-        self.channels = channels
+        # 2D spatial PE for the decoder path
+        pe_spatial = sincos_2d(self.Hp, self.Wp, embed_dim, device='cpu', dtype=torch.float32)
+        self.register_buffer("pos_spatial_dec", pe_spatial[None, :, :], persistent=False)
         
-        self.frame_size = frame_size
-        self.patch_size = patch_size
-        self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
+        # Efficient patch-wise frame reconstruction head
+        self.frame_head = PatchWiseFrameHead(embed_dim, patch_size=patch_size, out_ch=3)
         
     def forward(self, latents, training=True):
         """
@@ -405,36 +521,35 @@ class Decoder(nn.Module):
             # Apply mask (zero out masked latents)
             latents = latents * mask
 
-        embeddings = self.latent_embed(latents) # [batch_size, seq_len, num_patches, embed_dim]
+        # Embed latents and add spatial PE
+        embedding = self.latent_embed(latents)  # [batch_size, seq_len, num_patches, embed_dim]
+        embedding = embedding + self.pos_spatial_dec.to(embedding.device, embedding.dtype)
     
-        # The causal mask ensures each position can only attend to previous positions
-        transformed = self.transformer(embeddings)  # [batch_size, seq_len, num_patches, embed_dim]
+        # Apply transformer (temporal PE added inside)
+        embedding = self.transformer(embedding)  # [batch_size, seq_len, num_patches, embed_dim]
         
-        # convert back to original frames [batch_size, seq_len, channels, height, width]
-        # convert to batch_size, seq_len, num_patches * embed_dim
-        flattened = rearrange(transformed, 'b s p e -> b s (p e)')
-        frames_out = self.frame_head(flattened)
-        frames_out = rearrange(frames_out, 'b s (h w c) -> b s c h w', h=self.height, w=self.width)
+        # Reconstruct frames using patch-wise head
+        frames_out = self.frame_head(embedding, self.height, self.width)  # [batch_size, seq_len, channels, height, width]
 
-        return frames_out  # [batch_size, seq_len, channels, height, width]
+        return frames_out
 
 class Video_Tokenizer(nn.Module):
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=6, dropout=0.1, num_bins=4, ):
+                 hidden_dim=2048, num_blocks=6, latent_dim=6, num_bins=4, ):
         super().__init__()
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, dropout)
+        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
         self.vq = FiniteScalarQuantizer(latent_dim, num_bins)
         self.codebook_size = num_bins**latent_dim
 
     def forward(self, frames):
         # Encode frames to latent representations
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
-        
+
         # Apply vector quantization
         quantized_z = self.vq(embeddings)
-        
+
         # Decode quantized latents back to frames
         x_hat = self.decoder(quantized_z)  # [batch_size, seq_len, channels, height, width]
-        
+
         return x_hat
