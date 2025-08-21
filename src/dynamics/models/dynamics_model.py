@@ -1,9 +1,9 @@
 from src.vqvae.models.video_tokenizer import STTransformer, sincos_2d, sincos_1d, sincos_time
 import torch
 import torch.nn as nn
-from einops import rearrange
+from einops import rearrange, repeat
 
-class Decoder(nn.Module):
+class DynamicsModel(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
                  hidden_dim=2048, num_blocks=6, latent_dim=6, num_bins=4):
@@ -36,9 +36,12 @@ class Decoder(nn.Module):
         pe_x = sincos_1d(Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
         pe_y = sincos_1d(Hp, self.spatial_y_dim, device='cpu', dtype=torch.float32)  # [Hp, D/3+]
         
-        # Expand to 2D grid
-        pe_x = pe_x.unsqueeze(0).expand(Hp, Wp, -1)  # [Hp, Wp, D/3+]
-        pe_y = pe_y.unsqueeze(1).expand(Hp, Wp, -1)  # [Hp, Wp, D/3+]
+        # Expand to 2D grid using rearrange
+        pe_x = rearrange(pe_x, 'w d -> 1 w d')  # [1, Wp, D/3+]
+        pe_x = repeat(pe_x, '1 w d -> h w d', h=Hp)  # [Hp, Wp, D/3+]
+        
+        pe_y = rearrange(pe_y, 'h d -> h 1 d')  # [Hp, 1, D/3+]
+        pe_y = repeat(pe_y, 'h 1 d -> h w d', w=Wp)  # [Hp, Wp, D/3+]
         
         # Combine and pad with zeros for temporal part
         pe_spatial = torch.cat([
@@ -47,9 +50,10 @@ class Decoder(nn.Module):
             torch.zeros(Hp, Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal
         ], dim=-1)  # [Hp, Wp, D]
         
-        # Flatten spatial dimensions
-        pe_spatial = pe_spatial.reshape(P, embed_dim)  # [P, D]
-        self.register_buffer("pos_spatial_dec", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
+        # Flatten spatial dimensions using rearrange
+        pe_spatial = rearrange(pe_spatial, 'h w d -> (h w) d')  # [P, D]
+        pe_spatial = rearrange(pe_spatial, 'p d -> 1 p d')  # [1, P, D]
+        self.register_buffer("pos_spatial_dec", pe_spatial, persistent=False)
         
         self.mlp = nn.Linear(embed_dim, codebook_size)
         
@@ -72,18 +76,21 @@ class Decoder(nn.Module):
         
         # Apply random masking during training (MaskGit-style)
         if training and self.training:
-            # Sample masking rate uniformly from 0.5 to 1
-            masking_rate = torch.rand(1).item() * 0.999 + 0.001   # [0.001, 1.0]
-            
-            # Create mask for each position (patch-level masking)
-            mask_positions = torch.bernoulli(torch.full((B, S, N), masking_rate, device=discrete_latents.device))
-            mask_positions = mask_positions.bool()
-            
-            # Use learned mask token
-            # Expand mask token to match batch and sequence dimensions
-            mask_token = self.mask_token.expand(B, S, N, -1)
-            
-            # Replace masked positions with learned mask tokens
+            # 1) Sample per-batch mask ratio in [0.5, 1.0)
+            mask_ratio = 0.5 + torch.rand((), device=discrete_latents.device) * 0.5
+
+            # 2) Bernoulli mask per token [B,S,N]
+            mask_positions = (torch.rand(B, S, N, device=discrete_latents.device) < mask_ratio)
+
+            # 3) Guarantee at least one unmasked temporal anchor per (B,N)
+            # Pick a random timestep for each (B,N) and force it to unmask
+            anchor_idx = torch.randint(0, S, (B, N), device=discrete_latents.device)  # [B,N]
+            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(N)[None, :]] = False
+
+            # 4) Broadcast mask token [1,1,1,D] → [B,S,N,D] lazily
+            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, S, N, -1)
+
+            # 5) Replace masked positions
             discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents)
         else:
             mask_positions = None
@@ -101,21 +108,3 @@ class Decoder(nn.Module):
         next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
         
         return next_token_logits, mask_positions  # [B, S, N, L^D], [B, S, N] or None
-
-class DynamicsModel(nn.Module):
-    def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=32, num_bins=4):
-        super().__init__()
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim, num_bins)
-
-    def forward(self, discrete_latents, training=True):
-        """
-        Args:
-            discrete_latents: [batch_size, seq_len, num_patches, latent_dim] video latents with action latents added
-            training: Whether in training mode (for masking)
-        Returns:
-            next_latents: [batch_size, seq_len, num_patches, latent_dim, num_bins]
-            mask_positions: [batch_size, seq_len, num_patches] or None - positions that were masked
-        """
-        next_latents, mask_positions = self.decoder(discrete_latents, training)
-        return next_latents, mask_positions

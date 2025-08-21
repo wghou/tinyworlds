@@ -27,6 +27,7 @@ from src.utils.wandb_utils import (
     log_learning_rate, log_reconstruction_comparison, log_video_sequence,
     log_system_metrics, finish_wandb, create_wandb_config
 )
+from src.utils.scheduler_utils import create_cosine_scheduler
 
 # Import wandb if available
 try:
@@ -269,8 +270,23 @@ dynamics_model = DynamicsModel(
 """
 Set up optimizer and training loop
 """
-optimizer = optim.Adam(dynamics_model.parameters(), lr=args.learning_rate, amsgrad=True)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+# Create parameter groups to avoid weight decay on biases and norm layers
+decay = []
+no_decay = []
+for name, param in dynamics_model.named_parameters():
+    if param.requires_grad:
+        if len(param.shape) == 1 or name.endswith(".bias") or "norm" in name:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+optimizer = optim.AdamW([
+    {'params': decay, 'weight_decay': 0.01},
+    {'params': no_decay, 'weight_decay': 0}
+], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
+
+# Create cosine scheduler with warmup
+scheduler = create_cosine_scheduler(optimizer, args.n_updates)
 
 """
 Load checkpoint if specified
@@ -353,8 +369,15 @@ def train(use_actions=False):
     global start_iter  # Use the start_iter set above
     print(f"Starting dynamics model training from iteration {start_iter}")
     
+    train_iter = iter(training_loader)
+    
     for i in tqdm(range(start_iter, args.n_updates)):
-        (x, _) = next(iter(training_loader))
+        try:
+            x, _ = next(train_iter)
+        except StopIteration:
+            train_iter = iter(training_loader)  # Reset iterator when epoch ends
+            x, _ = next(train_iter)
+            
         x = x.to(device)  # [batch_size, seq_len, channels, height, width]
         optimizer.zero_grad()
 

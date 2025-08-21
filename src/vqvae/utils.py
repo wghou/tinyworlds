@@ -4,13 +4,13 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import time
 import os
+import numpy as np
+import matplotlib.pyplot as plt
+from torchvision.utils import make_grid
 from src.vqvae.datasets.block import BlockDataset, LatentBlockDataset
 from src.vqvae.datasets.pong import PongDataset
 from src.vqvae.datasets.sonic import SonicDataset
 from src.vqvae.datasets.pole_position import PolePositionDataset
-import numpy as np
-import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
 
 
 def load_cifar():
@@ -133,15 +133,32 @@ def load_pole_position(num_frames=4):
 
 
 def data_loaders(train_data, val_data, batch_size):
+    # Use half of available CPU cores (minimum 2) for workers
+    num_workers = max(2, os.cpu_count() // 2)
+    print(f"os.cpu_count(): {os.cpu_count()}")
+    print(f"num_workers: {num_workers}")
 
-    train_loader = DataLoader(train_data,
-                              batch_size=batch_size,
-                              shuffle=True,
-                              pin_memory=True)
-    val_loader = DataLoader(val_data,
-                            batch_size=batch_size,
-                            shuffle=True,
-                            pin_memory=True)
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+        drop_last=True
+    )
+
+    val_loader = DataLoader(
+        val_data,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+        drop_last=True
+    )
     return train_loader, val_loader
 
 

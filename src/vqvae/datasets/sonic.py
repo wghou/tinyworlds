@@ -19,26 +19,23 @@ class SonicDataset(Dataset):
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
-            self.h5_file = h5py.File(save_path, 'r')
-            frames = self.h5_file['frames']
-            n_frames = int(len(frames))
-            print(f"Loading {n_frames} frames from {save_path}")
-            
-            # Load frames into memory in chunks
-            chunk_size = 1000  # Adjust based on available RAM
-            self.data = []
-            for i in tqdm(range(100, n_frames, chunk_size), desc="Loading frames"):
-                chunk = frames[i:min(i+chunk_size, n_frames)][:]  # [:] forces load into memory
-                self.data.extend(chunk)
-            self.data = np.array(self.data)
-            print(f"Loaded {len(self.data)} frames")
-            
-            # Split into train/val (90/10 split)
-            split_idx = int(0.9 * len(self.data))
-            self.data = self.data[:split_idx] if train else self.data[split_idx:]
-            
-            # Close HDF5 file since we loaded everything
-            self.h5_file.close()
+            with h5py.File(save_path, 'r') as h5_file:  # Use context manager
+                frames = h5_file['frames']
+                n_frames = int(len(frames))
+                print(f"Loading {n_frames} frames from {save_path}")
+                
+                # Load frames into memory in chunks
+                chunk_size = 1000  # Adjust based on available RAM
+                self.data = []
+                for i in tqdm(range(100, n_frames, chunk_size), desc="Loading frames"):
+                    chunk = frames[i:min(i+chunk_size, n_frames)][:]  # [:] forces load into memory
+                    self.data.extend(chunk)
+                self.data = np.array(self.data)
+                print(f"Loaded {len(self.data)} frames")
+                
+                # Split into train/val (90/10 split)
+                split_idx = int(0.9 * len(self.data))
+                self.data = self.data[:split_idx] if train else self.data[split_idx:]
         else:
             frames = self.preprocess_video(video_path)
             if save_path:
@@ -49,9 +46,8 @@ class SonicDataset(Dataset):
                                    compression='lzf')  # LZF is faster than gzip
                 
                 # Reload the saved data
-                self.h5_file = h5py.File(save_path, 'r')
-                frames = self.h5_file['frames'][:]  # Load all into memory
-                self.h5_file.close()
+                with h5py.File(save_path, 'r') as h5_file:  # Use context manager
+                    frames = h5_file['frames'][:]  # Load all into memory
                 
                 # Split into train/val
                 split_idx = int(0.9 * len(frames))

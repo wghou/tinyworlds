@@ -11,9 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import utils
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from utils import visualize_reconstruction
+from src.utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
 import json
 import wandb
+import math
 
 parser = argparse.ArgumentParser()
 
@@ -182,10 +184,23 @@ model = Video_Tokenizer(
 """
 Set up optimizer and training loop
 """
-optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, amsgrad=True)
+# Create parameter groups to avoid weight decay on biases and norm layers
+decay = []
+no_decay = []
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        if len(param.shape) == 1 or name.endswith(".bias") or "norm" in name:
+            no_decay.append(param)
+        else:
+            decay.append(param)
 
-# Add learning rate scheduler for better convergence
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+optimizer = optim.AdamW([
+    {'params': decay, 'weight_decay': 0.01},
+    {'params': no_decay, 'weight_decay': 0}
+], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
+
+# Create cosine scheduler with warmup
+scheduler = create_cosine_scheduler(optimizer, args.n_updates)
 
 """
 Load checkpoint if specified
@@ -269,9 +284,15 @@ model.train()
 
 def train():
     start_iter = max(args.start_iteration, results['n_updates'])
-
+    
+    train_iter = iter(training_loader)
     for i in tqdm(range(start_iter, args.n_updates)):
-        (x, _) = next(iter(training_loader))
+        try:
+            (x, _) = next(train_iter)
+        except StopIteration:
+            train_iter = iter(training_loader)  # Reset iterator when epoch ends
+            (x, _) = next(train_iter)
+            
         x = x.to(device)
         optimizer.zero_grad()
 
@@ -292,25 +313,23 @@ def train():
 
         # Log to W&B if enabled and available
         if args.use_wandb:
-            # Log training metrics
-            # --- Codebook usage -------------------------------------------------
-            with torch.no_grad():
-                latents = model.encoder(x)                    # [B, S, N, D]
-                quantized_latents = model.vq(latents)
-                indices = model.vq.get_indices_from_latents(quantized_latents, dim=-1)
-                unique_codes = torch.unique(indices).numel()
-                print(f"unique codes: {unique_codes}")
-                codebook_usage = unique_codes / model.codebook_size
-                print(f"codebook usage: {codebook_usage}")
-
-            wandb.log({
+            # Log basic metrics every step
+            metrics = {
                 'train/loss': recon_loss.item(),
                 'train/learning_rate': scheduler.get_last_lr()[0],
                 'train/x_hat_variance': torch.var(x_hat, dim=0).mean().item(),
                 'train/x_variance': torch.var(x, dim=0).mean().item(),
-                'train/codebook_usage': codebook_usage,
                 'step': i
-            })
+            }
+
+            # Calculate codebook usage only during log intervals
+            if i % args.log_interval == 0:
+                with torch.no_grad():
+                    indices = model.tokenize(x)
+                    unique_codes = torch.unique(indices).numel()
+                    metrics['train/codebook_usage'] = unique_codes / model.codebook_size
+
+            wandb.log(metrics)
             
             # Log system metrics
             if torch.cuda.is_available():
@@ -326,17 +345,6 @@ def train():
                     f'learning_rate/group_{j}': param_group['lr'],
                     'step': i
                 })
-
-        # Debug loss balance
-        if i % 10 == 0:  # Print every 10 iterations
-            print(f"Iteration {i}:")
-            print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
-            print(f"  Total Loss: {recon_loss.item():.6f}")
-            print(f"  x_hat variance: {torch.var(x_hat, dim=0).mean().item():.6f}")
-            print(f"  x variance: {torch.var(x, dim=0).mean().item():.6f}")
-
-        # print variance of x_hat across the batch dimension
-        print(f"Variance of x_hat: {torch.var(x_hat, dim=0).mean().item()}")
 
         if i % args.log_interval == 0:
             """

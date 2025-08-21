@@ -540,7 +540,7 @@ class Decoder(nn.Module):
         # Efficient patch-wise frame reconstruction head
         self.frame_head = PatchWiseFrameHead(embed_dim, patch_size=patch_size, out_ch=3)
         
-    def forward(self, latents, training=True):
+    def forward(self, latents):
         """
         Args:
             latents: [batch_size, seq_len, num_patches, latent_dim]
@@ -548,20 +548,6 @@ class Decoder(nn.Module):
         Returns:
             pred_frames: [batch_size, seq_len, channels, height, width]
         """
-        batch_size, seq_len, num_patches, latent_dim = latents.shape
-        
-        # Apply random masking during training
-        if training and self.training:
-            # Sample masking rate uniformly from 0.5 to 1
-            masking_rate = torch.rand(1).item() * 0.5 + 0.5  # [0.5, 1.0]
-            
-            # Create mask with Bernoulli distribution
-            mask = torch.bernoulli(torch.full((batch_size, seq_len), masking_rate, device=latents.device))
-            mask = mask.unsqueeze(-1).unsqueeze(-1)  # [batch_size, seq_len, 1, 1]
-            
-            # Apply mask (zero out masked latents)
-            latents = latents * mask
-
         # Embed latents and add spatial PE
         embedding = self.latent_embed(latents)  # [batch_size, seq_len, num_patches, embed_dim]
         embedding = embedding + self.pos_spatial_dec.to(embedding.device, embedding.dtype)
@@ -590,6 +576,23 @@ class Video_Tokenizer(nn.Module):
         # Apply vector quantization
         quantized_z = self.vq(embeddings)
 
+        # Decode quantized latents back to frames
+        x_hat = self.decoder(quantized_z)  # [batch_size, seq_len, channels, height, width]
+
+        return x_hat
+    
+    def tokenize(self, frames):
+        # Encode frames to latent representations
+        embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
+
+        # Apply vector quantization
+        quantized_z = self.vq(embeddings)
+
+        indices = self.vq.get_indices_from_latents(quantized_z, dim=-1)
+
+        return indices
+
+    def detokenize(self, quantized_z):
         # Decode quantized latents back to frames
         x_hat = self.decoder(quantized_z)  # [batch_size, seq_len, channels, height, width]
 
