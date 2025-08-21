@@ -136,7 +136,7 @@ def main():
     print(f"Loading {args.dataset} dataset...")
     
     # Load data
-    _, _, _, validation_loader, _ = load_data_and_data_loaders(
+    _, _, validation_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
         num_frames=args.seq_length

@@ -1,4 +1,4 @@
-from src.vqvae.models.video_tokenizer import STTransformer, sincos_2d, sincos_time
+from src.vqvae.models.video_tokenizer import STTransformer, sincos_2d, sincos_1d, sincos_time
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -12,17 +12,45 @@ class Decoder(nn.Module):
         Hp, Wp = H // patch_size, W // patch_size
         P = Hp * Wp
         
+        # Split embedding dimensions, ensuring each split is even
+        base_split = (embed_dim // 3) & ~1  # Round down to even number
+        remaining_dim = embed_dim - base_split  # Remaining after temporal
+        
+        # Split remaining dimensions between x and y, ensuring even numbers
+        self.spatial_x_dim = (remaining_dim // 2) & ~1  # Round down to even
+        self.spatial_y_dim = remaining_dim - self.spatial_x_dim  # Give remainder to y
+        self.temporal_dim = base_split  # Keep temporal dimension as base even split
+        
+        assert (self.spatial_x_dim + self.spatial_y_dim + self.temporal_dim) == embed_dim, \
+            f"Dimension mismatch: {self.spatial_x_dim} + {self.spatial_y_dim} + {self.temporal_dim} != {embed_dim}"
+        assert self.spatial_x_dim % 2 == 0 and self.spatial_y_dim % 2 == 0 and self.temporal_dim % 2 == 0, \
+            f"All dimensions must be even: x={self.spatial_x_dim}, y={self.spatial_y_dim}, t={self.temporal_dim}"
+        
         codebook_size = num_bins**latent_dim
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
-
+        
         # Latent embedding goes from latent_dim to embed_dim
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
         
-        # 2D spatial sincos PE buffer for decoder path
-        pe_spatial = sincos_2d(Hp, Wp, embed_dim, device='cpu', dtype=torch.float32)
-        self.register_buffer("pos_spatial_dec", pe_spatial[None, :, :], persistent=False)  # [1,P,E]
+        # Generate separate spatial x and y position encodings
+        pe_x = sincos_1d(Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
+        pe_y = sincos_1d(Hp, self.spatial_y_dim, device='cpu', dtype=torch.float32)  # [Hp, D/3+]
         
-        # Output projection
+        # Expand to 2D grid
+        pe_x = pe_x.unsqueeze(0).expand(Hp, Wp, -1)  # [Hp, Wp, D/3+]
+        pe_y = pe_y.unsqueeze(1).expand(Hp, Wp, -1)  # [Hp, Wp, D/3+]
+        
+        # Combine and pad with zeros for temporal part
+        pe_spatial = torch.cat([
+            pe_x,  # First third+: x position
+            pe_y,  # Second third+: y position
+            torch.zeros(Hp, Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal
+        ], dim=-1)  # [Hp, Wp, D]
+        
+        # Flatten spatial dimensions
+        pe_spatial = pe_spatial.reshape(P, embed_dim)  # [P, D]
+        self.register_buffer("pos_spatial_dec", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
+        
         self.mlp = nn.Linear(embed_dim, codebook_size)
         
         # Learned mask token embedding
@@ -60,21 +88,18 @@ class Decoder(nn.Module):
         else:
             mask_positions = None
 
-        embeddings = self.latent_embed(discrete_latents) # [B, S, N, E]
-
-        # Add spatial position encoding
-        embeddings = embeddings + self.pos_spatial_dec.to(embeddings.device, embeddings.dtype)  # broadcast [1,P,E] over [B,S,P,E]
+        embeddings = self.latent_embed(discrete_latents)  # [B, S, N, E]
         
-        # Add temporal position encoding
-        tpe = sincos_time(S, embeddings.shape[-1], embeddings.device, embeddings.dtype)  # [S, E]
-        embeddings = embeddings + tpe[None, :, None, :]  # broadcast [1,S,1,E] over [B,S,N,E]
-    
+        # Add spatial position encoding (affects only first 2/3 of dimensions)
+        embeddings = embeddings + self.pos_spatial_dec.to(embeddings.device, embeddings.dtype)
+        
         # The causal mask ensures each position can only attend to previous positions
+        # STTransformer will add temporal position encoding to last 1/3 of dimensions
         transformed = self.transformer(embeddings)  # [B, S, N, E]
-
+        
         # convert back to latent space
         next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
-
+        
         return next_token_logits, mask_positions  # [B, S, N, L^D], [B, S, N] or None
 
 class DynamicsModel(nn.Module):

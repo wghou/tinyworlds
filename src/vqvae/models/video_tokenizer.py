@@ -117,11 +117,40 @@ class PatchEmbedding(nn.Module):
         self.Hp, self.Wp = H // patch_size, W // patch_size
         self.num_patches = self.Hp * self.Wp
         
+        # Split embedding dimensions, ensuring each split is even
+        base_split = (embed_dim // 3) & ~1  # Round down to even number
+        remaining_dim = embed_dim - base_split  # Remaining after temporal
+        
+        # Split remaining dimensions between x and y, ensuring even numbers
+        self.spatial_x_dim = (remaining_dim // 2) & ~1  # Round down to even
+        self.spatial_y_dim = remaining_dim - self.spatial_x_dim  # Give remainder to y
+        self.temporal_dim = base_split  # Keep temporal dimension as base even split
+        
+        assert (self.spatial_x_dim + self.spatial_y_dim + self.temporal_dim) == embed_dim, \
+            f"Dimension mismatch: {self.spatial_x_dim} + {self.spatial_y_dim} + {self.temporal_dim} != {embed_dim}"
+        assert self.spatial_x_dim % 2 == 0 and self.spatial_y_dim % 2 == 0 and self.temporal_dim % 2 == 0, \
+            f"All dimensions must be even: x={self.spatial_x_dim}, y={self.spatial_y_dim}, t={self.temporal_dim}"
+        
         # Linear projection for patches
         self.proj = nn.Linear(3 * patch_size * patch_size, embed_dim)
         
-        # Precompute 2D sin-cos spatial PE as a buffer (moved to device/dtype on use)
-        pe_spatial = sincos_2d(self.Hp, self.Wp, embed_dim, device='cpu', dtype=torch.float32)
+        # Generate separate spatial x and y position encodings
+        pe_x = sincos_1d(self.Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
+        pe_y = sincos_1d(self.Hp, self.spatial_y_dim, device='cpu', dtype=torch.float32)  # [Hp, D/3+]
+        
+        # Expand to 2D grid
+        pe_x = pe_x.unsqueeze(0).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
+        pe_y = pe_y.unsqueeze(1).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
+        
+        # Combine and pad with zeros for temporal part
+        pe_spatial = torch.cat([
+            pe_x,  # First third+: x position
+            pe_y,  # Second third+: y position
+            torch.zeros(self.Hp, self.Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal
+        ], dim=-1)  # [Hp, Wp, D]
+        
+        # Flatten spatial dimensions
+        pe_spatial = pe_spatial.reshape(self.num_patches, embed_dim)  # [P, D]
         self.register_buffer("pos_spatial", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
         
     def forward(self, frames):
@@ -133,14 +162,14 @@ class PatchEmbedding(nn.Module):
         """
         batch_size, seq_len, C, H, W = frames.shape
         
-        # Reshape to patches using einops: [batch_size * seq_len, num_patches, patch_size * patch_size * channels]
+        # Reshape to patches using einops
         x = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (h w) (c p1 p2)', 
                       p1=self.patch_size, p2=self.patch_size)
         
         # Project to embeddings
         x = self.proj(x)  # [(b*s), P, D]
         
-        # Add position embeddings
+        # Add position embeddings (spatial x,y only - temporal added in transformer)
         x = x + self.pos_spatial.to(dtype=x.dtype, device=x.device)
         
         # Reshape back to sequence
@@ -318,6 +347,10 @@ class STTransformer(nn.Module):
     """ST-Transformer with multiple blocks"""
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True):
         super().__init__()
+        # Split dimensions, ensuring temporal is even
+        self.temporal_dim = (embed_dim // 3) & ~1  # Round down to even number
+        self.spatial_dims = embed_dim - self.temporal_dim  # Rest goes to spatial
+        
         self.blocks = nn.ModuleList([
             STTransformerBlock(embed_dim, num_heads, hidden_dim, causal)
             for _ in range(num_blocks)
@@ -330,10 +363,18 @@ class STTransformer(nn.Module):
         Returns:
             out: [batch_size, seq_len, num_patches, embed_dim]
         """
-        # Add temporal position encoding
+        # Add temporal position encoding to last third of embedding
         B, S, P, E = x.shape
-        tpe = sincos_time(S, E, x.device, x.dtype)           # [s, e]
-        x = x + tpe[None, :, None, :]                        # [1,s,1,e] broadcast
+        tpe = sincos_time(S, self.temporal_dim, x.device, x.dtype)  # [S, D/3]
+        
+        # Create padded temporal encoding
+        tpe_padded = torch.cat([
+            torch.zeros(S, self.spatial_dims, device=x.device, dtype=x.dtype),  # Zeros for spatial
+            tpe  # Temporal encoding in last third
+        ], dim=-1)  # [S, D]
+        
+        # Add temporal encoding
+        x = x + tpe_padded[None, :, None, :]  # broadcast [1,S,1,D] over [B,S,P,D]
         
         # Apply transformer blocks
         for block in self.blocks:
