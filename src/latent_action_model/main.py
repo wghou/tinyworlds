@@ -22,9 +22,13 @@ except ImportError:
     WANDB_AVAILABLE = False
     print("⚠️ wandb not available. Install with: pip install wandb")
 
+# Performance flags via CLI
+# We place parser creation early to apply backend flags ASAP
+
 def readable_timestamp():
     """Generate a readable timestamp for filenames"""
     return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
+
 
 def save_run_configuration(args, run_dir, timestamp, device):
     """Save all configuration parameters and run information to a file"""
@@ -65,6 +69,7 @@ def save_run_configuration(args, run_dir, timestamp, device):
             json.dump(config, f, indent=2, default=str)
         print(f'Configuration saved to: {config_path}')
 
+
 def save_lam_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
     """Save LAM model checkpoint including model state, optimizer state, results and hyperparameters"""
     results_to_save = {
@@ -76,6 +81,7 @@ def save_lam_model_and_results(model, optimizer, results, hyperparameters, times
     checkpoint_path = os.path.join(checkpoints_dir, f'lam_checkpoint_{timestamp}.pth')
     torch.save(results_to_save, checkpoint_path)
     return checkpoint_path
+
 
 def main():
     # Parse arguments
@@ -103,9 +109,35 @@ def main():
     parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
+    parser.add_argument("--wandb_media", action="store_true", default=False, help="Log images/videos to W&B (off by default)")
+
+    # Performance flags
+    parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
+    parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
+    parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
     
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Speed-related backend settings
+    if torch.cuda.is_available():
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
+            torch.backends.cudnn.allow_tf32 = bool(args.tf32)
+        except Exception:
+            pass
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
+        except Exception:
+            pass
+
+    # Try to relax inductor settings to avoid fused-attention rank errors
+    try:
+        import torch._inductor.config as inductor_config
+        inductor_config.fuse_attention = False
+    except Exception:
+        pass
     
     # Create organized save directory structure
     if args.save:
@@ -138,7 +170,23 @@ def main():
         beta=args.beta
     ).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    # Optionally compile
+    if args.compile:
+        try:
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+            print("✅ LAM compiled with torch.compile")
+        except Exception as e:
+            print(f"⚠️ torch.compile not available or failed: {e}")
+
+    # Optimizer (try fused Adam)
+    try:
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, fused=True)
+        print("✅ Using fused Adam")
+    except TypeError:
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    # AMP scaler
+    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
     
     # Initialize results tracking
     results = {
@@ -154,52 +202,8 @@ def main():
 
     # Initialize W&B if enabled and available
     if args.use_wandb and WANDB_AVAILABLE:
-        # Create model configuration
-        model_config = {
-            'frame_size': (args.frame_size, args.frame_size),
-            'n_actions': args.n_actions,
-            'patch_size': args.patch_size,
-            'embed_dim': args.embed_dim,
-            'num_heads': args.num_heads,
-            'hidden_dim': args.hidden_dim,
-            'num_blocks': args.num_blocks,
-            'action_dim': args.action_dim,
-            'dropout': args.dropout,
-            'beta': args.beta
-        }
-        
-        # Create W&B config
-        wandb_config = {
-            'batch_size': args.batch_size,
-            'n_updates': args.n_updates,
-            'learning_rate': args.learning_rate,
-            'log_interval': args.log_interval,
-            'dataset': args.dataset,
-            'seq_length': args.seq_length,
-            'model_architecture': model_config,
-            'device': str(device),
-            'timestamp': args.filename
-        }
-        
-        # Initialize W&B
         run_name = args.wandb_run_name or f"lam_{args.filename}"
-        wandb.init(
-            project=args.wandb_project,
-            config=wandb_config,
-            name=run_name,
-            tags=["lam", "training"]
-        )
-        
-        # Watch model for gradients and parameters
-        wandb.watch(model, log="all", log_freq=args.log_interval)
-        
-        print(f"🚀 W&B run initialized: {wandb.run.name}")
-        print(f"📊 Project: {args.wandb_project}")
-        print(f"🔗 View at: {wandb.run.get_url()}")
-    elif args.use_wandb and not WANDB_AVAILABLE:
-        print("❌ W&B requested but not available. Install with: pip install wandb")
-
-    print(f"Initial VQ codebook variance: {torch.var(model.quantizer.embedding.weight).item():.6f}")
+        wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
 
     # Training loop
     train_iter = iter(training_loader)
@@ -210,15 +214,19 @@ def main():
             train_iter = iter(training_loader)
             frame_sequences, _ = next(train_iter)
         
-        frame_sequences = frame_sequences.to(device)
+        frame_sequences = frame_sequences.to(device, non_blocking=True)
         
-        # Forward pass with current step for warmup
-        loss, pred_frames, action_bin_indices, loss_dict = model(frame_sequences, current_step=epoch)
+        # Forward pass with current step for warmup under autocast
+        with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
+            loss, pred_frames, action_bin_indices, loss_dict = model(frame_sequences, current_step=epoch)
         
         # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
         
         # Track results
         results["total_losses"].append(loss.cpu().detach())
@@ -253,6 +261,10 @@ def main():
                     'step': epoch
                 })
         
+        # Print progress every 50 steps
+        if epoch % args.log_interval == 0:
+            print(f"Step {epoch}: total={loss.item():.6f} recon={loss_dict['recon_loss'].item():.6f} vq={loss_dict['vq_loss'].item():.6f}")
+
         # Print progress every 50 steps
         if (epoch + 1) % 50 == 0:
             with torch.no_grad():
@@ -304,8 +316,8 @@ def main():
                 os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename}.png')
             )
             
-            # Log reconstruction comparison to W&B
-            if args.use_wandb and WANDB_AVAILABLE:
+            # Log reconstruction comparison to W&B (media optional)
+            if args.use_wandb and WANDB_AVAILABLE and args.wandb_media:
                 # Ensure tensors are on CPU and in the right format
                 original = frame_sequences[:, -1].detach().cpu()
                 reconstructed = pred_frames[:, -1].detach().cpu()
@@ -333,7 +345,7 @@ def main():
                     # Log to wandb
                     wandb.log({
                         "reconstruction_comparison": wandb.Image(
-                            full_comparison,
+                            full_comparison[0].permute(1,2,0).contiguous().numpy(),
                             caption=f"Original (left) vs Reconstructed (right) - Step {epoch}"
                         ),
                         "step": epoch
@@ -344,7 +356,6 @@ def main():
                 if video.min() < 0:
                     video = (video + 1) / 2
                 video = torch.clamp(video, 0, 1)
-                
                 wandb.log({
                     "video_sequence": wandb.Video(
                         video[0].numpy(),  # [T, C, H, W]
@@ -384,6 +395,5 @@ def main():
     action3 = model.encode(prev_frame, next_frame_different)
     print("Action for different transition:", action3.item())
 
-if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
+if __name__ == "__main__":
     main()

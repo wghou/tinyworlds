@@ -62,9 +62,34 @@ parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run na
 parser.add_argument("--lr_step_size", type=int, default=2000, help="Step size for learning rate decay")
 parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
 
+# Performance flags
+parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
+parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
+parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Speed-related backend settings
+if torch.cuda.is_available():
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
+        torch.backends.cudnn.allow_tf32 = bool(args.tf32)
+    except Exception:
+        pass
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
+    except Exception:
+        pass
+
+# Try to relax inductor settings before compile to avoid fused-attention shape issues
+try:
+    import torch._inductor.config as inductor_config
+    inductor_config.fuse_attention = False
+except Exception:
+    pass
 
 # Create organized save directory structure
 if args.save:
@@ -181,6 +206,14 @@ model = Video_Tokenizer(
     num_bins=args.num_bins,
 ).to(device)
 
+# Optionally compile the model
+if args.compile:
+    try:
+        model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        print("✅ Model compiled with torch.compile")
+    except Exception as e:
+        print(f"⚠️ torch.compile not available or failed: {e}")
+
 """
 Set up optimizer and training loop
 """
@@ -194,13 +227,24 @@ for name, param in model.named_parameters():
         else:
             decay.append(param)
 
-optimizer = optim.AdamW([
-    {'params': decay, 'weight_decay': 0.01},
-    {'params': no_decay, 'weight_decay': 0}
-], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
+# Try to enable fused AdamW for better throughput
+try:
+    optimizer = optim.AdamW([
+        {'params': decay, 'weight_decay': 0.01},
+        {'params': no_decay, 'weight_decay': 0}
+    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
+    print("✅ Using fused AdamW")
+except TypeError:
+    optimizer = optim.AdamW([
+        {'params': decay, 'weight_decay': 0.01},
+        {'params': no_decay, 'weight_decay': 0}
+    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
 
 # Create cosine scheduler with warmup
 scheduler = create_cosine_scheduler(optimizer, args.n_updates)
+
+# AMP scaler
+scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
 """
 Load checkpoint if specified
@@ -293,18 +337,23 @@ def train():
             train_iter = iter(training_loader)  # Reset iterator when epoch ends
             (x, _) = next(train_iter)
             
-        x = x.to(device)
-        optimizer.zero_grad()
+        x = x.to(device, non_blocking=True)
+        optimizer.zero_grad(set_to_none=True)
 
-        x_hat = model(x)
+        # Forward + loss under autocast
+        with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
+            x_hat = model(x)
+            recon_loss = torch.mean((x_hat - x)**2)
 
-        recon_loss = torch.mean((x_hat - x)**2)
-        recon_loss.backward()
-        
-        # Clip gradients to prevent instability
+        # Backward with scaler
+        scaler.scale(recon_loss).backward()
+
+        # Clip gradients before stepping
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()  # Step the learning rate scheduler
 
         results["recon_errors"].append(recon_loss.cpu().detach())
@@ -353,37 +402,16 @@ def train():
             if args.save:
                 hyperparameters = args.__dict__
                 save_videotokenizer_model_and_results(
-                    model, optimizer, results, hyperparameters, args.filename, checkpoints_dir)
-                
-                # Add visualization
-                save_path = os.path.join(visualizations_dir, f'reconstruction_step_{i}_{args.filename}.png')
-                visualize_reconstruction(x[:16], x_hat[:16], save_path)  # Visualize first 16 images
-                
-                # Log reconstruction comparison to W&B
-                if args.use_wandb:
-                    # Ensure tensors are on CPU and in the right format
-                    original = x[:16].detach().cpu()
-                    reconstructed = x_hat[:16].detach().cpu()
-                    
-                    # Denormalize from [-1, 1] to [0, 1] if needed
-                    if original.min() < 0:
-                        original = (original + 1) / 2
-                        reconstructed = (reconstructed + 1) / 2
-                    
-                    # Clamp to valid range
-                    original = torch.clamp(original, 0, 1)
-                    reconstructed = torch.clamp(reconstructed, 0, 1)
-                    
-                    # Create comparison images
-                    comparison_images = []
-                    for k in range(min(16, original.shape[0])):
-                        # Stack original and reconstructed side by side
-                        comparison = torch.cat([original[k], reconstructed[k]], dim=2)  # Concatenate horizontally
-                        comparison_images.append(comparison)
-                    
-            print('Update #', i, 'Recon Error:',
-                  torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item(),
-                  'Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
+                    model, optimizer, results, hyperparameters, args.filename, checkpoints_dir
+                )
+                # Visualizations
+                x_hat_vis = x_hat.detach().cpu()
+                x_vis = x.detach().cpu()
+                save_path = os.path.join(visualizations_dir, f'vqvae_recon_step_{i}_{args.filename}.png')
+                visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
+
+            print('Update #', i, 'Recon Loss:',
+                  torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
     
     # Finish W&B run
     if args.use_wandb:

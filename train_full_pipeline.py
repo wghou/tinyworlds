@@ -35,9 +35,11 @@ import glob
 from pathlib import Path
 import argparse
 
+
 def readable_timestamp():
     """Generate a readable timestamp for filenames"""
     return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
+
 
 def find_latest_checkpoint(base_dir, model_name):
     """
@@ -72,6 +74,7 @@ def find_latest_checkpoint(base_dir, model_name):
     # Return the most recent checkpoint
     return max(checkpoint_files, key=os.path.getctime)
 
+
 def run_command(cmd, description):
     """
     Run a command and handle errors
@@ -88,8 +91,17 @@ def run_command(cmd, description):
     print(f"Command: {' '.join(cmd)}")
     print(f"{'='*60}")
     
+    # Recommend environment tweaks for DataLoader throughput
+    env = os.environ.copy()
+    env.setdefault("NG_NUM_WORKERS", str(max(2, (os.cpu_count() or 4) - 2)))
+    env.setdefault("NG_PREFETCH_FACTOR", "4")
+    env.setdefault("NG_PIN_MEMORY", "1")
+    env.setdefault("NG_PERSISTENT_WORKERS", "1")
+    # Prefer TF32 globally
+    env.setdefault("TORCH_CUDNN_V8_API_ENABLED", "1")
+
     try:
-        result = subprocess.run(cmd, check=True, capture_output=False)
+        result = subprocess.run(cmd, check=True, capture_output=False, env=env)
         print(f"\n✅ {description} completed successfully!")
         return True
     except subprocess.CalledProcessError as e:
@@ -99,10 +111,11 @@ def run_command(cmd, description):
         print(f"\n⚠️ {description} interrupted by user")
         return False
     
+
 def parse_args():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Full Pipeline Training Script")
-    parser.add_argument("--use_wandb", action="store_true", default=False, 
+    parser.add_argument("--use_wandb", action="store_true", default=True, 
                        help="Enable Weights & Biases logging for all models")
     parser.add_argument("--wandb_project", type=str, default="nano-genie-pipeline",
                        help="Base project name for W&B (each model will have its own project)")
@@ -110,30 +123,33 @@ def parse_args():
                        help="Dataset to use for training")
     parser.add_argument("--patch_size", type=int, default=4,
                        help="Patch size for video tokenizer")
-    parser.add_argument("--embed_dim", type=int, default=128,
+    parser.add_argument("--embed_dim", type=int, default=256,
                        help="Embed dimension")
     parser.add_argument("--num_heads", type=int, default=8,
                        help="Number of heads")
     parser.add_argument("--hidden_dim", type=int, default=512,
                        help="Hidden dimension")
-    parser.add_argument("--num_blocks", type=int, default=4,
+    parser.add_argument("--num_blocks", type=int, default=5,
                        help="Number of blocks")
     parser.add_argument("--latent_dim", type=int, default=6,
                        help="Latent dimension")
-    parser.add_argument("--dropout", type=float, default=0.1,
-                       help="Dropout rate")
     parser.add_argument("--num_bins", type=int, default=4,
                        help="Number of bins per dimension for FSQ")
-    parser.add_argument("--learning_rate", type=float, default=1e-4,
+    parser.add_argument("--learning_rate", type=float, default=1e-3,
                        help="Learning rate")
     parser.add_argument("--log_interval", type=int, default=100,
                        help="Log interval")
     parser.add_argument("--context_length", type=int, default=4,
                        help="Context length")
-    parser.add_argument("--batch_size", type=int, default=16,
+    parser.add_argument("--batch_size", type=int, default=256,
                        help="Batch size")
+    # Performance flags applied to all subcommands
+    parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
+    parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
+    parser.add_argument("--compile", action="store_true", default=False, help="Compile models with torch.compile")
     args = parser.parse_args()
     return args
+
 
 def main():
     args = parse_args()
@@ -151,73 +167,84 @@ def main():
         return
     
     # Step 1: Train Video Tokenizer
-    print("\n" + "="*60)
-    print("STEP 1: Training Video Tokenizer on SONIC")
-    print("="*60)
-    
-    video_tokenizer_cmd = [
-        sys.executable, "src/vqvae/main.py",
-        "--dataset", args.dataset,
-        "--batch_size", str(args.batch_size),
-        "--n_updates", "7000",  # Reduced for faster training
-        "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
-        "--log_interval", str(args.log_interval),
-        "--context_length", str(args.context_length),
-        "--patch_size", str(args.patch_size),
-        "--embed_dim", str(args.embed_dim),
-        "--num_heads", str(args.num_heads),
-        "--hidden_dim", str(args.hidden_dim),
-        "--num_blocks", str(args.num_blocks),
-        "--latent_dim", str(args.latent_dim),
-        "--num_bins", "4",  # Number of bins per dimension for FSQ
-        "--use_wandb"
-    ]
-    
-    # Add W&B arguments if enabled
-    if args.use_wandb:
-        video_tokenizer_cmd.extend([
-            "--use_wandb",
-            "--wandb_project", f"{args.wandb_project}"
-        ])
-    
-    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-        print("❌ Video tokenizer training failed. Stopping pipeline.")
-        return
-    
-    # # Step 2: Train LAM
     # print("\n" + "="*60)
-    # print("STEP 2: Training LAM on SONIC")
+    # print("STEP 1: Training Video Tokenizer on SONIC")
     # print("="*60)
     
-    # lam_cmd = [
-    #     sys.executable, "src/latent_action_model/main.py",
+    # video_tokenizer_cmd = [
+    #     sys.executable, "src/vqvae/main.py",
     #     "--dataset", args.dataset,
-    #     "--batch_size", "16",
-    #     "--n_updates", "1",  # Reduced for faster training
-    #     "--learning_rate", str(args.learning_rate),
-    #     "--log_interval", "50",
-    #     "--seq_length", str(args.context_length),
-    #     "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
+    #     "--batch_size", str(args.batch_size),
+    #     "--n_updates", "10000",  # Reduced for faster training
+    #     "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
+    #     "--log_interval", str(args.log_interval),
+    #     "--context_length", str(args.context_length),
+    #     "--patch_size", str(args.patch_size),
     #     "--embed_dim", str(args.embed_dim),
     #     "--num_heads", str(args.num_heads),
     #     "--hidden_dim", str(args.hidden_dim),
     #     "--num_blocks", str(args.num_blocks),
-    #     "--action_dim", str(args.latent_dim),
-    #     "--dropout", "0.1",
-    #     "--n_actions", "8",  # Exactly 8 actions for SONIC (up, down, left, right, up-left, up-right, down-left, down-right)
-    #     "--beta", "1.0"  # VQ loss weight
+    #     "--latent_dim", str(args.latent_dim),
+    #     "--num_bins", "4",  # Number of bins per dimension for FSQ
     # ]
+    # if args.amp:
+    #     video_tokenizer_cmd.append("--amp")
+    # if args.tf32:
+    #     video_tokenizer_cmd.append("--tf32")
+    # if args.compile:
+    #     video_tokenizer_cmd.append("--compile")
     
     # # Add W&B arguments if enabled
     # if args.use_wandb:
-    #     lam_cmd.extend([
+    #     video_tokenizer_cmd.extend([
     #         "--use_wandb",
-    #         "--wandb_project", f"{args.wandb_project}-lam"
+    #         "--wandb_project", f"{args.wandb_project}"
     #     ])
     
-    # if not run_command(lam_cmd, "LAM Training"):
-    #     print("❌ LAM training failed. Stopping pipeline.")
+    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
     #     return
+    
+    # Step 2: Train LAM
+    print("\n" + "="*60)
+    print("STEP 2: Training LAM on SONIC")
+    print("="*60)
+    
+    lam_cmd = [
+        sys.executable, "src/latent_action_model/main.py",
+        "--dataset", args.dataset,
+        "--batch_size", str(args.batch_size),
+        "--n_updates", "1",  # Reduced for faster training
+        "--learning_rate", str(args.learning_rate),
+        "--log_interval", "50",
+        "--seq_length", str(args.context_length),
+        "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
+        "--embed_dim", str(args.embed_dim),
+        "--num_heads", str(args.num_heads),
+        "--hidden_dim", str(args.hidden_dim),
+        "--num_blocks", str(args.num_blocks),
+        "--action_dim", str(args.latent_dim),
+        "--dropout", "0.1",
+        "--n_actions", "8",  # Exactly 8 actions for SONIC
+        "--beta", "1.0",
+    ]
+    if args.amp:
+        lam_cmd.append("--amp")
+    if args.tf32:
+        lam_cmd.append("--tf32")
+    if args.compile:
+        lam_cmd.append("--compile")
+    
+    # Add W&B arguments if enabled
+    if args.use_wandb:
+        lam_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}-lam"
+        ])
+    
+    if not run_command(lam_cmd, "LAM Training"):
+        print("❌ LAM training failed. Stopping pipeline.")
+        return
     
     # Step 3: Find the latest checkpoints
     print("\n" + "="*60)
@@ -249,7 +276,7 @@ def main():
         "--lam_path", lam_checkpoint,
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "7000",
+        "--n_updates", "20000",
         "--learning_rate", str(args.learning_rate),
         "--log_interval", str(args.log_interval),
         "--context_length", str(args.context_length),
@@ -260,8 +287,13 @@ def main():
         "--num_blocks", str(args.num_blocks),
         "--latent_dim", str(args.latent_dim),
         "--num_bins", str(args.num_bins),
-        "--use_wandb",
     ]
+    if args.amp:
+        dynamics_cmd.append("--amp")
+    if args.tf32:
+        dynamics_cmd.append("--tf32")
+    if args.compile:
+        dynamics_cmd.append("--compile")
     
     # Add W&B arguments if enabled
     if args.use_wandb:

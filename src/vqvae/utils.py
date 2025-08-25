@@ -133,19 +133,33 @@ def load_pole_position(num_frames=4):
 
 
 def data_loaders(train_data, val_data, batch_size):
-    # Use half of available CPU cores (minimum 2) for workers
-    num_workers = max(2, os.cpu_count() // 2)
+    # Use most of available CPU cores (leave 2 for system), minimum 2
+    env_workers = os.environ.get("NG_NUM_WORKERS")
+    if env_workers is not None and env_workers.isdigit():
+        num_workers = max(2, int(env_workers))
+    else:
+        num_workers = max(2, (os.cpu_count() or 4) - 2)
     print(f"os.cpu_count(): {os.cpu_count()}")
     print(f"num_workers: {num_workers}")
+
+    # Prefetch factor override
+    env_prefetch = os.environ.get("NG_PREFETCH_FACTOR")
+    if env_prefetch is not None and env_prefetch.isdigit():
+        prefetch_factor = max(2, int(env_prefetch))
+    else:
+        prefetch_factor = 4
+
+    pin_memory = os.environ.get("NG_PIN_MEMORY", "1") != "0"
+    persistent_workers = os.environ.get("NG_PERSISTENT_WORKERS", "1") != "0"
 
     train_loader = DataLoader(
         train_data,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
         drop_last=True
     )
 
@@ -154,9 +168,9 @@ def data_loaders(train_data, val_data, batch_size):
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
         drop_last=True
     )
     return train_loader, val_loader
@@ -243,9 +257,9 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
         reconstruction: Tensor of reconstructed images (B, C, H, W) or sequences (B, seq_len, C, H, W) 
         save_path: Optional path to save the visualization
     """
-    # Move tensors to CPU and convert to numpy arrays
-    original = original.detach().cpu()
-    reconstruction = reconstruction.detach().cpu()
+    # Move tensors to CPU and convert to float32 for matplotlib compatibility
+    original = original.detach().to('cpu', dtype=torch.float32)
+    reconstruction = reconstruction.detach().to('cpu', dtype=torch.float32)
     
     # Handle single frames by expanding to sequences
     if original.dim() == 4:  # (B, C, H, W)
@@ -266,15 +280,15 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     # For original sequences
     # Reshape to (num_sequences * seq_length, C, H, W) for make_grid
     orig_flat = original.reshape(-1, *original.shape[2:])  # (4*seq_len, C, H, W)
-    grid_orig = make_grid(orig_flat, nrow=seq_length, normalize=True, padding=2)
-    ax1.imshow(grid_orig.permute(1, 2, 0))
+    grid_orig = make_grid(orig_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
+    ax1.imshow(grid_orig.permute(1, 2, 0).contiguous().numpy())
     ax1.axis('off')
     ax1.set_title(f'Original Sequences (4 sequences × {seq_length} frames)')
     
     # For reconstructed sequences
     recon_flat = reconstruction.reshape(-1, *reconstruction.shape[2:])  # (4*seq_len, C, H, W)
-    grid_recon = make_grid(recon_flat, nrow=seq_length, normalize=True, padding=2)
-    ax2.imshow(grid_recon.permute(1, 2, 0))
+    grid_recon = make_grid(recon_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
+    ax2.imshow(grid_recon.permute(1, 2, 0).contiguous().numpy())
     ax2.axis('off')
     ax2.set_title(f'Reconstructed Sequences (4 sequences × {seq_length} frames)')
     

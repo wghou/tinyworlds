@@ -91,9 +91,34 @@ parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run na
 parser.add_argument("--lr_step_size", type=int, default=1000, help="Step size for learning rate decay")
 parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
 
+# Performance flags
+parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
+parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
+parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
+
 args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Speed-related backend settings
+if torch.cuda.is_available():
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
+        torch.backends.cudnn.allow_tf32 = bool(args.tf32)
+    except Exception:
+        pass
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
+    except Exception:
+        pass
+
+# Try to relax inductor settings to avoid fused-attention rank errors
+try:
+    import torch._inductor.config as inductor_config
+    inductor_config.fuse_attention = False
+except Exception:
+    pass
 
 # Create organized save directory structure
 if args.save:
@@ -267,6 +292,14 @@ dynamics_model = DynamicsModel(
     latent_dim=args.latent_dim,
 ).to(device)
 
+# Optionally compile dynamics model
+if args.compile:
+    try:
+        dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        print("✅ Dynamics model compiled with torch.compile")
+    except Exception as e:
+        print(f"⚠️ torch.compile not available or failed: {e}")
+
 """
 Set up optimizer and training loop
 """
@@ -280,13 +313,23 @@ for name, param in dynamics_model.named_parameters():
         else:
             decay.append(param)
 
-optimizer = optim.AdamW([
-    {'params': decay, 'weight_decay': 0.01},
-    {'params': no_decay, 'weight_decay': 0}
-], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
+try:
+    optimizer = optim.AdamW([
+        {'params': decay, 'weight_decay': 0.01},
+        {'params': no_decay, 'weight_decay': 0}
+    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
+    print("✅ Using fused AdamW")
+except TypeError:
+    optimizer = optim.AdamW([
+        {'params': decay, 'weight_decay': 0.01},
+        {'params': no_decay, 'weight_decay': 0}
+    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
 
 # Create cosine scheduler with warmup
 scheduler = create_cosine_scheduler(optimizer, args.n_updates)
+
+# AMP scaler for mixed precision
+scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
 """
 Load checkpoint if specified
@@ -378,8 +421,8 @@ def train(use_actions=False):
             train_iter = iter(training_loader)  # Reset iterator when epoch ends
             x, _ = next(train_iter)
             
-        x = x.to(device)  # [batch_size, seq_len, channels, height, width]
-        optimizer.zero_grad()
+        x = x.to(device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
+        optimizer.zero_grad(set_to_none=True)
 
         # Get video tokenizer latents for current frames (frozen model)
         with torch.no_grad():
@@ -409,61 +452,50 @@ def train(use_actions=False):
 
         target_next_latents = quantized_video_latents  # [batch_size, seq_len, num_patches, latent_dim]
 
-        # Predict next frame latents using dynamics model
-        # The masking is now handled inside the dynamics model (MaskGit-style)
-        predicted_next_logits, mask_positions = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
-        
-        if mask_positions is not None:
-            num_masked = mask_positions.sum().item()
-            total_positions = mask_positions.numel()
-            masking_rate = num_masked / total_positions
-
-        # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
-        # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
-        # codebook size = L^latent_dim
-        target_next_tokens = video_tokenizer.vq.get_indices_from_latents(target_next_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
-        # print(f"codebook utilization: {torch.unique(target_next_tokens).numel() / video_tokenizer.codebook_size}")
-        # target_one_hot = F.one_hot(target_next_tokens, num_classes=video_tokenizer.codebook_size).float() # [batch_size, seq_len-1, num_patches, codebook_size]
-        # Compute dynamics loss (cross entropy between probs and one hot encoded target)
- 
-        # Compute loss only on masked tokens (MaskGit-style)
-        if mask_positions is not None:
-            # mask_positions: [B, S, N] where True = masked, False = keep
-            # We want to compute loss only on masked tokens (True values)
-            mask_for_loss = mask_positions
-            # Flatten for loss computation
-            masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [N, codebook_size]
-            masked_targets = target_next_tokens.reshape(-1)  # [N]
-            masked_mask = mask_for_loss.reshape(-1)  # [N]
+        # Predict next frame latents using dynamics model under autocast
+        with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
+            predicted_next_logits, mask_positions = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
             
-            # Only compute loss on masked tokens
-            if masked_mask.sum() > 0:  # If there are masked tokens
-                # Ensure shapes match
-                assert masked_logits.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_logits.shape[0]} vs {masked_mask.shape[0]}"
-                assert masked_targets.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_targets.shape[0]} vs {masked_mask.shape[0]}"
-                
-                masked_logits = masked_logits[masked_mask]  # [num_masked, codebook_size]
-                masked_targets = masked_targets[masked_mask]  # [num_masked]
-                
-                dynamics_loss = F.cross_entropy(masked_logits, masked_targets)
-            else:
-                # If no tokens were masked, use a small dummy loss
-                dynamics_loss = torch.tensor(0.0, device=predicted_next_logits.device, requires_grad=True)
-        else:
-            # During evaluation, compute loss on all tokens
-            dynamics_loss = F.cross_entropy(
-                predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
-                target_next_tokens.reshape(-1),  # [N]
-            )
+            if mask_positions is not None:
+                num_masked = mask_positions.sum().item()
+                total_positions = mask_positions.numel()
+                masking_rate = num_masked / total_positions
 
-        # Total loss
-        loss = dynamics_loss
-        loss.backward()
-        
-        # Clip gradients to prevent instability
+            # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
+            # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
+            # codebook size = L^latent_dim
+            target_next_tokens = video_tokenizer.vq.get_indices_from_latents(target_next_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
+            
+            # Compute loss only on masked tokens (MaskGit-style)
+            if mask_positions is not None:
+                mask_for_loss = mask_positions
+                masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [N, codebook_size]
+                masked_targets = target_next_tokens.reshape(-1)  # [N]
+                masked_mask = mask_for_loss.reshape(-1)  # [N]
+                
+                if masked_mask.sum() > 0:  # If there are masked tokens
+                    assert masked_logits.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_logits.shape[0]} vs {masked_mask.shape[0]}"
+                    assert masked_targets.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_targets.shape[0]} vs {masked_mask.shape[0]}"
+                    masked_logits = masked_logits[masked_mask]  # [num_masked, codebook_size]
+                    masked_targets = masked_targets[masked_mask]  # [num_masked]
+                    dynamics_loss = F.cross_entropy(masked_logits, masked_targets)
+                else:
+                    dynamics_loss = torch.tensor(0.0, device=predicted_next_logits.device, requires_grad=True)
+            else:
+                dynamics_loss = F.cross_entropy(
+                    predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
+                    target_next_tokens.reshape(-1),  # [N]
+                )
+
+            # Total loss
+            loss = dynamics_loss
+
+        # Backward + clip with scaler
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(dynamics_model.parameters(), max_norm=1.0)
-        
         optimizer.step()
+        scaler.update()
         scheduler.step()  # Step the learning rate scheduler
 
         results["dynamics_losses"].append(dynamics_loss.cpu().detach())
@@ -502,10 +534,11 @@ def train(use_actions=False):
                 )
                 
                 # Decode predicted latents (predicted_next_latents: [B, seq_len-1, ...])
-                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, seq_len-1, ...]
+                with torch.no_grad():
+                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, seq_len-1, ...]
  
                 # Ground truth frames
-                target_frames_full = x[:16, 1:]  # [B, seq_len-1, ...]
+                target_frames_full = x[:, 1:]  # [B, seq_len-1, ...]
 
                 # Display the masked patches in the ground truth frames as black
                 masked_target_frames_full = target_frames_full.clone()
@@ -546,7 +579,7 @@ def train(use_actions=False):
                     masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
 
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
-                visualize_reconstruction(masked_target_frames_full[:16], predicted_frames[:16], save_path)
+                visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
             print('Update #', i, 'Dynamics Loss:',
                   torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),
@@ -557,4 +590,4 @@ def train(use_actions=False):
         finish_wandb()
 
 if __name__ == "__main__":
-    train(use_actions=True)
+    train()

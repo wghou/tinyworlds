@@ -12,6 +12,41 @@ import os
 import random
 import glob
 from einops import rearrange
+import json
+
+# Check if CUDA is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+def _read_arch_from_run_config(ckpt_path, fallback_hp_keys=None):
+    """Read model architecture from a checkpoint's run_config.json or hyperparameters.
+    Returns a dict of keys -> values. fallback_hp_keys maps target keys to keys in hyperparameters.
+    """
+    arch = {}
+    if ckpt_path and os.path.isfile(ckpt_path):
+        try:
+            run_dir = os.path.dirname(os.path.dirname(ckpt_path))
+            cfg_path = os.path.join(run_dir, 'run_config.json')
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, 'r') as f:
+                    cfg = json.load(f)
+                arch = cfg.get('model_architecture', {})
+                return arch
+        except Exception:
+            pass
+        # Fallback: load from checkpoint hyperparameters section
+        try:
+            ck = torch.load(ckpt_path, map_location='cpu')
+            hp = ck.get('hyperparameters', {})
+            if fallback_hp_keys:
+                for k, src_k in fallback_hp_keys.items():
+                    if src_k in hp:
+                        arch[k] = hp[src_k]
+            else:
+                arch = hp
+        except Exception:
+            pass
+    return arch
 
 def predict_next_tokens(dynamics_model, video_latents, action_latent=None, temperature=1.0, use_actions=True):
     """Use dynamics model to predict next video tokens with temperature sampling"""
@@ -26,7 +61,7 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent=None, tempe
             assert action_latent.shape[1] == latent_dim, "Action latent dimension must match video latent dimension"
             
             # Expand action to match video latents shape for each timestep
-            action_expanded = action_latent.unsqueeze(1).unsqueeze(1).expand(-1, seq_len, num_patches, -1)  # [1, seq_len, num_patches, action_dim]
+            action_expanded = action_latent.unsqueeze(1).unsqueeze(1).expand(-1, seq_len, num_patches, -1).to(video_latents.device)  # [1, seq_len, num_patches, action_dim]
             
             # Add action latents to video latents (not concatenate)
             combined_latents = video_latents + action_expanded  # [1, seq_len, num_patches, latent_dim]
@@ -41,28 +76,28 @@ def predict_next_tokens(dynamics_model, video_latents, action_latent=None, tempe
         
         return next_video_latents
 
-def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1):
+def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1, device=None):
     """Sample action with diversity to avoid getting stuck in loops"""
     if len(previous_actions) < 2:
         # Just sample randomly for first few actions
-        return torch.randint(0, n_actions, (1,))
+        return torch.randint(0, n_actions, (1,), device=device)
     
     # Get recent action distribution
     recent_actions = previous_actions[-5:]  # Last 5 actions
-    action_counts = torch.bincount(torch.tensor([a.item() for a in recent_actions]), minlength=n_actions)
+    action_counts = torch.bincount(torch.tensor([a.item() for a in recent_actions], device=device), minlength=n_actions)
     
     # Calculate diversity penalty (favor less frequent actions)
     diversity_penalty = action_counts.float() / len(recent_actions)
     
     # Sample with diversity
-    if torch.rand(1).item() < diversity_weight:
+    if torch.rand(1, device=device).item() < diversity_weight:
         # Sample from less frequent actions
         min_count = action_counts.min()
         candidate_actions = torch.where(action_counts == min_count)[0]
-        action_index = candidate_actions[torch.randint(0, len(candidate_actions), (1,))]
+        action_index = candidate_actions[torch.randint(0, len(candidate_actions), (1,), device=device)]
     else:
         # Sample randomly
-        action_index = torch.randint(0, n_actions, (1,))
+        action_index = torch.randint(0, n_actions, (1,), device=device)
     
     return action_index
 
@@ -72,15 +107,27 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
     
     # Load video tokenizer
     print(f"Loading video tokenizer from {video_tokenizer_path}")
+    vt_arch = _read_arch_from_run_config(
+        video_tokenizer_path,
+        fallback_hp_keys={
+            'patch_size': 'patch_size',
+            'embed_dim': 'embed_dim',
+            'num_heads': 'num_heads',
+            'hidden_dim': 'hidden_dim',
+            'num_blocks': 'num_blocks',
+            'latent_dim': 'latent_dim',
+            'num_bins': 'num_bins',
+        }
+    )
     video_tokenizer = Video_Tokenizer(
         frame_size=(64, 64),
-        patch_size=4,
-        embed_dim=128,
-        num_heads=8,
-        hidden_dim=512,
-        num_blocks=4,
-        latent_dim=6,
-        num_bins=4
+        patch_size=vt_arch.get('patch_size', 4),
+        embed_dim=vt_arch.get('embed_dim', 128),
+        num_heads=vt_arch.get('num_heads', 8),
+        hidden_dim=vt_arch.get('hidden_dim', 512),
+        num_blocks=vt_arch.get('num_blocks', 4),
+        latent_dim=vt_arch.get('latent_dim', 6),
+        num_bins=vt_arch.get('num_bins', 4)
     ).to(device)
     
     # Try loading with weights_only=True first, fallback to False if it fails
@@ -98,15 +145,26 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
     lam = None
     if use_actions:
         print(f"Loading LAM from {lam_path}")
+        lam_arch = _read_arch_from_run_config(
+            lam_path,
+            fallback_hp_keys={
+                'patch_size': 'patch_size',
+                'embed_dim': 'embed_dim',
+                'num_heads': 'num_heads',
+                'hidden_dim': 'hidden_dim',
+                'num_blocks': 'num_blocks',
+                'action_dim': 'action_dim',
+            }
+        )
         lam = LAM(
             frame_size=(64, 64),
             n_actions=8,
-            patch_size=4,  # Match video tokenizer patch_size
-            embed_dim=128,
-            num_heads=8,
-            hidden_dim=512,
-            num_blocks=4,
-            action_dim=6,  # Match checkpoint (was 16)
+            patch_size=lam_arch.get('patch_size', vt_arch.get('patch_size', 4)),
+            embed_dim=lam_arch.get('embed_dim', vt_arch.get('embed_dim', 128)),
+            num_heads=lam_arch.get('num_heads', vt_arch.get('num_heads', 8)),
+            hidden_dim=lam_arch.get('hidden_dim', vt_arch.get('hidden_dim', 512)),
+            num_blocks=lam_arch.get('num_blocks', vt_arch.get('num_blocks', 4)),
+            action_dim=lam_arch.get('action_dim', vt_arch.get('latent_dim', 6)),
             beta=1.0
         ).to(device)
         
@@ -125,15 +183,27 @@ def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actio
     
     # Load dynamics model
     print(f"Loading dynamics model from {dynamics_path}")
+    dyn_arch = _read_arch_from_run_config(
+        dynamics_path,
+        fallback_hp_keys={
+            'patch_size': 'patch_size',
+            'embed_dim': 'embed_dim',
+            'num_heads': 'num_heads',
+            'hidden_dim': 'hidden_dim',
+            'num_blocks': 'num_blocks',
+            'latent_dim': 'latent_dim',
+            'num_bins': 'num_bins',
+        }
+    )
     dynamics_model = DynamicsModel(
         frame_size=(64, 64),
-        patch_size=4,
-        embed_dim=128,
-        num_heads=8,
-        hidden_dim=512,
-        num_blocks=4,
-        latent_dim=6,
-        num_bins=4
+        patch_size=dyn_arch.get('patch_size', vt_arch.get('patch_size', 4)),
+        embed_dim=dyn_arch.get('embed_dim', vt_arch.get('embed_dim', 128)),
+        num_heads=dyn_arch.get('num_heads', vt_arch.get('num_heads', 8)),
+        hidden_dim=dyn_arch.get('hidden_dim', vt_arch.get('hidden_dim', 512)),
+        num_blocks=dyn_arch.get('num_blocks', vt_arch.get('num_blocks', 4)),
+        latent_dim=dyn_arch.get('latent_dim', vt_arch.get('latent_dim', 6)),
+        num_bins=dyn_arch.get('num_bins', vt_arch.get('num_bins', 4))
     ).to(device)
     
     # Try loading with weights_only=True first, fallback to False if it fails
@@ -325,16 +395,17 @@ def get_model_context_sizes(video_tokenizer, dynamics_model):
     return context_window
 
 
-def exp_schedule_torch(t, T, N, k=5.0):
+def exp_schedule_torch(t, T, N, k=5.0, device=None):
     x = t / T
-    k_tensor = torch.tensor(k)
+    k_tensor = torch.tensor(k, device=device)
     result = N * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
     # Ensure we reach N by the final step
     if t == T - 1:
-        return torch.tensor(N, dtype=result.dtype)
+        return torch.tensor(N, dtype=result.dtype, device=device)
     return result
 
 def main(args):
+    # Move models to the specified device
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
     
     # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
@@ -367,10 +438,6 @@ def main(args):
     # Get context window size from models
     context_window = get_model_context_sizes(video_tokenizer, dynamics_model)
     
-    # Only use last context_window frames for model input
-    # if context_frames.shape[1] > context_window:
-    #     model_input_frames = context_frames[:, -context_window:, :, :, :]
-    # else:
     print(f"context_window: {context_window}")
     print(f"context_frames shape: {context_frames.shape}")
     model_input_frames = context_frames
@@ -396,7 +463,7 @@ def main(args):
 
         # Sample action only if using actions
         if args.use_actions:
-            action_index = sample_action_with_diversity(inferred_actions, n_actions)
+            action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
             inferred_actions.append(action_index)
             new_action_latent = get_lam_latent_from_action_index(lam, action_index)
             print(f"new_action_latent shape: {new_action_latent.shape}")
@@ -437,23 +504,19 @@ def main(args):
             current_latents = current_latents + action_latent # [1, seq_len, num_patches, latent_dim]
 
         # append mask frame
-        mask_token_value = dynamics_model.decoder.mask_token.data  # Extract the actual tensor value
+        mask_token_value = dynamics_model.mask_token.data  # Extract the actual tensor value
         # Expand mask token to match the required shape: [1, 1, N, latent_dim]
-        mask_latents = mask_token_value.expand(1, args.prediction_horizon, N, -1)  # [1, 4, num_patches, latent_dim]
+        mask_latents = mask_token_value.expand(1, args.prediction_horizon, N, -1).to(args.device)  # [1, 4, num_patches, latent_dim]
 
         input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
 
-        mask = torch.full((1, args.prediction_horizon, N, 1), True, dtype=torch.bool)  # [1, 4, num_patches, 1]
+        mask = torch.full((1, args.prediction_horizon, N, 1), True, dtype=torch.bool, device=args.device)  # [1, 4, num_patches, 1]
 
         n_tokens = 0
 
         for t in range(T):
-            # Calculate how many tokens to unmask at this step
-            # n = e^(t/T) * N, where T is num steps and N is num patches
-            # n_tokens = int(torch.cos(torch.tensor(t / T)) * N)
-            # n_tokens = min(n_tokens, N)  # Ensure we don't exceed N
             prev_n_tokens = n_tokens
-            n_tokens_raw = exp_schedule_torch(t, T, N)
+            n_tokens_raw = exp_schedule_torch(t, T, N, device=args.device)
             n_tokens = int(n_tokens_raw)
             tokens_to_unmask = n_tokens - prev_n_tokens
             print(f"DEBUG: t={t}, n_tokens_raw={n_tokens_raw:.2f}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
@@ -497,7 +560,7 @@ def main(args):
                 for idx in tokens_to_unmask_indices:
                     predicted_latent = video_tokenizer.vq.get_latents_from_indices(
                         predicted_indices[0:1, -1:, idx:idx+1], dim=-1
-                    )  # [1, 1, 1, latent_dim]
+                    ).to(args.device)  # [1, 1, 1, latent_dim]
                     
                     # Update input_latents at the last timestep, this position
                     input_latents[0, -1, idx] = predicted_latent[0, 0, 0]
@@ -505,18 +568,12 @@ def main(args):
                 print(f"Step {t+1}/{T}: Unmasked {len(tokens_to_unmask_indices)} tokens (target: {tokens_to_unmask}, remaining: {masked_mask.sum().item()})")
             else:
                 print(f"Step {t+1}/{T}: No masked tokens remaining")
-
-            print(f"Step {t+1}/{T}: Unmasked {tokens_to_unmask} tokens")
         
         # Final result: input_latents contains the decoded sequence (last timestep)
         next_video_latents = input_latents
 
         # decode next video tokens to frames
-        # next_video_latents = next_video_latents.unsqueeze(1)  # Add sequence dimension: [1, 1, num_patches, latent_dim]
         next_frames = video_tokenizer.decoder(next_video_latents)  # [1, seq_len, C, H, W]
-
-        # visualize next frames and ground truth frames side by side
-        # visualize_decoded_frames(next_frames[:, -context_window:, :, :], generated_frames[:, -context_window:, :, :], step=i) # Pass ground_truth_sequence[:, i+1:i+2, :, :, :]
         
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
         
@@ -545,9 +602,9 @@ def parse_args():
     parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_20_21_50_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_20_21_50_32_2025.pth")
     parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
     parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Tue_Jul_22_20_08_24_2025/checkpoints/dynamics_checkpoint_Tue_Jul_22_20_08_24_2025.pth")
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default=str(device), help="Device to use (cuda/cpu)")
     parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
-    parser.add_argument("--context_window", type=int, default=4, help="Maximum sequence length for context window")
+    parser.add_argument("--context_window", type=int, default=3, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
@@ -611,6 +668,12 @@ def find_latest_checkpoint(base_dir, model_name):
 
 if __name__ == "__main__":
     args = parse_args()
+    
+    # Ensure device is set correctly
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print("[WARN] CUDA requested but not available. Falling back to CPU.")
+        args.device = "cpu"
+    
     if args.use_latest_checkpoints:
         base_dir = os.path.abspath(os.path.dirname(__file__))
         vt_ckpt = find_latest_checkpoint(base_dir, "videotokenizer")
