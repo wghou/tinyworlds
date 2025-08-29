@@ -3,230 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
-
-class PatchEmbedding(nn.Module):
-    """Convert frames to patch embeddings for ST-Transformer"""
-    def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512):
-        super().__init__()
-        self.frame_size = frame_size
-        self.patch_size = patch_size
-        self.embed_dim = embed_dim
-        
-        # Calculate number of patches
-        self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
-        
-        # Linear projection for patches
-        self.proj = nn.Linear(3 * patch_size * patch_size, embed_dim)
-        
-        # Position embeddings for patches within each frame
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, embed_dim))
-        
-    def forward(self, frames):
-        """
-        Args:
-            frames: [batch_size, seq_len, channels, height, width]
-        Returns:
-            embeddings: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        batch_size, seq_len, C, H, W = frames.shape
-        
-        # Reshape to patches using einops: [batch_size * seq_len, num_patches, patch_size * patch_size * channels]
-        # h and w here are actually number of patches in h and w dims, p1 and p2 are identical (patch size)
-        patches = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (h w) (c p1 p2)', 
-                          p1=self.patch_size, p2=self.patch_size)
-        
-        # Project to embeddings
-        embeddings = self.proj(patches) # [batch_size * seq_len, num_patches, embed_dim]
-        
-        # Add position embeddings
-        embeddings = embeddings + self.pos_embed # [batch_size * seq_len, num_patches, embed_dim]
-        
-        # Reshape back to sequence
-        embeddings = rearrange(embeddings, '(b s) p e -> b s p e', b=batch_size, s=seq_len) # [batch_size, seq_len, num_patches, embed_dim]
-        
-        return embeddings
-
-class SpatialAttention(nn.Module):
-    """Spatial attention layer - attends over patches within each frame"""
-    def __init__(self, embed_dim, num_heads, dropout=0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == embed_dim
-        
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-        self.norm = nn.LayerNorm(embed_dim)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        # Always expects x of shape [batch, seq, num_patches, embed_dim]
-        batch_size, seq_len, num_patches, embed_dim = x.shape
-        
-        # Project to Q, K, V and reshape: [batch, seq, num_patches, embed_dim] -> [batch, seq, num_heads, num_patches, head_dim]
-        q = rearrange(self.q_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
-        k = rearrange(self.k_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
-
-        k_t = k.transpose(-2, -1) # [batch, seq, num_heads, head_dim, num_patches]
-        
-        # Compute attention: [batch, seq, num_heads, num_patches, num_patches]
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
-        
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights) # TODO: do we need dropout here?
-        
-        # Apply attention to values: [batch, seq, num_heads, num_patches, head_dim]
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = rearrange(attn_output, 'b s n p d -> b s p (n d)')
-        
-        # Final projection TODO: do we need this?
-        attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
-        
-        # Add residual and normalize
-        out = self.norm(x + attn_out)
-        
-        return out
-
-class TemporalAttention(nn.Module):
-    """Temporal attention layer - attends over time steps for each patch"""
-    def __init__(self, embed_dim, num_heads, dropout=0.1, causal=True):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == embed_dim
-        
-        self.q_proj = nn.Linear(embed_dim, embed_dim)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-        self.norm = nn.LayerNorm(embed_dim)
-        self.causal = causal
-        
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        # Always expects x of shape [batch, seq, num_patches, embed_dim]
-        batch_size, seq_len, num_patches, embed_dim = x.shape
-        
-        # Project to Q, K, V and reshape: [batch, seq, num_patches, embed_dim] -> [batch, num_patches, num_heads, seq, head_dim]
-        q = rearrange(self.q_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
-        k = rearrange(self.k_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
-
-        k_t = k.transpose(-2, -1) # [batch, num_patches, num_heads, head_dim, seq]
-        
-        # Compute attention: [batch, num_patches, num_heads, seq, seq]
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
-        
-        # Apply causal mask if needed (for each token t in seq, mask out all tokens to the right of t (after t))
-        if self.causal:
-            mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
-            mask = mask.to(x.device)
-            scores = scores.masked_fill(mask, float('-inf')) # [batch, num_patches, num_heads, seq, seq]
-        
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights) # TODO: do we need dropout here?
-        
-        # Apply attention to values: [batch, num_patches, num_heads, seq, head_dim]
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = rearrange(attn_output, 'b p n s d -> b s p (n d)') # [batch_size, seq_len, num_patches, embed_dim]
-        
-        # Final projection TODO: do we need this?
-        attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
-        
-        # Add residual and normalize
-        out = self.norm(x + attn_out)
-        
-        return out
-
-class FeedForward(nn.Module):
-    """Feed-forward network"""
-    def __init__(self, embed_dim, hidden_dim, dropout=0.1):
-        super().__init__()
-        self.linear1 = nn.Linear(embed_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.norm = nn.LayerNorm(embed_dim)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        batch_size, seq_len, num_patches, embed_dim = x.shape
-        
-        # Reshape to process all elements at once: [batch_size * seq_len * num_patches, embed_dim]
-        x_reshaped = rearrange(x, 'b s p e -> (b s p) e')
-        
-        # Apply feed-forward
-        out = self.linear1(x_reshaped)
-        out = F.relu(out)
-        out = self.dropout(out)
-        out = self.linear2(out)
-        
-        # Add residual and normalize
-        out = self.norm(x_reshaped + out)
-        
-        # Reshape back
-        out = rearrange(out, '(b s p) e -> b s p e', b=batch_size, s=seq_len, p=num_patches)
-        
-        return out
-
-class STTransformerBlock(nn.Module):
-    """ST-Transformer block with spatial attention, temporal attention, and feed-forward"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, dropout=0.1, causal=True):
-        super().__init__()
-        self.spatial_attn = SpatialAttention(embed_dim, num_heads, dropout)
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, dropout, causal)
-        self.ffn = FeedForward(embed_dim, hidden_dim, dropout)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        # Spatial attention - attends over patches within each frame
-        x = self.spatial_attn(x)
-        
-        # Temporal attention - attends over time steps for each patch
-        x = self.temporal_attn(x)
-        
-        # Feed-forward
-        x = self.ffn(x)
-        
-        return x
-
-class STTransformer(nn.Module):
-    """ST-Transformer with multiple blocks"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, dropout=0.1, causal=True):
-        super().__init__()
-        self.blocks = nn.ModuleList([
-            STTransformerBlock(embed_dim, num_heads, hidden_dim, dropout, causal)
-            for _ in range(num_blocks)
-        ])
-        
-    def forward(self, x):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        for block in self.blocks:
-            x = block(x)
-        return x
+from src.vqvae.models.video_tokenizer import STTransformer, PatchEmbedding
 
 class VectorQuantizer(nn.Module):
     def __init__(self, codebook_size, embedding_dim, beta=1.0):
@@ -361,10 +138,10 @@ class VectorQuantizer(nn.Module):
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent actions"""
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8, 
-                 hidden_dim=2048, num_blocks=6, action_dim=64, dropout=0.1):
+                 hidden_dim=2048, num_blocks=6, action_dim=64):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         
         # Action prediction head
         self.action_head = nn.Sequential(
@@ -406,10 +183,10 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     """ST-Transformer decoder that takes frames and actions to predict next frame"""
     def __init__(self, frame_size=(64, 64), patch_size=16, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, action_dim=64, dropout=0.1):
+                 hidden_dim=2048, num_blocks=6, action_dim=64):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, dropout, causal=True)
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         
         # Action embedding
         self.action_embed = nn.Linear(action_dim, embed_dim)
@@ -479,11 +256,11 @@ class Decoder(nn.Module):
 class LAM(nn.Module):
     """ST-Transformer based Latent Action Model"""
     def __init__(self, frame_size=(64, 64), n_actions=8, patch_size=16, embed_dim=512, 
-                 num_heads=8, hidden_dim=2048, num_blocks=6, action_dim=64, dropout=0.1, beta=1.0):
+                 num_heads=8, hidden_dim=2048, num_blocks=6, action_dim=64, beta=1.0):
         super().__init__()
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim, dropout)
+        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim)
         self.quantizer = VectorQuantizer(n_actions, action_dim, beta)
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim, dropout)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim)
         self.register_buffer('step', torch.tensor(0))
         
     def forward(self, frames, current_step=None):

@@ -127,7 +127,7 @@ def main():
     parser.add_argument("--dataset", type=str, default="SONIC", help="Dataset to use")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--seq_length", type=int, default=8, help="Sequence length")
-    parser.add_argument("--num_batches", type=int, default=1, help="Number of batches to visualize")
+    parser.add_argument("--num_batches", type=int, default=4, help="Number of batches to visualize")
     parser.add_argument("--save_dir", type=str, default="batch_visualizations", help="Directory to save visualizations")
     parser.add_argument("--max_batch_display", type=int, default=8, help="Maximum batch elements to display")
     parser.add_argument("--max_seq_display", type=int, default=8, help="Maximum timesteps to display")
@@ -164,7 +164,7 @@ def main():
         
         # Create visualization
         os.makedirs(args.save_dir, exist_ok=True)
-        save_path = os.path.join(args.save_dir, f"batch_{batch_idx + 1}.png")
+        save_path = os.path.join(args.save_dir, f"{args.dataset}_batch_{batch_idx + 1}.png")
         visualize_batch(
             frames, 
             save_path=save_path,

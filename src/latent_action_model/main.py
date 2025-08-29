@@ -44,7 +44,6 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'hidden_dim': args.hidden_dim,
             'num_blocks': args.num_blocks,
             'action_dim': args.action_dim,
-            'dropout': args.dropout,
             'beta': args.beta,
             'quantization_method': 'Vector Quantization (VQ)'
         },
@@ -97,7 +96,6 @@ def main():
     parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
     parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
     parser.add_argument("--action_dim", type=int, default=6)
-    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
     parser.add_argument("--dataset", type=str, default="SONIC")
     parser.add_argument("--seq_length", type=int, default=8, help="Length of frame sequences")
     parser.add_argument("--beta", type=float, default=1.0, help="VQ loss weight")
@@ -166,7 +164,6 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
         action_dim=args.action_dim,
-        dropout=args.dropout,
         beta=args.beta
     ).to(device)
 

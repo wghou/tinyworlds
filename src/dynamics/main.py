@@ -262,7 +262,6 @@ lam = LAM(
     hidden_dim=args.hidden_dim,  # Match LAM training
     num_blocks=args.num_blocks,  # Align with checkpoint (4 blocks)
     action_dim=args.latent_dim,  # Match LAM training
-    dropout=args.dropout  # Match LAM training
 ).to(device)
 
 # Load LAM checkpoint

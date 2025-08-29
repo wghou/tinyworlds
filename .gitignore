@@ -3,3 +3,4 @@
 data/
 *.png
 wandb/*
+setup.sh

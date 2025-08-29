@@ -11,6 +11,7 @@ from src.vqvae.datasets.block import BlockDataset, LatentBlockDataset
 from src.vqvae.datasets.pong import PongDataset
 from src.vqvae.datasets.sonic import SonicDataset
 from src.vqvae.datasets.pole_position import PolePositionDataset
+from src.vqvae.datasets.picodoom import PicoDoomDataset
 
 
 def load_cifar():
@@ -131,6 +132,29 @@ def load_pole_position(num_frames=4):
                        num_frames=num_frames)
     return train, val
 
+def load_picodoom(num_frames=4):
+    current_folder_path = os.getcwd()
+    video_path = current_folder_path + '/data/picodoom cleaned.mp4'
+    preprocessed_path = current_folder_path + '/data/picodoom_frames.h5'
+    
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    train = PicoDoomDataset(video_path, 
+                       transform=transform,
+                       save_path=preprocessed_path,
+                       train=True,
+                       num_frames=num_frames)
+    val = PicoDoomDataset(video_path, 
+                       transform=transform,
+                       save_path=preprocessed_path,
+                       train=False,
+                       num_frames=num_frames)
+    return train, val
+
+
 
 def data_loaders(train_data, val_data, batch_size):
     # Use most of available CPU cores (leave 2 for system), minimum 2
@@ -210,6 +234,12 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
         x_train_var = np.var(training_data.data)
     elif dataset == 'POLE_POSITION':
         training_data, validation_data = load_pole_position(num_frames=num_frames)
+        training_loader, validation_loader = data_loaders(
+            training_data, validation_data, batch_size)
+
+        x_train_var = np.var(training_data.data)
+    elif dataset == 'PICODOOM':
+        training_data, validation_data = load_picodoom(num_frames=num_frames)
         training_loader, validation_loader = data_loaders(
             training_data, validation_data, batch_size)
 

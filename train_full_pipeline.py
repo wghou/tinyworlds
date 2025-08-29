@@ -214,7 +214,7 @@ def main():
         sys.executable, "src/latent_action_model/main.py",
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "1",  # Reduced for faster training
+        "--n_updates", "4000",  # Reduced for faster training
         "--learning_rate", str(args.learning_rate),
         "--log_interval", "50",
         "--seq_length", str(args.context_length),
@@ -224,7 +224,6 @@ def main():
         "--hidden_dim", str(args.hidden_dim),
         "--num_blocks", str(args.num_blocks),
         "--action_dim", str(args.latent_dim),
-        "--dropout", "0.1",
         "--n_actions", "8",  # Exactly 8 actions for SONIC
         "--beta", "1.0",
     ]
@@ -287,6 +286,7 @@ def main():
         "--num_blocks", str(args.num_blocks),
         "--latent_dim", str(args.latent_dim),
         "--num_bins", str(args.num_bins),
+        "--use_actions"
     ]
     if args.amp:
         dynamics_cmd.append("--amp")

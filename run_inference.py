@@ -603,14 +603,14 @@ def parse_args():
     parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
     parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Tue_Jul_22_20_08_24_2025/checkpoints/dynamics_checkpoint_Tue_Jul_22_20_08_24_2025.pth")
     parser.add_argument("--device", type=str, default=str(device), help="Device to use (cuda/cpu)")
-    parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
+    parser.add_argument("--generation_steps", type=int, default=14, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=3, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
-    parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
+    parser.add_argument("--use_actions", action="store_true", default=True, help="Whether to use action latents in the dynamics model (default: False)")
     parser.add_argument("--teacher_forced", action="store_true", default=False,
                         help="Run teacher-forced inference (always use ground-truth context).")
-    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
+    parser.add_argument("--use_latest_checkpoints", action="store_true", default=True, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
     return parser.parse_args()
 
