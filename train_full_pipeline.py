@@ -119,7 +119,7 @@ def parse_args():
                        help="Enable Weights & Biases logging for all models")
     parser.add_argument("--wandb_project", type=str, default="nano-genie-pipeline",
                        help="Base project name for W&B (each model will have its own project)")
-    parser.add_argument("--dataset", type=str, default="SONIC",
+    parser.add_argument("--dataset", type=str, default="PICODOOM",
                        help="Dataset to use for training")
     parser.add_argument("--patch_size", type=int, default=4,
                        help="Patch size for video tokenizer")
@@ -143,6 +143,8 @@ def parse_args():
                        help="Context length")
     parser.add_argument("--batch_size", type=int, default=256,
                        help="Batch size")
+    parser.add_argument("--n_actions", type=int, default=8,
+                       help="Number of actions")
     # Performance flags applied to all subcommands
     parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
     parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
@@ -167,43 +169,43 @@ def main():
         return
     
     # Step 1: Train Video Tokenizer
-    # print("\n" + "="*60)
-    # print("STEP 1: Training Video Tokenizer on SONIC")
-    # print("="*60)
+    print("\n" + "="*60)
+    print("STEP 1: Training Video Tokenizer on SONIC")
+    print("="*60)
     
-    # video_tokenizer_cmd = [
-    #     sys.executable, "src/vqvae/main.py",
-    #     "--dataset", args.dataset,
-    #     "--batch_size", str(args.batch_size),
-    #     "--n_updates", "10000",  # Reduced for faster training
-    #     "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
-    #     "--log_interval", str(args.log_interval),
-    #     "--context_length", str(args.context_length),
-    #     "--patch_size", str(args.patch_size),
-    #     "--embed_dim", str(args.embed_dim),
-    #     "--num_heads", str(args.num_heads),
-    #     "--hidden_dim", str(args.hidden_dim),
-    #     "--num_blocks", str(args.num_blocks),
-    #     "--latent_dim", str(args.latent_dim),
-    #     "--num_bins", "4",  # Number of bins per dimension for FSQ
-    # ]
-    # if args.amp:
-    #     video_tokenizer_cmd.append("--amp")
-    # if args.tf32:
-    #     video_tokenizer_cmd.append("--tf32")
-    # if args.compile:
-    #     video_tokenizer_cmd.append("--compile")
+    video_tokenizer_cmd = [
+        sys.executable, "src/vqvae/main.py",
+        "--dataset", args.dataset,
+        "--batch_size", str(args.batch_size),
+        "--n_updates", "5000",  # Reduced for faster training
+        "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
+        "--log_interval", str(args.log_interval),
+        "--context_length", str(args.context_length),
+        "--patch_size", str(args.patch_size),
+        "--embed_dim", str(args.embed_dim),
+        "--num_heads", str(args.num_heads),
+        "--hidden_dim", str(args.hidden_dim),
+        "--num_blocks", str(args.num_blocks),
+        "--latent_dim", str(args.latent_dim),
+        "--num_bins", "4",  # Number of bins per dimension for FSQ
+    ]
+    if args.amp:
+        video_tokenizer_cmd.append("--amp")
+    if args.tf32:
+        video_tokenizer_cmd.append("--tf32")
+    if args.compile:
+        video_tokenizer_cmd.append("--compile")
     
-    # # Add W&B arguments if enabled
-    # if args.use_wandb:
-    #     video_tokenizer_cmd.extend([
-    #         "--use_wandb",
-    #         "--wandb_project", f"{args.wandb_project}"
-    #     ])
+    # Add W&B arguments if enabled
+    if args.use_wandb:
+        video_tokenizer_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}"
+        ])
     
-    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
-    #     return
+    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+        print("❌ Video tokenizer training failed. Stopping pipeline.")
+        return
     
     # Step 2: Train LAM
     print("\n" + "="*60)
@@ -214,7 +216,7 @@ def main():
         sys.executable, "src/latent_action_model/main.py",
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "4000",  # Reduced for faster training
+        "--n_updates", "5000",  # Reduced for faster training
         "--learning_rate", str(args.learning_rate),
         "--log_interval", "50",
         "--seq_length", str(args.context_length),
@@ -224,7 +226,7 @@ def main():
         "--hidden_dim", str(args.hidden_dim),
         "--num_blocks", str(args.num_blocks),
         "--action_dim", str(args.latent_dim),
-        "--n_actions", "8",  # Exactly 8 actions for SONIC
+        "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
         "--beta", "1.0",
     ]
     if args.amp:
@@ -275,7 +277,7 @@ def main():
         "--lam_path", lam_checkpoint,
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "20000",
+        "--n_updates", "10000",
         "--learning_rate", str(args.learning_rate),
         "--log_interval", str(args.log_interval),
         "--context_length", str(args.context_length),
