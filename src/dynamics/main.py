@@ -229,7 +229,7 @@ Load pre-trained models
 """
 print("Loading pre-trained video tokenizer...")
 video_tokenizer = Video_Tokenizer(
-    frame_size=(64, 64), 
+    frame_size=(args.frame_size, args.frame_size), 
     patch_size=args.patch_size,
     embed_dim=args.embed_dim,
     num_heads=args.num_heads,
@@ -254,7 +254,7 @@ else:
 
 print("Loading pre-trained latent action model...")
 lam = LAM(
-    frame_size=(64, 64),
+    frame_size=(args.frame_size, args.frame_size),
     n_actions=8,  # Match full pipeline
     patch_size=args.patch_size,  # Match LAM training
     embed_dim=args.embed_dim,  # Match LAM training
@@ -282,7 +282,7 @@ Set up dynamics model
 """
 print("Initializing dynamics model...")
 dynamics_model = DynamicsModel(
-    frame_size=(64, 64),
+    frame_size=(args.frame_size, args.frame_size),
     patch_size=args.patch_size,
     embed_dim=args.embed_dim,
     num_heads=args.num_heads,

@@ -4,6 +4,34 @@ import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
 
+class FSQGate(nn.Module):
+    """Learnable temperature gate for FSQ: u = tanh(z / tau) + noise"""
+    def __init__(self, init_tau=3.0, min_tau=1.0, max_tau=6.0, noise_std=0.01):
+        super().__init__()
+        self.log_tau = nn.Parameter(torch.log(torch.tensor(init_tau, dtype=torch.float32)))
+        self.min_tau = float(min_tau)
+        self.max_tau = float(max_tau)
+        self.noise_std = float(noise_std)
+    def forward(self, z, train=True):
+        tau = self.log_tau.exp().clamp(self.min_tau, self.max_tau)
+        u = torch.tanh(z / tau)
+        if train and self.noise_std > 0.0:
+            u = u + torch.randn_like(u) * self.noise_std
+        return u, tau
+
+class RMSNorm(nn.Module):
+    """Simple RMSNorm across the last dimension with learnable scale."""
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+    def forward(self, x):
+        # x: [..., dim]
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+        x_hat = x / rms
+        return x_hat * self.scale
+
+
 def sincos_1d(L, D, device, dtype):
     """
     Compute 1D sinusoidal position encodings.
@@ -387,12 +415,20 @@ class FiniteScalarQuantizer(nn.Module):
     Quantizes each dimension independently by bounding to 0, num_bins then rounding to nearest integer
     Prevents token collapse and no auxiliary losses necessary 
     """
-    def __init__(self, latent_dim=6, num_bins=4):
+    def __init__(self, latent_dim=6, num_bins=4, init_tau=3.0, min_tau=1.0, max_tau=6.0, noise_std=0.01, use_rmsnorm=True):
         super().__init__()
         self.num_bins = num_bins
         self.levels_np = torch.tensor(latent_dim * [num_bins])
         # Register basis as a buffer so it gets moved to the correct device
         self.register_buffer('basis', num_bins**torch.arange(latent_dim))
+        # # Learnable temperature gate for softened tanh
+        # self.fsq_gate = FSQGate(init_tau=init_tau, min_tau=min_tau, max_tau=max_tau, noise_std=noise_std)
+        # # Per-feature normalization before FSQ
+        # self.use_rmsnorm = use_rmsnorm
+        # if use_rmsnorm:
+        #     self.pre_norm = RMSNorm(latent_dim)
+        # else:
+        #     self.pre_norm = nn.LayerNorm(latent_dim, elementwise_affine=True)
 
     def scale_and_shift(self, z):
         """
@@ -413,6 +449,15 @@ class FiniteScalarQuantizer(nn.Module):
         Returns:
             quantized_z: quantized z with num_bins bins per dimension [batch_size, seq_len, num_patches, latent_dim]
         """
+        # # Normalize per feature before softened tanh to stabilize mags
+        # pre = self.pre_norm(z)
+
+        # # Soften tanh using learnable/clamped tau and add small noise in training
+        # u, _ = self.fsq_gate(pre, train=self.training)
+
+        # # apply 0.5 * (u + 1) to go from [-1, 1] to [0, num_bins - 1]
+        # bounded_z = self.scale_and_shift(u)
+
         tanh_z = torch.tanh(z)
 
         # apply 0.5 * (tanh(z) + 1) to go from z dimension to [0, num_bins - 1]

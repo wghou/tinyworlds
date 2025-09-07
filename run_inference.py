@@ -413,7 +413,7 @@ def main(args):
 
     # Load data and get ground truth sequence
     _, _, data_loader, _, _ = load_data_and_data_loaders(
-        dataset='SONIC', batch_size=1, num_frames=frames_to_load)
+        dataset=args.dataset, batch_size=1, num_frames=frames_to_load)
 
     random_idx = random.randint(0, len(data_loader.dataset) - 1)
     og_ground_truth_sequence = data_loader.dataset[random_idx][0]  # full sequence
@@ -462,7 +462,16 @@ def main(args):
         print(f"video_latent_sequence shape: {video_latents.shape}")
 
         # Sample action only if using actions
-        if args.use_actions:
+        if args.use_gt_actions:
+            # pass last 2 frames through lam to get action latent
+            print(f"context_frames shape: {context_frames.shape}")
+            action_index = lam.encode(context_frames[:, -1], ground_truth_sequence[:, i + args.context_window])
+            print(f"action_index shape: {action_index.shape}")
+            inferred_actions.append(action_index)
+
+            action_latent = lam.indices_to_latent(action_index)
+            print(f"action_latent shape: {action_latent.shape}")
+        elif args.use_actions:
             action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
             inferred_actions.append(action_index)
             new_action_latent = get_lam_latent_from_action_index(lam, action_index)
@@ -494,7 +503,7 @@ def main(args):
         # 3. choose top n tokens with highest probabilities and unmask them
         
         # scheduling: n = e^(t/T) * N, where T is num steps and N is num patches
-        T = 20  # Number of decoding steps
+        T = 10  # Number of decoding steps
         N = video_latents.shape[2]  # Number of patches
         
         # Start with all tokens masked
@@ -603,15 +612,17 @@ def parse_args():
     parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
     parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Tue_Jul_22_20_08_24_2025/checkpoints/dynamics_checkpoint_Tue_Jul_22_20_08_24_2025.pth")
     parser.add_argument("--device", type=str, default=str(device), help="Device to use (cuda/cpu)")
-    parser.add_argument("--generation_steps", type=int, default=14, help="Number of frames to generate")
+    parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=3, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
-    parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling (lower = more conservative)")
+    parser.add_argument("--temperature", type=float, default=0, help="Temperature for sampling (lower = more conservative)")
     parser.add_argument("--use_actions", action="store_true", default=True, help="Whether to use action latents in the dynamics model (default: False)")
     parser.add_argument("--teacher_forced", action="store_true", default=False,
                         help="Run teacher-forced inference (always use ground-truth context).")
     parser.add_argument("--use_latest_checkpoints", action="store_true", default=True, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
+    parser.add_argument("--dataset", type=str, default="SONIC", help="Dataset to use")
+    parser.add_argument("--use_gt_actions", action="store_true", default=False, help="Whether to use ground-truth (lam inferred) action latents")
     return parser.parse_args()
 
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
