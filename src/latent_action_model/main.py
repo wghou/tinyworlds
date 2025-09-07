@@ -217,52 +217,7 @@ def main():
         
         # Forward pass with current step for warmup under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            loss, pred_frames, action_bin_indices, loss_dict = model(frame_sequences)
-
-        if epoch % args.vq_reinit_check_interval == 0:
-            print(f"Reinitializing codebook at step {epoch}")
-            with torch.no_grad():                             # no grads, no AMP
-                actions, _ = model.encoder(frame_sequences)   # [B, S-1, A]
-                actions = model.action_pre_norm(actions)      # normalize like training path
-                actions_flat = actions.reshape(-1, actions.size(-1))
-                # reuse quantizer's assigner to get indices
-                _, _, action_indices_flat = model.quantizer(actions_flat)
-            model.quantizer.smart_reinitialize(actions_flat, action_indices_flat)
-
-            # Verify usage immediately after reinit
-            with torch.no_grad():
-                actions, _ = model.encoder(frame_sequences)
-                actions = model.action_pre_norm(actions)
-                actions_flat = actions.reshape(-1, actions.size(-1))
-                # ---- DIAGNOSTICS INSERT HERE ----
-                E = model.quantizer.embedding.weight
-                norms = actions_flat.norm(dim=-1)
-                print(f"actions_flat norm: mean={norms.mean().item():.4f} "
-                    f"min={norms.min().item():.4f} max={norms.max().item():.4f}")
-
-                ps_std = actions_flat.std(dim=-1)  # per-sample feature std
-                print(f"per-sample std: mean={ps_std.mean().item():.4f} "
-                    f"min={ps_std.min().item():.4f} max={ps_std.max().item():.4f}")
-
-                d = (actions_flat**2).sum(1, keepdim=True) \
-                    + (E**2).sum(1).unsqueeze(0) \
-                    - 2*(actions_flat @ E.t())
-                print(f"mean d.std across codes: {d.std(dim=1).mean().item():.6f}")
-                # ---------------------------------
-
-                # ---------- cos info ----------
-                a = F.normalize(actions_flat, dim=1)
-                # average pairwise cosine (should be well below 0.9 once fixed)
-                cos_mean = (a @ a.t()).mean().item()
-                # top-1 vs top-2 cosine gap (collapse => large)
-                sims = a @ F.normalize(model.quantizer.embedding.weight, dim=1).t()
-                gap = (sims.max(1).values - sims.topk(2).values[:,1]).mean().item()
-                print(f"cos_mean={cos_mean:.3f}  top1-top2 gap={gap:.3f}")
-                # ---------------------------------
-
-                _, _, action_indices_after = model.quantizer(actions_flat)
-                usage_after = model.quantizer.get_codebook_usage(action_indices_after)
-                print(f"Post-reinit codebook usage: {usage_after:.2%} ({len(torch.unique(action_indices_after))}/{args.n_actions})")
+            loss, pred_frames = model(frame_sequences)
 
         # Backward pass
         optimizer.zero_grad(set_to_none=True)
@@ -274,9 +229,6 @@ def main():
         
         # Track results
         results["total_losses"].append(loss.cpu().detach())
-        results["recon_losses"].append(loss_dict['recon_loss'].cpu().detach())
-        results["vq_losses"].append(loss_dict['vq_loss'].cpu().detach())
-        results["diversity_losses"].append(loss_dict['diversity_loss'].cpu().detach())
         results["n_updates"] = epoch
         
         # Log to W&B if enabled and available
@@ -284,9 +236,6 @@ def main():
             # Log training metrics
             wandb.log({
                 'train/total_loss': loss.item(),
-                'train/recon_loss': loss_dict['recon_loss'].item(),
-                'train/vq_loss': loss_dict['vq_loss'].item(),
-                'train/diversity_loss': loss_dict['diversity_loss'].item(),
                 'step': epoch
             })
             
@@ -307,44 +256,24 @@ def main():
         
         # Print progress every 50 steps
         if epoch % args.log_interval == 0:
-            print(f"Step {epoch}: total={loss.item():.6f} recon={loss_dict['recon_loss'].item():.6f} vq={loss_dict['vq_loss'].item():.6f}")
+            print(f"Step {epoch}: loss={loss.item():.6f}")
 
         # Print progress every 50 steps
         if (epoch - 1) % 50 == 0:
             with torch.no_grad():
-                actions, _ = model.encoder(frame_sequences)
-                actions = model.action_pre_norm(actions)
-                actions_flat = actions.reshape(-1, actions.size(-1))
-                _, _, action_indices = model.quantizer(actions_flat, current_step=epoch)
+                actions = model.encoder(frame_sequences)
+                action_indices = model.quantizer(actions)
                 codebook_usage = model.quantizer.get_codebook_usage(action_indices)
-                z_e_var = torch.var(actions_flat).item()
-                vq_var = torch.var(model.quantizer.embedding.weight).item()
+                z_e_var = torch.var(actions).item()
                 
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:
                     wandb.log({
                         "lam/codebook_usage": codebook_usage,
                         "lam/encoder_variance": z_e_var,
-                        "lam/vq_variance": vq_var,
-                        "step": epoch
-                    })
-                    
-                    # Log action distribution
-                    action_indices_cpu = action_indices.detach().cpu().numpy()
-                    action_counts = torch.bincount(torch.tensor(action_indices_cpu.flatten()), minlength=args.n_actions)
-                    action_probs = action_counts.float() / action_counts.sum()
-                    
-                    wandb.log({
-                        "action_distribution": wandb.Histogram(action_indices_cpu.flatten()),
-                        "action_entropy": -torch.sum(action_probs * torch.log(action_probs + 1e-8)),
-                        "unique_actions": len(torch.unique(torch.tensor(action_indices_cpu))),
                         "step": epoch
                     })
                 
-                print(f"Epoch {epoch+1}: Codebook usage: {codebook_usage:.2%}, "
-                      f"Encoder variance: {z_e_var:.4f}, VQ variance: {vq_var:.4f}, "
-                      f"Beta: {model.quantizer.beta:.4f}")
-        
         # Save model and visualize results periodically
         if epoch % args.log_interval == 0 and args.save:
             hyperparameters = args.__dict__
@@ -356,11 +285,6 @@ def main():
                 pred_frames[:, -1],
                 os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename}.png')
             )
-            
-            print(f'Epoch {epoch}: Total Loss: {loss.item():.4f}, '
-                  f'Recon Loss: {loss_dict["recon_loss"].item():.4f}, '
-                  f'VQ Loss: {loss_dict["vq_loss"].item():.4f}, '
-                  f'Diversity Loss: {loss_dict["diversity_loss"].item():.4f}')
     
     # Finish W&B run
     if args.use_wandb:

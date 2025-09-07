@@ -4,34 +4,6 @@ import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
 
-class FSQGate(nn.Module):
-    """Learnable temperature gate for FSQ: u = tanh(z / tau) + noise"""
-    def __init__(self, init_tau=3.0, min_tau=1.0, max_tau=6.0, noise_std=0.01):
-        super().__init__()
-        self.log_tau = nn.Parameter(torch.log(torch.tensor(init_tau, dtype=torch.float32)))
-        self.min_tau = float(min_tau)
-        self.max_tau = float(max_tau)
-        self.noise_std = float(noise_std)
-    def forward(self, z, train=True):
-        tau = self.log_tau.exp().clamp(self.min_tau, self.max_tau)
-        u = torch.tanh(z / tau)
-        if train and self.noise_std > 0.0:
-            u = u + torch.randn_like(u) * self.noise_std
-        return u, tau
-
-class RMSNorm(nn.Module):
-    """Simple RMSNorm across the last dimension with learnable scale."""
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
-    def forward(self, x):
-        # x: [..., dim]
-        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
-        x_hat = x / rms
-        return x_hat * self.scale
-
-
 def sincos_1d(L, D, device, dtype):
     """
     Compute 1D sinusoidal position encodings.
@@ -207,7 +179,7 @@ class PatchEmbedding(nn.Module):
 
 class SpatialAttention(nn.Module):
     """Spatial attention layer - attends over patches within each frame"""
-    def __init__(self, embed_dim, num_heads):
+    def __init__(self, embed_dim, num_heads, conditioning_dim=None):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -219,9 +191,9 @@ class SpatialAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = AdaLN(embed_dim, conditioning_dim)
         
-    def forward(self, x):
+    def forward(self, x, conditioning=None):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
@@ -251,13 +223,13 @@ class SpatialAttention(nn.Module):
         attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
         
         # Add residual and normalize
-        out = self.norm(x + attn_out)
+        out = self.norm(x + attn_out, conditioning)
         
         return out
 
 class TemporalAttention(nn.Module):
     """Temporal attention layer - attends over time steps for each patch"""
-    def __init__(self, embed_dim, num_heads, causal=True):
+    def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -269,10 +241,10 @@ class TemporalAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = AdaLN(embed_dim, conditioning_dim)
         self.causal = causal
         
-    def forward(self, x):
+    def forward(self, x, conditioning=None):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
@@ -308,19 +280,19 @@ class TemporalAttention(nn.Module):
         attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
         
         # Add residual and normalize
-        out = self.norm(x + attn_out)
+        out = self.norm(x + attn_out, conditioning)
         
         return out
 
 class FeedForward(nn.Module):
     """Feed-forward network"""
-    def __init__(self, embed_dim, hidden_dim):
+    def __init__(self, embed_dim, hidden_dim, conditioning_dim=None):
         super().__init__()
         self.linear1 = nn.Linear(embed_dim, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, embed_dim)
-        self.norm = nn.LayerNorm(embed_dim)
-        
-    def forward(self, x):
+        self.norm = AdaLN(embed_dim, conditioning_dim)
+
+    def forward(self, x, conditioning=None):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
@@ -329,31 +301,59 @@ class FeedForward(nn.Module):
         """
         batch_size, seq_len, num_patches, embed_dim = x.shape
         
-        # Reshape to process all elements at once: [batch_size * seq_len * num_patches, embed_dim]
-        x_reshaped = rearrange(x, 'b s p e -> (b s p) e')
-        
         # Apply feed-forward
-        out = self.linear1(x_reshaped)
+        out = self.linear1(x)
         out = F.relu(out)
         out = self.linear2(out)
         
         # Add residual and normalize
-        out = self.norm(x_reshaped + out)
-        
-        # Reshape back
-        out = rearrange(out, '(b s p) e -> b s p e', b=batch_size, s=seq_len, p=num_patches)
+        out = self.norm(x + out, conditioning)
         
         return out
 
+class AdaLN(nn.Module):
+    # Adaptive Layer Normalization, optionally unconditioned simple LayerNorm
+    def __init__(self, embed_dim, conditioning_dim=None):
+        super().__init__()
+        self.ln = nn.LayerNorm(embed_dim)
+        self.to_gamma_beta = None
+        if conditioning_dim is not None:
+            self.to_gamma_beta = nn.Sequential(
+                nn.SiLU(),
+                    nn.Linear(conditioning_dim, 2 * embed_dim)
+                )
+            nn.init.zeros_(self.to_gamma_beta[-1].weight)
+            nn.init.zeros_(self.to_gamma_beta[-1].bias)
+
+    def forward(self, x, conditioning=None):
+        # x: [B, S, P, E]
+        # conditioning: [B, S, C]
+        x = self.ln(x) # [B, S, P, E]
+
+        if self.to_gamma_beta is None:
+            return x
+
+        B, S, P, E = x.shape
+        out = self.to_gamma_beta(conditioning) # [B, S, 2 * E]
+
+        out = repeat(out, 'b s 2e -> b s p 2e', p=P) # [B, S, P, 2 * E]
+
+        gamma, beta = out.chunk(2, dim=-1) # each [B, S, P, E]
+        
+        x = x * (1 + gamma) + beta # [B, S, P, E]
+
+        return x
+
 class STTransformerBlock(nn.Module):
     """ST-Transformer block with spatial attention, temporal attention, and feed-forward"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, causal=True):
+    def __init__(self, embed_dim, num_heads, hidden_dim, causal=True, conditioning_dim=None):
         super().__init__()
-        self.spatial_attn = SpatialAttention(embed_dim, num_heads)
-        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal)
-        self.ffn = FeedForward(embed_dim, hidden_dim)
-        
-    def forward(self, x):
+        # TODO: implement conditioning
+        self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim)
+        self.temporal_attn = TemporalAttention(embed_dim, num_heads, causal, conditioning_dim)
+        self.ffn = FeedForward(embed_dim, hidden_dim, conditioning_dim)
+
+    def forward(self, x, conditioning=None):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
@@ -361,30 +361,31 @@ class STTransformerBlock(nn.Module):
             out: [batch_size, seq_len, num_patches, embed_dim]
         """
         # Spatial attention - attends over patches within each frame
-        x = self.spatial_attn(x)
+        x = self.spatial_attn(x, conditioning)
         
         # Temporal attention - attends over time steps for each patch
-        x = self.temporal_attn(x)
+        x = self.temporal_attn(x, conditioning)
         
         # Feed-forward
-        x = self.ffn(x)
+        x = self.ffn(x, conditioning)
         
         return x
 
 class STTransformer(nn.Module):
     """ST-Transformer with multiple blocks"""
-    def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True):
+    def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None):
         super().__init__()
+        # TODO: add conditioning based on actions (or technically any tensor)
         # Split dimensions, ensuring temporal is even
         self.temporal_dim = (embed_dim // 3) & ~1  # Round down to even number
         self.spatial_dims = embed_dim - self.temporal_dim  # Rest goes to spatial
         
         self.blocks = nn.ModuleList([
-            STTransformerBlock(embed_dim, num_heads, hidden_dim, causal)
+            STTransformerBlock(embed_dim, num_heads, hidden_dim, causal, conditioning_dim)
             for _ in range(num_blocks)
         ])
         
-    def forward(self, x):
+    def forward(self, x, conditioning=None):
         """
         Args:
             x: [batch_size, seq_len, num_patches, embed_dim]
@@ -406,7 +407,7 @@ class STTransformer(nn.Module):
         
         # Apply transformer blocks
         for block in self.blocks:
-            x = block(x)
+            x = block(x, conditioning)
         return x
 
 class FiniteScalarQuantizer(nn.Module):
@@ -415,20 +416,12 @@ class FiniteScalarQuantizer(nn.Module):
     Quantizes each dimension independently by bounding to 0, num_bins then rounding to nearest integer
     Prevents token collapse and no auxiliary losses necessary 
     """
-    def __init__(self, latent_dim=6, num_bins=4, init_tau=3.0, min_tau=1.0, max_tau=6.0, noise_std=0.01, use_rmsnorm=True):
+    def __init__(self, latent_dim=6, num_bins=4):
         super().__init__()
         self.num_bins = num_bins
         self.levels_np = torch.tensor(latent_dim * [num_bins])
         # Register basis as a buffer so it gets moved to the correct device
         self.register_buffer('basis', num_bins**torch.arange(latent_dim))
-        # # Learnable temperature gate for softened tanh
-        # self.fsq_gate = FSQGate(init_tau=init_tau, min_tau=min_tau, max_tau=max_tau, noise_std=noise_std)
-        # # Per-feature normalization before FSQ
-        # self.use_rmsnorm = use_rmsnorm
-        # if use_rmsnorm:
-        #     self.pre_norm = RMSNorm(latent_dim)
-        # else:
-        #     self.pre_norm = nn.LayerNorm(latent_dim, elementwise_affine=True)
 
     def scale_and_shift(self, z):
         """
@@ -443,21 +436,7 @@ class FiniteScalarQuantizer(nn.Module):
         return 2 * z / (self.num_bins - 1) - 1
         
     def forward(self, z):
-        """
-        Args:
-            z: [batch_size, seq_len, num_patches, latent_dim]
-        Returns:
-            quantized_z: quantized z with num_bins bins per dimension [batch_size, seq_len, num_patches, latent_dim]
-        """
-        # # Normalize per feature before softened tanh to stabilize mags
-        # pre = self.pre_norm(z)
-
-        # # Soften tanh using learnable/clamped tau and add small noise in training
-        # u, _ = self.fsq_gate(pre, train=self.training)
-
-        # # apply 0.5 * (u + 1) to go from [-1, 1] to [0, num_bins - 1]
-        # bounded_z = self.scale_and_shift(u)
-
+        # z: [batch_size, seq_len, num_patches, latent_dim]
         tanh_z = torch.tanh(z)
 
         # apply 0.5 * (tanh(z) + 1) to go from z dimension to [0, num_bins - 1]
@@ -475,16 +454,8 @@ class FiniteScalarQuantizer(nn.Module):
         return quantized_z
 
     def get_codebook_usage(self, quantized_z):
-        """
-        Calculate codebook usage across all dimensions
-        """        
-        total_used_bins = 0
-        total_bins = self.num_bins
-        
-        unique_bins = torch.unique(quantized_z)
-        total_used_bins += len(unique_bins)
-        
-        return total_used_bins / total_bins
+        unique_bins = torch.unique(quantized_z).shape[0]
+        return unique_bins / self.num_bins
     
     def get_indices_from_latents(self, latents, dim=-1):
         # go from [-1, 1] to [0, num_bins - 1] in each dimension

@@ -4,82 +4,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import math
 from einops import rearrange, repeat, reduce
-from src.vqvae.models.video_tokenizer import STTransformer, PatchEmbedding
-
-class VectorQuantizer(nn.Module):
-    def __init__(self, codebook_size, embedding_dim, beta=0.05):
-        super().__init__()
-        self.codebook_size = codebook_size
-        self.embedding_dim = embedding_dim
-        self.beta = beta
-        self.embedding = nn.Embedding(self.codebook_size, self.embedding_dim)
-
-        # Better initialization: spread out the embeddings
-        with torch.no_grad():
-            weight = torch.randn(self.codebook_size, self.embedding_dim)
-            weight = F.normalize(weight, p=2, dim=1)
-            self.embedding.weight.data.copy_(weight)
-        
-    def forward(self, z, current_step=None):
-        """
-        Args:
-            z: [..., D] encoder outputs; flattened to [M, D]
-        Returns:
-            loss: Scalar VQ objective (cosine-VQ via MSE on normalized reps)
-            z_quantized: [M, D] quantized embeddings with straight-through estimator
-            min_encoding_indices: [M] indices of nearest embeddings
-        """
-        z_flat = z.reshape(-1, z.shape[-1])                # [M, D]
-        E = self.embedding.weight                          # [K, D]
-
-        # cosine assignment
-        z_n = F.normalize(z_flat, dim=1, eps=1e-8)         # unit
-        E_n = F.normalize(E, dim=1, eps=1e-8)              # unit
-        sims = z_n @ E_n.t()                               # [M, K]
-        idx = sims.argmax(dim=1)                           # [M]
-        zq = E[idx]                                        # unnormalized code for decoder
-
-        # loss on directions (cosine-VQ via MSE on normalized reps)
-        zq_n = F.normalize(zq, dim=1, eps=1e-8)
-        loss = ((zq_n.detach() - z_n)**2).mean() + \
-               self.beta * ((zq_n - z_n.detach())**2).mean()
-        # straight-through
-        zq_st = z_flat + (zq - z_flat).detach()
-        return loss, zq_st, idx
-
-    def get_codebook_usage(self, indices):
-        """Calculate codebook usage"""
-        unique_codes = torch.unique(indices)
-        return len(unique_codes) / self.codebook_size
-
-    @torch.no_grad()
-    def smart_reinitialize(self, z_flat, indices):
-        """
-        z_flat: [M, D] encoder outputs (detached)
-        indices: [M] current codebook assignments
-        """
-        K = self.codebook_size
-        E = self.embedding.weight
-
-        usage = torch.bincount(indices, minlength=K)
-        dead_idx = (usage == 0).nonzero(as_tuple=False).squeeze(1)
-        if dead_idx.numel() == 0:
-            return
-
-        # choose points least similar to any existing code (cosine)
-        z_n = F.normalize(z_flat, dim=1, eps=1e-8)
-        E_n = F.normalize(E, dim=1, eps=1e-8)
-        sims = z_n @ E_n.t()                # [M, K]
-        max_sim, _ = sims.max(dim=1)        # nearest-code similarity
-        k = min(dead_idx.numel(), z_flat.size(0))
-        _, far_idx = torch.topk(max_sim, k=k, largest=False)  # smallest similarity
-        repl = F.normalize(z_flat[far_idx], dim=1, eps=1e-8)
-
-        if k < dead_idx.numel():
-            reps = (dead_idx.numel() + k - 1) // k
-            repl = repl.repeat(reps, 1)[:dead_idx.numel()]
-
-        E.data[dead_idx] = repl + 1e-3 * torch.randn_like(repl)
+from src.vqvae.models.video_tokenizer import STTransformer, PatchEmbedding, FiniteScalarQuantizer
 
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent actions"""
@@ -96,6 +21,8 @@ class Encoder(nn.Module):
             nn.GELU(),
             nn.Linear(4 * action_dim, action_dim)
         )
+
+        # TODO: add pos/time embeddings
         
     def forward(self, frames):
         """
@@ -113,6 +40,7 @@ class Encoder(nn.Module):
         # Apply ST-Transformer
         transformed = self.transformer(embeddings)
         
+        # TODO: find better method for outputting actions
         # Global average pooling over patches
         pooled = transformed.mean(dim=2)  # [batch_size, seq_len, embed_dim]
         
@@ -126,7 +54,7 @@ class Encoder(nn.Module):
             
         actions = torch.stack(actions, dim=1)  # [batch_size, seq_len-1, action_dim]
         
-        return actions, embeddings
+        return actions
 
 class Decoder(nn.Module):
     """ST-Transformer decoder that takes frames and actions to predict next frame"""
@@ -149,6 +77,8 @@ class Decoder(nn.Module):
         self.frame_size = frame_size
         self.patch_size = patch_size
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
+
+        # TODO: add pos/time embeddings
         
     def forward(self, frames, actions, training=True):
         """
@@ -178,18 +108,10 @@ class Decoder(nn.Module):
         #     # frames[:, 1:] = 0.0
         
         # Convert frames to patch embeddings (frame t context)
-        emb = self.patch_embed(frames)  # [batch_size, seq_len-1, num_patches, embed_dim]
+        video_embeddings = self.patch_embed(frames)  # [batch_size, seq_len-1, num_patches, embed_dim]
 
-        # Project actions to embedding and repeat per patch
-        act = self.act_proj(actions)             # [batch_size, seq_len-1, embed_dim]
-        act = repeat(act, 'b s e -> b s p e', p=self.num_patches)
-
-        # Action-dominant mix; epsilon keeps slight visual context
-        epsilon = 0.1
-        combined = act + epsilon * emb
-         
-        # Apply ST-transformer with causal masking
-        transformed = self.transformer(combined)  # [batch_size, seq_len-1, num_patches, embed_dim]
+        # Apply ST-transformer with causal masking TODO: add conditioning
+        transformed = self.transformer(video_embeddings, conditioning=actions)  # [batch_size, seq_len-1, num_patches, embed_dim]
          
         # Predict frame patches for all t (predict t+1)
         patches = self.frame_head(transformed)  # [batch_size, seq_len-1, num_patches, 3 * patch_size * patch_size]
@@ -208,13 +130,15 @@ class LAM(nn.Module):
                  vq_warmup_steps=100, vq_tau_start=0.5, vq_tau_end=0.05, vq_cache_size=50000,
                  vq_reinit_check_interval=100, vq_dead_threshold_pct=0.2):
         super().__init__()
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim)
-        self.quantizer = VectorQuantizer(
-            n_actions, action_dim, beta=beta
+        latent_dim=3
+        num_bins=2
+        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=latent_dim)
+        
+        self.quantizer = FiniteScalarQuantizer(
+            latent_dim=latent_dim, num_bins=num_bins
         )
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=latent_dim)
         self.register_buffer('step', torch.tensor(0))
-        self.action_pre_norm = nn.LayerNorm(action_dim, elementwise_affine=False)
 
     def forward(self, frames):
         """
@@ -230,45 +154,19 @@ class LAM(nn.Module):
             loss_dict: Dictionary containing individual loss components
         """
         # Encode frames to get actions and features
-        actions, embeddings = self.encoder(frames)
+        actions = self.encoder(frames)
 
-        # Pre-normalize actions before quantization
-        actions = self.action_pre_norm(actions)
-
-        # Flatten actions for quantization
-        batch_size, seq_len, action_dim = actions.shape
-        actions_flat = rearrange(actions, 'b s a -> (b s) a')
-        
         # Quantize actions with current step for warmup
-        vq_loss, z_quantized_flat, action_indices_flat = self.quantizer(actions_flat)
-        
-        # Reshape quantized actions back to sequence
-        z_quantized = rearrange(z_quantized_flat, '(b s) a -> b s a', b=batch_size, s=seq_len)
-        action_indices = rearrange(action_indices_flat, '(b s) -> b s', b=batch_size, s=seq_len)
+        actions_quantized = self.quantizer(actions)
         
         # Decode to predict next frames
-        pred_frames = self.decoder(frames, z_quantized, training=True)  # [batch_size, seq_len-1, channels, height, width]
+        pred_frames = self.decoder(frames, actions_quantized, training=True)  # [batch_size, seq_len-1, channels, height, width]
         
         # Compute reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [batch_size, seq_len-1, channels, height, width]
         recon_loss = F.mse_loss(pred_frames, target_frames)
 
-        # Total loss with better balancing
-        total_loss = recon_loss + 0.5 * vq_loss
-
-        # Diagnostics: pre-VQ variance and cosine top-1 vs top-2 gap (warmup lock-in)
-        pre_vq_var = actions_flat.var(dim=0, unbiased=False).mean()
-
-        # Create loss dictionary for monitoring
-        loss_dict = {
-            'total_loss': total_loss,
-            'recon_loss': recon_loss,
-            'vq_loss': vq_loss,
-            'diversity_loss': torch.tensor(0.0, device=vq_loss.device),
-            'pre_vq_var': pre_vq_var,
-        }
-
-        return total_loss, pred_frames, action_indices, loss_dict
+        return recon_loss, pred_frames
 
     def encode(self, prev_frame, next_frame):
         """
@@ -281,9 +179,9 @@ class LAM(nn.Module):
         Returns:
             action_index: Quantized action index
         """
-        # Add sequence dimension to make it compatible with encoder
         frames = torch.stack([prev_frame, next_frame], dim=1)  # [batch_size, 2, channels, height, width]
         
+        # TODO: fix
         # Encode to get actions
         actions, _ = self.encoder(frames)  # [batch_size, 1, action_dim]
         
@@ -291,7 +189,7 @@ class LAM(nn.Module):
         actions_flat = actions.reshape(-1, actions.size(-1))
         
         # Quantize to get discrete action
-        _, _, action_indices = self.quantizer(actions_flat)
+        action_indices = self.quantizer(actions_flat)
         
         return action_indices[0]  # Return first (and only) action index
     
