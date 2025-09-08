@@ -6,6 +6,8 @@ import math
 from einops import rearrange, repeat, reduce
 from src.vqvae.models.video_tokenizer import STTransformer, PatchEmbedding, FiniteScalarQuantizer
 
+NUM_LAM_BINS = 2
+
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent actions"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
@@ -23,25 +25,19 @@ class Encoder(nn.Module):
         )
         
     def forward(self, frames):
-        """
-        Args:
-            frames: [batch_size, seq_len, channels, height, width]
-        Returns:
-            actions: [batch_size, seq_len-1, action_dim]
-            embeddings: [batch_size, seq_len, num_patches, embed_dim]
-        """
+        # frames: [batch_size, seq_len, channels, height, width]
         batch_size, seq_len, C, H, W = frames.shape
-        
+
         # Convert frames to patch embeddings
         embeddings = self.patch_embed(frames)  # [batch_size, seq_len, num_patches, embed_dim]
-        
+
         # Apply ST-Transformer
         transformed = self.transformer(embeddings)
-        
+
         # TODO: find better method for outputting actions
         # Global average pooling over patches
         pooled = transformed.mean(dim=2)  # [batch_size, seq_len, embed_dim]
-        
+
         # Predict actions between consecutive frames
         actions = []
         for t in range(seq_len - 1):
@@ -49,9 +45,9 @@ class Encoder(nn.Module):
             combined = torch.cat([pooled[:, t], pooled[:, t+1]], dim=1)  # [batch_size, embed_dim*2]
             action = self.action_head(combined)  # [batch_size, action_dim]
             actions.append(action)
-            
+
         actions = torch.stack(actions, dim=1)  # [batch_size, seq_len-1, action_dim]
-        
+
         return actions
 
 class Decoder(nn.Module):
@@ -72,8 +68,6 @@ class Decoder(nn.Module):
         self.frame_size = frame_size
         self.patch_size = patch_size
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
-
-        # TODO: add pos/time embeddings
         
     def forward(self, frames, actions, training=True):
         """
@@ -122,29 +116,20 @@ class Decoder(nn.Module):
 class LAM(nn.Module):
     """ST-Transformer based Latent Action Model"""
     def __init__(self, frame_size=(128, 128), n_actions=8, patch_size=8, embed_dim=128, 
-                 num_heads=8, hidden_dim=256, num_blocks=4, action_dim=3):
+                 num_heads=8, hidden_dim=256, num_blocks=4):
         super().__init__()
-        latent_dim=3 # TODO: calc based on params, also rename to action_dim
-        num_bins=2
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=latent_dim)
+        assert math.log(n_actions, NUM_LAM_BINS).is_integer(), f"n_actions must be a power of {NUM_LAM_BINS}"
+        self.action_dim=int(math.log(n_actions, NUM_LAM_BINS))
+        print(f"action_dim: {self.action_dim}")
+        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim)
         self.quantizer = FiniteScalarQuantizer(
-            latent_dim=latent_dim, num_bins=num_bins
+            latent_dim=self.action_dim, num_bins=NUM_LAM_BINS
         )
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=latent_dim)
+        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
 
     def forward(self, frames):
-        """
-        Process a sequence of frames
-        
-        Args:
-            frames: Tensor of shape [batch_size, seq_len, channels, height, width]
-            
-        Returns:
-            loss: Total loss (reconstruction + VQ + diversity)
-            pred_frames: Predicted next frames
-            action_indices: Quantized action indices
-            loss_dict: Dictionary containing individual loss components
-        """
+        # frames: Tensor of shape [batch_size, seq_len, channels, height, width]
+ 
         # Encode frames to get actions and features
         actions = self.encoder(frames)
 

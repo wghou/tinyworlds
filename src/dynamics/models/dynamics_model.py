@@ -2,6 +2,7 @@ from src.vqvae.models.video_tokenizer import STTransformer, sincos_2d, sincos_1d
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
+import math
 
 class DynamicsModel(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
@@ -109,3 +110,15 @@ class DynamicsModel(nn.Module):
         next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
         
         return next_token_logits, mask_positions  # [B, S, N, L^D], [B, S, N] or None
+
+    @torch.no_grad()
+    def compute_action_diversity(self, actions_pre_vq, quantized_actions, quantizer):
+        a = actions_pre_vq.reshape(-1, actions_pre_vq.size(-1))
+        var = a.var(0, unbiased=False).mean()
+        idx = quantizer.get_indices_from_latents(quantized_actions, dim=-1).reshape(-1)
+        K = int(getattr(quantizer, 'codebook_size', quantizer.num_bins ** quantized_actions.size(-1)))
+        p = torch.bincount(idx, minlength=K).float()
+        p = p / p.sum().clamp_min(1)
+        usage = (p > 0).float().mean()
+        ent = -(p * (p + 1e-8).log()).sum() / math.log(max(K, 2))
+        return {'pre_vq_var': var, 'action_usage': usage, 'action_entropy': ent}

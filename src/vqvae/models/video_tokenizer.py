@@ -303,7 +303,7 @@ class FeedForward(nn.Module):
         
         # Apply feed-forward
         out = self.linear1(x)
-        out = F.relu(out)
+        out = F.relu(out) # TODO: try SiLU or SwiGLU
         out = self.linear2(out)
         
         # Add residual and normalize
@@ -327,18 +327,27 @@ class AdaLN(nn.Module):
 
     def forward(self, x, conditioning=None):
         # x: [B, S, P, E]
-        # conditioning: [B, S, C]
+        # conditioning: [B, S or S-1, C]
         x = self.ln(x) # [B, S, P, E]
 
+        # regular unconditioned layernorm
+        # TODO: maybe use RMSNorm instead
         if self.to_gamma_beta is None or conditioning is None:
             return x
 
         B, S, P, E = x.shape
-        out = self.to_gamma_beta(conditioning) # [B, S, 2 * E]
+        out = self.to_gamma_beta(conditioning) # [B, S or S-1, 2 * E]
 
-        out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S, P, 2 * E]
+        out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S or S-1, P, 2 * E]
 
-        gamma, beta = out.chunk(2, dim=-1) # each [B, S, P, E]
+        gamma, beta = out.chunk(2, dim=-1) # each [B, S or S-1, P, E]
+
+        # if x is len seq and gamma/beta are len seq-1, pad gamma/beta at the beginning with 0
+        # so we do action conditioning on the "next frames"
+        # TODO: confirm this is working properly
+        if gamma.shape[1] == S - 1 and beta.shape[1] == S - 1:
+            gamma = torch.cat([torch.zeros_like(gamma[:, :1]), gamma], dim=1)
+            beta = torch.cat([torch.zeros_like(beta[:, :1]), beta], dim=1)
         
         x = x * (1 + gamma) + beta # [B, S, P, E]
 

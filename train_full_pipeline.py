@@ -134,7 +134,7 @@ def parse_args():
     parser.add_argument("--latent_dim", type=int, default=5,
                        help="Latent dimension")
     parser.add_argument("--num_bins", type=int, default=4,
-                       help="Number of bins per dimension for FSQ")
+                       help="Number of bins per dimension for video tokenizer FSQ")
     parser.add_argument("--learning_rate", type=float, default=1e-3,
                        help="Learning rate")
     parser.add_argument("--log_interval", type=int, default=100,
@@ -170,85 +170,84 @@ def main():
         print("❌ Error: Please run this script from the nano-genie root directory")
         return
     
-    # # Step 1: Train Video Tokenizer
-    # print("\n" + "="*60)
-    # print("STEP 1: Training Video Tokenizer on SONIC")
-    # print("="*60)
+    # Step 1: Train Video Tokenizer
+    print("\n" + "="*60)
+    print("STEP 1: Training Video Tokenizer on SONIC")
+    print("="*60)
     
-    # video_tokenizer_cmd = [
-    #     sys.executable, "src/vqvae/main.py",
-    #     "--dataset", args.dataset,
-    #     "--batch_size", str(args.batch_size),
-    #     "--n_updates", "10000",  # Reduced for faster training
-    #     "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
-    #     "--log_interval", str(args.log_interval),
-    #     "--context_length", str(args.context_length),
-    #     "--patch_size", str(args.patch_size),
-    #     "--embed_dim", str(args.embed_dim),
-    #     "--num_heads", str(args.num_heads),
-    #     "--hidden_dim", str(args.hidden_dim),
-    #     "--num_blocks", str(args.num_blocks),
-    #     "--latent_dim", str(args.latent_dim),
-    #     "--num_bins", "4",  # Number of bins per dimension for FSQ
-    #     "--frame_size", str(args.frame_size),
-    # ]
-    # if args.amp:
-    #     video_tokenizer_cmd.append("--amp")
-    # if args.tf32:
-    #     video_tokenizer_cmd.append("--tf32")
-    # if args.compile:
-    #     video_tokenizer_cmd.append("--compile")
+    video_tokenizer_cmd = [
+        sys.executable, "src/vqvae/main.py",
+        "--dataset", args.dataset,
+        "--batch_size", str(args.batch_size),
+        "--n_updates", "1",  # Reduced for faster training
+        "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
+        "--log_interval", str(args.log_interval),
+        "--context_length", str(args.context_length),
+        "--patch_size", str(args.patch_size),
+        "--embed_dim", str(args.embed_dim),
+        "--num_heads", str(args.num_heads),
+        "--hidden_dim", str(args.hidden_dim),
+        "--num_blocks", str(args.num_blocks),
+        "--latent_dim", str(args.latent_dim),
+        "--num_bins", str(args.num_bins),
+        "--frame_size", str(args.frame_size),
+    ]
+    if args.amp:
+        video_tokenizer_cmd.append("--amp")
+    if args.tf32:
+        video_tokenizer_cmd.append("--tf32")
+    if args.compile:
+        video_tokenizer_cmd.append("--compile")
     
-    # # Add W&B arguments if enabled
-    # if args.use_wandb:
-    #     video_tokenizer_cmd.extend([
-    #         "--use_wandb",
-    #         "--wandb_project", f"{args.wandb_project}"
-    #     ])
+    # Add W&B arguments if enabled
+    if args.use_wandb:
+        video_tokenizer_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}"
+        ])
     
-    # if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
-    #     print("❌ Video tokenizer training failed. Stopping pipeline.")
-    #     return
+    if not run_command(video_tokenizer_cmd, "Video Tokenizer Training"):
+        print("❌ Video tokenizer training failed. Stopping pipeline.")
+        return
     
-    # # Step 2: Train LAM
-    # print("\n" + "="*60)
-    # print("STEP 2: Training LAM on SONIC")
-    # print("="*60)
+    # Step 2: Train LAM
+    print("\n" + "="*60)
+    print("STEP 2: Training LAM on SONIC")
+    print("="*60)
     
-    # lam_cmd = [
-    #     sys.executable, "src/latent_action_model/main.py",
-    #     "--dataset", args.dataset,
-    #     "--batch_size", str(args.batch_size),
-    #     "--n_updates", "5000",  # Reduced for faster training
-    #     "--learning_rate", str(args.learning_rate),
-    #     "--log_interval", "50",
-    #     "--seq_length", str(args.context_length),
-    #     "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
-    #     "--embed_dim", str(args.embed_dim),
-    #     "--num_heads", str(args.num_heads),
-    #     "--hidden_dim", str(args.hidden_dim),
-    #     "--num_blocks", str(args.num_blocks),
-    #     "--action_dim", "32",
-    #     "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
-    #     "--frame_size", str(args.frame_size),
-    # ]
-    # if args.amp:
-    #     lam_cmd.append("--amp")
-    # if args.tf32:
-    #     lam_cmd.append("--tf32")
-    # if args.compile:
-    #     lam_cmd.append("--compile")
+    lam_cmd = [
+        sys.executable, "src/latent_action_model/main.py",
+        "--dataset", args.dataset,
+        "--batch_size", str(args.batch_size),
+        "--n_updates", "1",  # Reduced for faster training
+        "--learning_rate", str(args.learning_rate),
+        "--log_interval", "50",
+        "--seq_length", str(args.context_length),
+        "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
+        "--embed_dim", str(args.embed_dim),
+        "--num_heads", str(args.num_heads),
+        "--hidden_dim", str(args.hidden_dim),
+        "--num_blocks", str(args.num_blocks),
+        "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
+        "--frame_size", str(args.frame_size),
+    ]
+    if args.amp:
+        lam_cmd.append("--amp")
+    if args.tf32:
+        lam_cmd.append("--tf32")
+    if args.compile:
+        lam_cmd.append("--compile")
     
-    # # Add W&B arguments if enabled
-    # if args.use_wandb:
-    #     lam_cmd.extend([
-    #         "--use_wandb",
-    #         "--wandb_project", f"{args.wandb_project}-lam"
-    #     ])
+    # Add W&B arguments if enabled
+    if args.use_wandb:
+        lam_cmd.extend([
+            "--use_wandb",
+            "--wandb_project", f"{args.wandb_project}-lam"
+        ])
     
-    # if not run_command(lam_cmd, "LAM Training"):
-    #     print("❌ LAM training failed. Stopping pipeline.")
-    #     return
+    if not run_command(lam_cmd, "LAM Training"):
+        print("❌ LAM training failed. Stopping pipeline.")
+        return
     
     # Step 3: Find the latest checkpoints
     print("\n" + "="*60)
@@ -280,7 +279,7 @@ def main():
         "--lam_path", lam_checkpoint,
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "10000",
+        "--n_updates", "1",
         "--learning_rate", str(args.learning_rate),
         "--log_interval", str(args.log_interval),
         "--context_length", str(args.context_length),

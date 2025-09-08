@@ -62,7 +62,6 @@ parser.add_argument("--embed_dim", type=int, default=256)  # Match video tokeniz
 parser.add_argument("--num_heads", type=int, default=8)   # Match video tokenizer
 parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
 parser.add_argument("--num_blocks", type=int, default=4)  # Match video tokenizer
-parser.add_argument("--action_dim", type=int, default=3)
 parser.add_argument("--latent_dim", type=int, default=5)
 parser.add_argument("--num_bins", type=int, default=4)  # Match video tokenizer num_bins
 parser.add_argument("--dropout", type=float, default=0.1)
@@ -264,7 +263,6 @@ lam = LAM(
     num_heads=args.num_heads,  # Match LAM training
     hidden_dim=args.hidden_dim,  # Match LAM training
     num_blocks=args.num_blocks,  # Align with checkpoint (4 blocks)
-    action_dim=args.action_dim,  # Match LAM training
 ).to(device)
 
 # Load LAM checkpoint
@@ -291,7 +289,7 @@ dynamics_model = DynamicsModel(
     num_heads=args.num_heads,
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
-    conditioning_dim=args.action_dim,
+    conditioning_dim=lam.action_dim,
     latent_dim=args.latent_dim,
     num_bins=args.num_bins,
 ).to(device)
@@ -412,7 +410,7 @@ elif args.use_wandb and not WANDB_AVAILABLE:
 
 dynamics_model.train()
 
-def train(use_actions=False):
+def train():
     global start_iter  # Use the start_iter set above
     print(f"Starting dynamics model training from iteration {start_iter}")
     
@@ -437,10 +435,9 @@ def train(use_actions=False):
             # Apply vector quantization to get discrete latents
             quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
             
-            if use_actions:
+            if args.use_actions:
                 actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
                 quantized_actions = lam.quantizer(actions) # [batch_size, seq_len-1, action_dim]
-                quantized_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
             else:
                 quantized_actions = None
 
@@ -507,6 +504,17 @@ def train(use_actions=False):
             log_system_metrics(i)
             # Log learning rate
             log_learning_rate(optimizer, i)
+
+        # Action diversity metrics (minimal)
+        if args.use_actions and args.use_wandb and quantized_actions is not None:
+            qa = quantized_actions.squeeze(2)
+            div = dynamics_model.compute_action_diversity(actions, qa, lam.quantizer)
+            wandb.log({
+                'actions/usage': float(div['action_usage']),
+                'actions/entropy': float(div['action_entropy']),
+                'actions/pre_vq_var': float(div['pre_vq_var']),
+                'step': i
+            })
 
         # Debug prints
         if i % 10 == 0:  # Print every 10 iterations
