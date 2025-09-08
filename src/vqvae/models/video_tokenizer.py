@@ -108,7 +108,7 @@ def sincos_time(S, D, device, dtype):
 
 class PatchEmbedding(nn.Module):
     """Convert frames to patch embeddings for ST-Transformer"""
-    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512):
+    def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128):
         super().__init__()
         H, W = frame_size
         self.frame_size = frame_size
@@ -336,7 +336,7 @@ class AdaLN(nn.Module):
         B, S, P, E = x.shape
         out = self.to_gamma_beta(conditioning) # [B, S, 2 * E]
 
-        out = repeat(out, 'b s 2e -> b s p 2e', p=P) # [B, S, P, 2 * E]
+        out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S, P, 2 * E]
 
         gamma, beta = out.chunk(2, dim=-1) # each [B, S, P, E]
         
@@ -420,6 +420,7 @@ class FiniteScalarQuantizer(nn.Module):
         super().__init__()
         self.num_bins = num_bins
         self.levels_np = torch.tensor(latent_dim * [num_bins])
+        self.codebook_size = num_bins**latent_dim
         # Register basis as a buffer so it gets moved to the correct device
         self.register_buffer('basis', num_bins**torch.arange(latent_dim))
 
@@ -483,8 +484,8 @@ class FiniteScalarQuantizer(nn.Module):
 
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
-    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8, 
-                 hidden_dim=1024, num_blocks=6, latent_dim=6):
+    def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
+                 hidden_dim=256, num_blocks=4, latent_dim=3):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
@@ -535,8 +536,8 @@ class PatchWiseFrameHead(nn.Module):
 
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
-    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=64):
+    def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
+                 hidden_dim=256, num_blocks=4, latent_dim=3):
         super().__init__()
         H, W = frame_size
         self.height = H
@@ -577,8 +578,8 @@ class Decoder(nn.Module):
         return frames_out
 
 class Video_Tokenizer(nn.Module):
-    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=6, num_bins=4, ):
+    def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
+                 hidden_dim=256, num_blocks=4, latent_dim=3, num_bins=4):
         super().__init__()
         self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)

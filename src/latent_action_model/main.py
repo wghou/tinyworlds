@@ -99,7 +99,7 @@ def main():
     parser.add_argument("--log_interval", type=int, default=50, help="Interval for saving model and logging")
     
     # W&B arguments
-    parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
+    parser.add_argument("--use_wandb", action="store_true", default=True, help="Enable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_media", action="store_true", default=False, help="Log images/videos to W&B (off by default)")
@@ -160,7 +160,6 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
         action_dim=args.action_dim,
-        beta=args.beta,
     ).to(device)
 
     # Optionally compile
@@ -192,8 +191,6 @@ def main():
         'n_updates': 0,
         'total_losses': [],
         'recon_losses': [],
-        'vq_losses': [],
-        'diversity_losses': [],
     }
 
     if args.save:
@@ -253,18 +250,18 @@ def main():
                     f'learning_rate/group_{j}': param_group['lr'],
                     'step': epoch
                 })
-        
-        # Print progress every 50 steps
-        if epoch % args.log_interval == 0:
-            print(f"Step {epoch}: loss={loss.item():.6f}")
 
         # Print progress every 50 steps
         if (epoch - 1) % 50 == 0:
             with torch.no_grad():
                 actions = model.encoder(frame_sequences)
-                action_indices = model.quantizer(actions)
-                codebook_usage = model.quantizer.get_codebook_usage(action_indices)
-                z_e_var = torch.var(actions).item()
+                # Quantize actions, compute joint-code usage via indices
+                actions_quantized = model.quantizer(actions)
+                idx = model.quantizer.get_indices_from_latents(actions_quantized)
+                codebook_usage = idx.unique().numel() / model.quantizer.codebook_size
+                # Per-dimension mean variance for clearer signal
+                z_e_var = actions.var(dim=0, unbiased=False).mean().item()
+                print(f"Step {epoch}: loss={loss.item():.6f},codebook_usage: {codebook_usage}, z_e_var: {z_e_var}")
                 
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:

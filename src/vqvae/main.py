@@ -112,15 +112,6 @@ if args.save:
     print(f'Visualizations: {visualizations_dir}')
 
 def save_run_configuration(args, run_dir, timestamp, device):
-    """
-    Save all configuration parameters and run information to a file
-    
-    Args:
-        args: Parsed arguments
-        run_dir: Directory to save configuration
-        timestamp: Timestamp for the run
-        device: Device being used
-    """
     config = {
         'timestamp': timestamp,
         'device': str(device),
@@ -164,17 +155,6 @@ def save_run_configuration(args, run_dir, timestamp, device):
         print(f'Configuration saved to: {config_path}')
 
 def save_videotokenizer_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
-    """
-    Save video tokenizer checkpoint including model state, optimizer state, results and hyperparameters
-    
-    Args:
-        model: The PyTorch model
-        optimizer: The optimizer
-        results: Dictionary containing training results
-        hyperparameters: Dictionary of hyperparameters
-        timestamp: String timestamp for filename
-        checkpoints_dir: Directory to save checkpoints
-    """
     results_to_save = {
         'model': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -186,21 +166,14 @@ def save_videotokenizer_model_and_results(model, optimizer, results, hyperparame
     torch.save(results_to_save, checkpoint_path)
     return checkpoint_path
 
-"""
-Load data and define batch data loaders
-"""
-
 training_data, validation_data, training_loader, validation_loader, x_train_var = utils.load_data_and_data_loaders(
     dataset=args.dataset, 
     batch_size=args.batch_size, 
     num_frames=args.context_length
 )
-"""
-Set up VQ-VAE model with components defined in ./models/ folder
-"""
 
 model = Video_Tokenizer(
-    frame_size=(64, 64), 
+    frame_size=(args.frame_size, args.frame_size), 
     patch_size=args.patch_size,
     embed_dim=args.embed_dim,
     num_heads=args.num_heads,
@@ -218,9 +191,6 @@ if args.compile:
     except Exception as e:
         print(f"⚠️ torch.compile not available or failed: {e}")
 
-"""
-Set up optimizer and training loop
-"""
 # Create parameter groups to avoid weight decay on biases and norm layers
 decay = []
 no_decay = []
@@ -250,9 +220,6 @@ scheduler = create_cosine_scheduler(optimizer, args.n_updates)
 # AMP scaler
 scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
-"""
-Load checkpoint if specified
-"""
 results = {
     'n_updates': 0,
     'recon_errors': [],
