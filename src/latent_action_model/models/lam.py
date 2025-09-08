@@ -21,8 +21,6 @@ class Encoder(nn.Module):
             nn.GELU(),
             nn.Linear(4 * action_dim, action_dim)
         )
-
-        # TODO: add pos/time embeddings
         
     def forward(self, frames):
         """
@@ -126,7 +124,7 @@ class LAM(nn.Module):
     def __init__(self, frame_size=(128, 128), n_actions=8, patch_size=8, embed_dim=128, 
                  num_heads=8, hidden_dim=256, num_blocks=4, action_dim=3):
         super().__init__()
-        latent_dim=3 # TODO: calc based on params
+        latent_dim=3 # TODO: calc based on params, also rename to action_dim
         num_bins=2
         self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=latent_dim)
         self.quantizer = FiniteScalarQuantizer(

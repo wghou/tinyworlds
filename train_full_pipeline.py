@@ -179,7 +179,7 @@ def main():
     #     sys.executable, "src/vqvae/main.py",
     #     "--dataset", args.dataset,
     #     "--batch_size", str(args.batch_size),
-    #     "--n_updates", "2000",  # Reduced for faster training
+    #     "--n_updates", "10000",  # Reduced for faster training
     #     "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
     #     "--log_interval", str(args.log_interval),
     #     "--context_length", str(args.context_length),
@@ -210,45 +210,45 @@ def main():
     #     print("❌ Video tokenizer training failed. Stopping pipeline.")
     #     return
     
-    # Step 2: Train LAM
-    print("\n" + "="*60)
-    print("STEP 2: Training LAM on SONIC")
-    print("="*60)
+    # # Step 2: Train LAM
+    # print("\n" + "="*60)
+    # print("STEP 2: Training LAM on SONIC")
+    # print("="*60)
     
-    lam_cmd = [
-        sys.executable, "src/latent_action_model/main.py",
-        "--dataset", args.dataset,
-        "--batch_size", str(args.batch_size),
-        "--n_updates", "1200",  # Reduced for faster training
-        "--learning_rate", str(args.learning_rate),
-        "--log_interval", "50",
-        "--seq_length", str(args.context_length),
-        "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
-        "--embed_dim", str(args.embed_dim),
-        "--num_heads", str(args.num_heads),
-        "--hidden_dim", str(args.hidden_dim),
-        "--num_blocks", str(args.num_blocks),
-        "--action_dim", "32",
-        "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
-        "--frame_size", str(args.frame_size),
-    ]
-    if args.amp:
-        lam_cmd.append("--amp")
-    if args.tf32:
-        lam_cmd.append("--tf32")
-    if args.compile:
-        lam_cmd.append("--compile")
+    # lam_cmd = [
+    #     sys.executable, "src/latent_action_model/main.py",
+    #     "--dataset", args.dataset,
+    #     "--batch_size", str(args.batch_size),
+    #     "--n_updates", "5000",  # Reduced for faster training
+    #     "--learning_rate", str(args.learning_rate),
+    #     "--log_interval", "50",
+    #     "--seq_length", str(args.context_length),
+    #     "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
+    #     "--embed_dim", str(args.embed_dim),
+    #     "--num_heads", str(args.num_heads),
+    #     "--hidden_dim", str(args.hidden_dim),
+    #     "--num_blocks", str(args.num_blocks),
+    #     "--action_dim", "32",
+    #     "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
+    #     "--frame_size", str(args.frame_size),
+    # ]
+    # if args.amp:
+    #     lam_cmd.append("--amp")
+    # if args.tf32:
+    #     lam_cmd.append("--tf32")
+    # if args.compile:
+    #     lam_cmd.append("--compile")
     
-    # Add W&B arguments if enabled
-    if args.use_wandb:
-        lam_cmd.extend([
-            "--use_wandb",
-            "--wandb_project", f"{args.wandb_project}-lam"
-        ])
+    # # Add W&B arguments if enabled
+    # if args.use_wandb:
+    #     lam_cmd.extend([
+    #         "--use_wandb",
+    #         "--wandb_project", f"{args.wandb_project}-lam"
+    #     ])
     
-    if not run_command(lam_cmd, "LAM Training"):
-        print("❌ LAM training failed. Stopping pipeline.")
-        return
+    # if not run_command(lam_cmd, "LAM Training"):
+    #     print("❌ LAM training failed. Stopping pipeline.")
+    #     return
     
     # Step 3: Find the latest checkpoints
     print("\n" + "="*60)
@@ -293,6 +293,7 @@ def main():
         "--num_bins", str(args.num_bins),
         "--use_actions",
         "--frame_size", str(args.frame_size),
+        "--n_actions", str(args.n_actions),
     ]
     if args.amp:
         dynamics_cmd.append("--amp")

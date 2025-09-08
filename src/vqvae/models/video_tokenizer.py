@@ -330,7 +330,7 @@ class AdaLN(nn.Module):
         # conditioning: [B, S, C]
         x = self.ln(x) # [B, S, P, E]
 
-        if self.to_gamma_beta is None:
+        if self.to_gamma_beta is None or conditioning is None:
             return x
 
         B, S, P, E = x.shape
@@ -425,15 +425,11 @@ class FiniteScalarQuantizer(nn.Module):
         self.register_buffer('basis', num_bins**torch.arange(latent_dim))
 
     def scale_and_shift(self, z):
-        """
-        Scale and shift z from [-1, 1] to [0, num_bins - 1]
-        """
+        # Scale and shift z from [-1, 1] to [0, num_bins - 1]
         return 0.5 * (z + 1) * (self.num_bins - 1)
     
     def unscale_and_unshift(self, z):
-        """
-        Unscale and unshift z from [0, num_bins - 1] to [-1, 1]
-        """
+        # Unscale and unshift z from [0, num_bins - 1] to [-1, 1]
         return 2 * z / (self.num_bins - 1) - 1
         
     def forward(self, z):
@@ -459,27 +455,25 @@ class FiniteScalarQuantizer(nn.Module):
         return unique_bins / self.num_bins
     
     def get_indices_from_latents(self, latents, dim=-1):
+        # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
+        # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
+        # codebook size = L^latent_dim
+        # latents: [batch_size, seq_len, num_patches, latent_dim]
+
         # go from [-1, 1] to [0, num_bins - 1] in each dimension
         digits = torch.round(self.scale_and_shift(latents)).clamp(0, self.num_bins-1)
         
         # get indices for each latent by summing (value * L^current_dim_idx) along latent dim
-        return torch.sum(digits * self.basis.to(latents.device), dim=dim).long()
-
+        indices = torch.sum(digits * self.basis.to(latents.device), dim=dim).long() # [batch_size, seq_len, num_patches]
+        return indices
 
     def get_latents_from_indices(self, indices, dim=-1):
-        """
-        Get the latents from the codebook indices
-
-        indices: [batch_size, seq_len, num_patches]
-        Returns:
-            latents: [batch_size, seq_len, num_patches, latent_dim]
-        """
+        # indices: [batch_size, seq_len, num_patches]
         # recover each entry of latent in range [0, num_bins - 1] by repeatedly dividing by L^current_dim and taking mod
         digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins   # [batch_size, seq_len, num_patches, latent_dim]
 
         # go from [0, num_bins - 1] to [-1, 1] in each dimension
-        latents = self.unscale_and_unshift(digits)
-
+        latents = self.unscale_and_unshift(digits) # [batch_size, seq_len, num_patches, latent_dim]
         return latents
 
 class Encoder(nn.Module):
@@ -497,12 +491,7 @@ class Encoder(nn.Module):
         )
         
     def forward(self, frames):
-        """
-        Args:
-            frames: [batch_size, seq_len, channels, height, width]
-        Returns:
-            tokens: [batch_size, seq_len, num_patches, latent_dim]
-        """
+        # frames: [batch_size, seq_len, channels, height, width]
         # Convert frames to patch embeddings
         embeddings = self.patch_embed(frames)  # [batch_size, seq_len, num_patches, embed_dim]
         

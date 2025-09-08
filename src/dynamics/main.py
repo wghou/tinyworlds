@@ -54,6 +54,7 @@ parser.add_argument("--learning_rate", type=float, default=1e-4)
 parser.add_argument("--log_interval", type=int, default=10)
 parser.add_argument("--dataset",  type=str, default='SONIC')
 parser.add_argument("--context_length", type=int, default=4)
+parser.add_argument("--frame_size", type=int, default=128)
 
 # Model architecture parameters - must match the video tokenizer parameters
 parser.add_argument("--patch_size", type=int, default=4)  # Match video tokenizer
@@ -61,9 +62,11 @@ parser.add_argument("--embed_dim", type=int, default=256)  # Match video tokeniz
 parser.add_argument("--num_heads", type=int, default=8)   # Match video tokenizer
 parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
 parser.add_argument("--num_blocks", type=int, default=4)  # Match video tokenizer
-parser.add_argument("--latent_dim", type=int, default=6)  # Match video tokenizer latent_dim
+parser.add_argument("--action_dim", type=int, default=3)
+parser.add_argument("--latent_dim", type=int, default=5)
 parser.add_argument("--num_bins", type=int, default=4)  # Match video tokenizer num_bins
 parser.add_argument("--dropout", type=float, default=0.1)
+parser.add_argument("--n_actions", type=int, default=8)
 
 # Paths to pre-trained models
 parser.add_argument("--video_tokenizer_path", type=str, required=True, 
@@ -150,7 +153,7 @@ def save_run_configuration(args, run_dir, timestamp, device):
         'timestamp': timestamp,
         'device': str(device),
         'model_architecture': {
-            'frame_size': (64, 64),
+            'frame_size': (args.frame_size, args.frame_size),
             'patch_size': args.patch_size,
             'embed_dim': args.embed_dim,
             'num_heads': args.num_heads,
@@ -158,8 +161,8 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'num_blocks': args.num_blocks,
             'latent_dim': args.latent_dim,
             'dropout': args.dropout,
-            'height': 64,
-            'width': 64,
+            'height': args.frame_size,
+            'width': args.frame_size,
             'channels': 3
         },
         'training_parameters': {
@@ -255,13 +258,13 @@ else:
 print("Loading pre-trained latent action model...")
 lam = LAM(
     frame_size=(args.frame_size, args.frame_size),
-    n_actions=8,  # Match full pipeline
+    n_actions=args.n_actions,  # Match full pipeline
     patch_size=args.patch_size,  # Match LAM training
     embed_dim=args.embed_dim,  # Match LAM training
     num_heads=args.num_heads,  # Match LAM training
     hidden_dim=args.hidden_dim,  # Match LAM training
     num_blocks=args.num_blocks,  # Align with checkpoint (4 blocks)
-    action_dim=args.latent_dim,  # Match LAM training
+    action_dim=args.action_dim,  # Match LAM training
 ).to(device)
 
 # Load LAM checkpoint
@@ -288,7 +291,9 @@ dynamics_model = DynamicsModel(
     num_heads=args.num_heads,
     hidden_dim=args.hidden_dim,
     num_blocks=args.num_blocks,
+    conditioning_dim=args.action_dim,
     latent_dim=args.latent_dim,
+    num_bins=args.num_bins,
 ).to(device)
 
 # Optionally compile dynamics model
@@ -363,7 +368,7 @@ if args.save:
 if args.use_wandb and WANDB_AVAILABLE:
     # Create model configuration
     model_config = {
-        'frame_size': (64, 64),
+        'frame_size': (args.frame_size, args.frame_size),
         'patch_size': args.patch_size,
         'embed_dim': args.embed_dim,
         'num_heads': args.num_heads,
@@ -425,46 +430,31 @@ def train(use_actions=False):
 
         # Get video tokenizer latents for current frames (frozen model)
         with torch.no_grad():
+            # TODO: make video tokenizer forward pass for inference return quantized video latents
+            # TODO: should I pass in indices or latents?
             video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
             
             # Apply vector quantization to get discrete latents
             quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
             
             if use_actions:
-                actions, _ = lam.encoder(x)  # [batch_size, seq_len, action_dim]
-                
-                # Quantize actions (TODO: is reshape necessary?)
-                actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
-                _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
-                quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
-                
-                # expand actions to add num_patches dimension
+                actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
+                quantized_actions = lam.quantizer(actions) # [batch_size, seq_len-1, action_dim]
                 quantized_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
-            
-                # pad last index of seq_len dimension of quantized actions with 0
-                quantized_actions = torch.cat([quantized_actions, torch.zeros_like(quantized_actions[:, -1:])], dim=1) # [batch_size, seq_len, 1, action_dim]
-
-                # Combine video latents and action latents
-                input_latents = quantized_video_latents + quantized_actions  # [batch_size, seq_len, num_patches, latent_dim]
             else:
-                input_latents = quantized_video_latents
+                quantized_actions = None
 
-        target_next_latents = quantized_video_latents  # [batch_size, seq_len, num_patches, latent_dim]
+        target_next_tokens = video_tokenizer.vq.get_indices_from_latents(quantized_video_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
 
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            predicted_next_logits, mask_positions = dynamics_model(input_latents, training=True)  # [batch_size, seq_len, num_patches, codebook_size]
-            
+            predicted_next_logits, mask_positions = dynamics_model(quantized_video_latents, training=True, conditioning=quantized_actions)  # [batch_size, seq_len, num_patches, codebook_size]
+
             if mask_positions is not None:
                 num_masked = mask_positions.sum().item()
                 total_positions = mask_positions.numel()
                 masking_rate = num_masked / total_positions
 
-            # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
-            # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
-            # codebook size = L^latent_dim
-            target_next_tokens = video_tokenizer.vq.get_indices_from_latents(target_next_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
-            
             # Compute loss only on masked tokens (MaskGit-style)
             if mask_positions is not None:
                 mask_for_loss = mask_positions
@@ -547,8 +537,8 @@ def train(use_actions=False):
                     # mask_positions: [B, S, N] where N is number of patches
                     # We need to convert this to pixel-level mask
                     B, S, N = mask_positions.shape
-                    patch_size = 4  # Assuming 4x4 patches
-                    H, W = 64, 64  # Frame size
+                    patch_size = args.patch_size
+                    H, W = args.frame_size, args.frame_size  # Frame size
                     
                     # Create pixel-level mask for the target frames (which have seq_len-1)
                     # We need to slice mask_positions to match target_frames_full

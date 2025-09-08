@@ -5,13 +5,14 @@ from einops import rearrange, repeat
 
 class DynamicsModel(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
-    def __init__(self, frame_size=(64, 64), patch_size=4, embed_dim=512, num_heads=8,
-                 hidden_dim=2048, num_blocks=6, latent_dim=6, num_bins=4):
+    def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,
+                 hidden_dim=128, num_blocks=4, num_bins=4, n_actions=8, conditioning_dim=3, latent_dim=5):
         super().__init__()
         H, W = frame_size
         Hp, Wp = H // patch_size, W // patch_size
         P = Hp * Wp
         
+        # TODO: don't duplicate pos embeds between patch embed and here (need both to have, just make separate class for pos embeds, ideally including temporal too)
         # Split embedding dimensions, ensuring each split is even
         base_split = (embed_dim // 3) & ~1  # Round down to even number
         remaining_dim = embed_dim - base_split  # Remaining after temporal
@@ -27,15 +28,15 @@ class DynamicsModel(nn.Module):
             f"All dimensions must be even: x={self.spatial_x_dim}, y={self.spatial_y_dim}, t={self.temporal_dim}"
         
         codebook_size = num_bins**latent_dim
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
-        
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=conditioning_dim)
+
         # Latent embedding goes from latent_dim to embed_dim
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
-        
+
         # Generate separate spatial x and y position encodings
         pe_x = sincos_1d(Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
         pe_y = sincos_1d(Hp, self.spatial_y_dim, device='cpu', dtype=torch.float32)  # [Hp, D/3+]
-        
+
         # Expand to 2D grid using rearrange
         pe_x = rearrange(pe_x, 'w d -> 1 w d')  # [1, Wp, D/3+]
         pe_x = repeat(pe_x, '1 w d -> h w d', h=Hp)  # [Hp, Wp, D/3+]
@@ -47,7 +48,7 @@ class DynamicsModel(nn.Module):
         pe_spatial = torch.cat([
             pe_x,  # First third+: x position
             pe_y,  # Second third+: y position
-            torch.zeros(Hp, Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal
+            torch.zeros(Hp, Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal (already in st transformer so just pad with 0s)
         ], dim=-1)  # [Hp, Wp, D]
         
         # Flatten spatial dimensions using rearrange
@@ -60,7 +61,7 @@ class DynamicsModel(nn.Module):
         # Learned mask token embedding
         self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # Small initialization
         
-    def forward(self, discrete_latents, training=True):
+    def forward(self, discrete_latents, training=True, conditioning=None):
         """
         Args:
             discrete_latents: [batch_size, seq_len, num_patches, latent_dim]
@@ -102,7 +103,7 @@ class DynamicsModel(nn.Module):
         
         # The causal mask ensures each position can only attend to previous positions
         # STTransformer will add temporal position encoding to last 1/3 of dimensions
-        transformed = self.transformer(embeddings)  # [B, S, N, E]
+        transformed = self.transformer(embeddings, conditioning=conditioning)  # [B, S, N, E]
         
         # convert back to latent space
         next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
