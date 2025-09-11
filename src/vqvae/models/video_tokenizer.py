@@ -141,18 +141,18 @@ class PatchEmbedding(nn.Module):
         # Expand to 2D grid
         pe_x = pe_x.unsqueeze(0).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
         pe_y = pe_y.unsqueeze(1).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
-        
+
         # Combine and pad with zeros for temporal part
         pe_spatial = torch.cat([
             pe_x,  # First third+: x position
             pe_y,  # Second third+: y position
             torch.zeros(self.Hp, self.Wp, self.temporal_dim, device='cpu', dtype=torch.float32)  # Last third: temporal
         ], dim=-1)  # [Hp, Wp, D]
-        
+
         # Flatten spatial dimensions
         pe_spatial = pe_spatial.reshape(self.num_patches, embed_dim)  # [P, D]
         self.register_buffer("pos_spatial", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
-        
+
     def forward(self, frames):
         B, S, C, H, W = frames.shape
         # space-to-depth
@@ -170,46 +170,44 @@ class SpatialAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         assert self.head_dim * num_heads == embed_dim
-        
+
         self.q_proj = nn.Linear(embed_dim, embed_dim)
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        
+
         self.norm = AdaLN(embed_dim, conditioning_dim)
-        
+
     def forward(self, x, conditioning=None):
         """
         Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
+            x: [B, S, P, E]
         Returns:
-            out: [batch_size, seq_len, num_patches, embed_dim]
+            out: [B, S, P, E]
         """
-        # Always expects x of shape [batch, seq, num_patches, embed_dim]
-        batch_size, seq_len, num_patches, embed_dim = x.shape
-        
-        # Project to Q, K, V and reshape: [batch, seq, num_patches, embed_dim] -> [batch, seq, num_heads, num_patches, head_dim]
+        B, S, P, E = x.shape
+
+        # Project to Q, K, V and reshape: [B, S, P, E] -> [B, S, H, P, E/H]
         q = rearrange(self.q_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
         k = rearrange(self.k_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
         v = rearrange(self.v_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
 
-        k_t = k.transpose(-2, -1) # [batch, seq, num_heads, head_dim, num_patches]
-        
-        # Compute attention: [batch, seq, num_heads, num_patches, num_patches]
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
-        
-        attn_weights = F.softmax(scores, dim=-1)
-        
-        # Apply attention to values: [batch, seq, num_heads, num_patches, head_dim]
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = rearrange(attn_output, 'b s n p d -> b s p (n d)')
-        
-        # Final projection TODO: do we need this?
-        attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
-        
+        k_t = k.transpose(-2, -1) # [B, S, H, D, P]
+
+        # Compute attention
+        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [B, S, H, P, P]
+        attn_weights = F.softmax(scores, dim=-1) # [B, S, H, P, P]
+
+        # Apply attention to values:
+        attn_output = torch.matmul(attn_weights, v) # [B, S, H, P, D]
+        attn_output = rearrange(attn_output, 'b s n p d -> b s p (n d)') # [B, S, P, E]
+
+        # Final projection to mix heads
+        attn_out = self.out_proj(attn_output)  # [B, S, P, E]
+
         # Add residual and normalize
         out = self.norm(x + attn_out, conditioning)
-        
+
         return out
 
 class TemporalAttention(nn.Module):
@@ -230,40 +228,34 @@ class TemporalAttention(nn.Module):
         self.causal = causal
         
     def forward(self, x, conditioning=None):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        Returns:
-            out: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        # Always expects x of shape [batch, seq, num_patches, embed_dim]
-        batch_size, seq_len, num_patches, embed_dim = x.shape
+        # x: [B, S, P, E]
+        # out: [B, S, P, E]
+        B, S, P, E = x.shape
         
-        # Project to Q, K, V and reshape: [batch, seq, num_patches, embed_dim] -> [batch, num_patches, num_heads, seq, head_dim]
+        # Project to Q, K, V and reshape: [B, S, P, E] -> [B, P, H, S, D]
         q = rearrange(self.q_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
         k = rearrange(self.k_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
         v = rearrange(self.v_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
 
-        k_t = k.transpose(-2, -1) # [batch, num_patches, num_heads, head_dim, seq]
-        
-        # Compute attention: [batch, num_patches, num_heads, seq, seq]
+        k_t = k.transpose(-2, -1) # [B, P, H, D, S]
+
+        # Compute attention: [B, P, H, S, D] -> [B, P, H, S, S]
         scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
-        
+
         # Apply causal mask if needed (for each token t in seq, mask out all tokens to the right of t (after t))
         if self.causal:
-            mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool().to(x.device)
-            neg_inf = torch.finfo(x.dtype).min
-            scores = scores.masked_fill(mask, neg_inf) # [batch, num_patches, num_heads, seq, seq]
-        
+            mask = torch.triu(torch.ones(S, S), diagonal=1).bool().to(x.device)
+            scores = scores.masked_fill(mask, -torch.inf) # [B, P, H, S, S]
+
         attn_weights = F.softmax(scores, dim=-1)
-        
-        # Apply attention to values: [batch, num_patches, num_heads, seq, head_dim]
+
+        # Apply attention to values: [B, P, H, S, D] -> [B, P, H, S, D]
         attn_output = torch.matmul(attn_weights, v)
-        attn_output = rearrange(attn_output, 'b p n s d -> b s p (n d)') # [batch_size, seq_len, num_patches, embed_dim]
-        
-        # Final projection TODO: do we need this?
-        attn_out = self.out_proj(attn_output)  # [batch_size, seq_len, num_patches, embed_dim]
-        
+        attn_output = rearrange(attn_output, 'b p n s d -> b s p (n d)') # [B, S, P, E]
+
+        # Final projection to mix heads
+        attn_out = self.out_proj(attn_output)  # [B, S, P, E]
+
         # Add residual and normalize
         out = self.norm(x + attn_out, conditioning)
         

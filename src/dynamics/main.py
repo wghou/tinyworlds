@@ -28,7 +28,7 @@ from src.utils.wandb_utils import (
     log_system_metrics, finish_wandb, create_wandb_config
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
-from utils import readable_timestamp
+from src.utils.utils import readable_timestamp
 
 # Import wandb if available
 try:

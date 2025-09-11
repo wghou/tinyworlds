@@ -8,16 +8,14 @@ import os
 # Add the project root to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-import utils
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
-from utils import visualize_reconstruction
+from datasets.utils import visualize_reconstruction, load_data_and_data_loaders
 from src.utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
 import json
 import wandb
-import math
 import torch.nn.functional as F
-from utils import readable_timestamp
+from src.utils.utils import readable_timestamp
 
 parser = argparse.ArgumentParser()
 
@@ -168,7 +166,7 @@ def save_videotokenizer_model_and_results(model, optimizer, results, hyperparame
     torch.save(results_to_save, checkpoint_path)
     return checkpoint_path
 
-training_data, validation_data, training_loader, validation_loader, x_train_var = utils.load_data_and_data_loaders(
+training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
     dataset=args.dataset, 
     batch_size=args.batch_size, 
     num_frames=args.context_length
