@@ -131,8 +131,8 @@ class PatchEmbedding(nn.Module):
         assert self.spatial_x_dim % 2 == 0 and self.spatial_y_dim % 2 == 0 and self.temporal_dim % 2 == 0, \
             f"All dimensions must be even: x={self.spatial_x_dim}, y={self.spatial_y_dim}, t={self.temporal_dim}"
         
-        # Linear projection for patches
-        self.proj = nn.Linear(3 * patch_size * patch_size, embed_dim)
+        # conv projection for patches
+        self.proj = nn.Conv2d(3 * self.patch_size * self.patch_size, self.embed_dim, 1)
         
         # Generate separate spatial x and y position encodings
         pe_x = sincos_1d(self.Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
@@ -154,27 +154,12 @@ class PatchEmbedding(nn.Module):
         self.register_buffer("pos_spatial", pe_spatial[None, :, :], persistent=False)  # [1,P,D]
         
     def forward(self, frames):
-        """
-        Args:
-            frames: [batch_size, seq_len, channels, height, width]
-        Returns:
-            embeddings: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        batch_size, seq_len, C, H, W = frames.shape
-        
-        # Reshape to patches using einops
-        x = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (h w) (c p1 p2)', 
-                      p1=self.patch_size, p2=self.patch_size)
-        
-        # Project to embeddings
-        x = self.proj(x)  # [(b*s), P, D]
-        
-        # Add position embeddings (spatial x,y only - temporal added in transformer)
-        x = x + self.pos_spatial.to(dtype=x.dtype, device=x.device)
-        
-        # Reshape back to sequence
-        x = rearrange(x, '(b s) p e -> b s p e', b=batch_size, s=seq_len)
-        
+        B, S, C, H, W = frames.shape
+        # space-to-depth
+        x = rearrange(frames, 'b s c (h p1) (w p2) -> (b s) (c p1 p2) h w', p1=self.patch_size, p2=self.patch_size) # [(B*S), 3*p*p, Hp, Wp]
+        x = self.proj(x) # [(B*S), E, Hp, Wp]
+        x = rearrange(x, '(b s) e hp wp -> b s (hp wp) e', b=B, s=S) # [B, S, P, E]
+        x = x + self.pos_spatial.to(dtype=x.dtype, device=x.device) # [B, S, P, E]
         return x
 
 class SpatialAttention(nn.Module):
@@ -266,9 +251,9 @@ class TemporalAttention(nn.Module):
         
         # Apply causal mask if needed (for each token t in seq, mask out all tokens to the right of t (after t))
         if self.causal:
-            mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
-            mask = mask.to(x.device)
-            scores = scores.masked_fill(mask, float('-inf')) # [batch, num_patches, num_heads, seq, seq]
+            mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool().to(x.device)
+            neg_inf = torch.finfo(x.dtype).min
+            scores = scores.masked_fill(mask, neg_inf) # [batch, num_patches, num_heads, seq, seq]
         
         attn_weights = F.softmax(scores, dim=-1)
         
@@ -285,72 +270,52 @@ class TemporalAttention(nn.Module):
         return out
 
 class FeedForward(nn.Module):
-    """Feed-forward network"""
     def __init__(self, embed_dim, hidden_dim, conditioning_dim=None):
         super().__init__()
-        self.linear1 = nn.Linear(embed_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, embed_dim)
+        h = math.floor(2 * hidden_dim / 3)
+        self.w_v = nn.Linear(embed_dim, h)
+        self.w_g = nn.Linear(embed_dim, h)
+        self.w_o = nn.Linear(h, embed_dim)
         self.norm = AdaLN(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        Returns:
-            out: [batch_size, seq_len, num_patches, embed_dim]
-        """
-        batch_size, seq_len, num_patches, embed_dim = x.shape
-        
-        # Apply feed-forward
-        out = self.linear1(x)
-        out = F.relu(out) # TODO: try SiLU or SwiGLU
-        out = self.linear2(out)
-        
-        # Add residual and normalize
-        out = self.norm(x + out, conditioning)
-        
-        return out
+        v = F.silu(self.w_v(x))
+        g = self.w_g(x)
+        out = self.w_o(v * g)
+        return self.norm(x + out, conditioning)
 
 class AdaLN(nn.Module):
-    # Adaptive Layer Normalization, optionally unconditioned simple LayerNorm
+    # Adaptive Layer Normalization, optionally unconditioned simple RMSNorm
     def __init__(self, embed_dim, conditioning_dim=None):
         super().__init__()
-        self.ln = nn.LayerNorm(embed_dim)
+        self.ln = None
+        self.rms = None
         self.to_gamma_beta = None
-        if conditioning_dim is not None:
+        if conditioning_dim is None:
+            # Prefer RMSNorm when unconditioned
+            self.rms = nn.RMSNorm(embed_dim)
+        else:
+            self.ln = nn.LayerNorm(embed_dim)
             self.to_gamma_beta = nn.Sequential(
                 nn.SiLU(),
-                    nn.Linear(conditioning_dim, 2 * embed_dim)
-                )
+                nn.Linear(conditioning_dim, 2 * embed_dim)
+            )
             nn.init.zeros_(self.to_gamma_beta[-1].weight)
             nn.init.zeros_(self.to_gamma_beta[-1].bias)
 
     def forward(self, x, conditioning=None):
         # x: [B, S, P, E]
-        # conditioning: [B, S or S-1, C]
-        x = self.ln(x) # [B, S, P, E]
-
-        # regular unconditioned layernorm
-        # TODO: maybe use RMSNorm instead
+        # conditioning: [B, S, C]
         if self.to_gamma_beta is None or conditioning is None:
-            return x
-
-        B, S, P, E = x.shape
-        out = self.to_gamma_beta(conditioning) # [B, S or S-1, 2 * E]
-
-        out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S or S-1, P, 2 * E]
-
-        gamma, beta = out.chunk(2, dim=-1) # each [B, S or S-1, P, E]
-
-        # if x is len seq and gamma/beta are len seq-1, pad gamma/beta at the beginning with 0
-        # so we do action conditioning on the "next frames"
-        # TODO: confirm this is working properly
-        if gamma.shape[1] == S - 1 and beta.shape[1] == S - 1:
-            gamma = torch.cat([torch.zeros_like(gamma[:, :1]), gamma], dim=1)
-            beta = torch.cat([torch.zeros_like(beta[:, :1]), beta], dim=1)
+            normed = self.rms(x) if self.rms is not None else self.ln(x)
+            return normed
         
+        x = self.ln(x)
+        B, S, P, E = x.shape
+        out = self.to_gamma_beta(conditioning) # [B, S, 2 * E]
+        out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S, P, 2 * E]
+        gamma, beta = out.chunk(2, dim=-1) # each [B, S, P, E]
         x = x * (1 + gamma) + beta # [B, S, P, E]
-
         return x
 
 class STTransformerBlock(nn.Module):
@@ -363,12 +328,8 @@ class STTransformerBlock(nn.Module):
         self.ffn = FeedForward(embed_dim, hidden_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
-        """
-        Args:
-            x: [batch_size, seq_len, num_patches, embed_dim]
-        Returns:
-            out: [batch_size, seq_len, num_patches, embed_dim]
-        """
+        # x: [batch_size, seq_len, num_patches, embed_dim]
+        # out: [batch_size, seq_len, num_patches, embed_dim]
         # Spatial attention - attends over patches within each frame
         x = self.spatial_attn(x, conditioning)
         
@@ -431,7 +392,7 @@ class FiniteScalarQuantizer(nn.Module):
         self.levels_np = torch.tensor(latent_dim * [num_bins])
         self.codebook_size = num_bins**latent_dim
         # Register basis as a buffer so it gets moved to the correct device
-        self.register_buffer('basis', num_bins**torch.arange(latent_dim))
+        self.register_buffer('basis', (num_bins**torch.arange(latent_dim, dtype=torch.long)))
 
     def scale_and_shift(self, z):
         # Scale and shift z from [-1, 1] to [0, num_bins - 1]
@@ -467,22 +428,22 @@ class FiniteScalarQuantizer(nn.Module):
         # to get fsq indices, for each dimension, get the index and add it (so multiply by L then sum)
         # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
         # codebook size = L^latent_dim
-        # latents: [batch_size, seq_len, num_patches, latent_dim]
+        # latents: [B, S, P, L]
 
         # go from [-1, 1] to [0, num_bins - 1] in each dimension
         digits = torch.round(self.scale_and_shift(latents)).clamp(0, self.num_bins-1)
         
         # get indices for each latent by summing (value * L^current_dim_idx) along latent dim
-        indices = torch.sum(digits * self.basis.to(latents.device), dim=dim).long() # [batch_size, seq_len, num_patches]
+        indices = torch.sum(digits * self.basis.to(latents.device), dim=dim).long() # [B, S, P]
         return indices
-
+    
     def get_latents_from_indices(self, indices, dim=-1):
         # indices: [batch_size, seq_len, num_patches]
         # recover each entry of latent in range [0, num_bins - 1] by repeatedly dividing by L^current_dim and taking mod
-        digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins   # [batch_size, seq_len, num_patches, latent_dim]
+        digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins   # [B, S, P, L]
 
         # go from [0, num_bins - 1] to [-1, 1] in each dimension
-        latents = self.unscale_and_unshift(digits) # [batch_size, seq_len, num_patches, latent_dim]
+        latents = self.unscale_and_unshift(digits) # [B, S, P, L]
         return latents
 
 class Encoder(nn.Module):
@@ -502,35 +463,30 @@ class Encoder(nn.Module):
     def forward(self, frames):
         # frames: [batch_size, seq_len, channels, height, width]
         # Convert frames to patch embeddings
-        embeddings = self.patch_embed(frames)  # [batch_size, seq_len, num_patches, embed_dim]
+        embeddings = self.patch_embed(frames)  # [B, S, P, E]
         
         # Apply ST-Transformer
-        transformed = self.transformer(embeddings) # [batch_size, seq_len, num_patches, embed_dim]
+        transformed = self.transformer(embeddings) # [B, S, P, E]
 
-        predicted_latents = self.latent_head(transformed) # [batch_size, seq_len, num_patches, latent_dim]
+        predicted_latents = self.latent_head(transformed) # [B, S, P, L]
         
         return predicted_latents
 
-class PatchWiseFrameHead(nn.Module):
-    """Efficient patch-wise frame reconstruction head"""
-    def __init__(self, embed_dim, patch_size=4, out_ch=3):
+class PixelShuffleFrameHead(nn.Module):
+    def __init__(self, embed_dim, patch_size=8, out_ch=3, H=128, W=128):
         super().__init__()
-        self.p = patch_size
+        self.patch_size = patch_size
         self.out_ch = out_ch
-        self.proj = nn.Linear(embed_dim, out_ch * patch_size * patch_size)
+        self.H, self.W = H, W
+        self.Hp, self.Wp = H // patch_size, W // patch_size
+        self.to_pix = nn.Conv2d(embed_dim, out_ch * (patch_size ** 2), kernel_size=1)
 
-    def forward(self, x, H, W):
-        # x: [B, S, P, E], P = (H/p)*(W/p)
-        B, S, P, E = x.shape
-        p = self.p
-        # per-patch pixels
-        y = self.proj(x)                            # [B,S,P,C*p*p]
-        # fold patches back
-        Hp, Wp = H // p, W // p
-        y = y.view(B, S, Hp, Wp, self.out_ch, p, p) # [B,S,Hp,Wp,C,p,p]
-        y = y.permute(0,1,4,2,5,3,6).contiguous()   # [B,S,C,Hp,p,Wp,p]
-        y = y.view(B, S, self.out_ch, H, W)         # [B,S,C,H,W]
-        return y
+    def forward(self, tokens):  # [B,S,P,E]
+        B, S, P, E = tokens.shape
+        x = rearrange(tokens, 'b s (hp wp) e -> (b s) e hp wp', hp=self.Hp, wp=self.Wp) # [(B*S), E, Hp, Wp]
+        x = self.to_pix(x)                  # [(B*S), C*p^2, Hp, Wp]
+        x = rearrange(x, '(b s) (c p1 p2) hp wp -> b s c (hp p1) (wp p2)', p1=self.patch_size, p2=self.patch_size, b=B, s=S) # [B, S, C, H, W]
+        return x
 
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
@@ -553,7 +509,7 @@ class Decoder(nn.Module):
         self.register_buffer("pos_spatial_dec", pe_spatial[None, :, :], persistent=False)
         
         # Efficient patch-wise frame reconstruction head
-        self.frame_head = PatchWiseFrameHead(embed_dim, patch_size=patch_size, out_ch=3)
+        self.frame_head = PixelShuffleFrameHead(embed_dim, patch_size=patch_size, out_ch=3, H=H, W=W)
         
     def forward(self, latents):
         """
@@ -564,14 +520,14 @@ class Decoder(nn.Module):
             pred_frames: [batch_size, seq_len, channels, height, width]
         """
         # Embed latents and add spatial PE
-        embedding = self.latent_embed(latents)  # [batch_size, seq_len, num_patches, embed_dim]
-        embedding = embedding + self.pos_spatial_dec.to(embedding.device, embedding.dtype)
+        embedding = self.latent_embed(latents)  # [B, S, P, E]
+        embedding = embedding + self.pos_spatial_dec.to(dtype=embedding.dtype, device=embedding.device)
     
         # Apply transformer (temporal PE added inside)
-        embedding = self.transformer(embedding)  # [batch_size, seq_len, num_patches, embed_dim]
+        embedding = self.transformer(embedding)  # [B, S, P, E]
         
         # Reconstruct frames using patch-wise head
-        frames_out = self.frame_head(embedding, self.height, self.width)  # [batch_size, seq_len, channels, height, width]
+        frames_out = self.frame_head(embedding)  # [B, S, C, H, W]
 
         return frames_out
 

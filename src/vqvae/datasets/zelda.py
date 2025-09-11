@@ -15,7 +15,7 @@ class ZeldaDataset(Dataset):
         self.num_frames = num_frames
         self.fps = 15
         self.frame_skip = 60 // self.fps
-        self.fraction_of_frames = 0.7
+        self.fraction_of_frames = 0.2
         
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")

@@ -16,6 +16,7 @@ from tqdm import tqdm
 import json
 import wandb
 import math
+import torch.nn.functional as F
 
 parser = argparse.ArgumentParser()
 
@@ -412,7 +413,7 @@ def train():
         # Forward + loss under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
             x_hat = model(x)
-            recon_loss = torch.mean((x_hat - x)**2)
+            recon_loss = F.smooth_l1_loss(x_hat, x)
 
         # Backward with scaler
         scaler.scale(recon_loss).backward()

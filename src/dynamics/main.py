@@ -438,6 +438,7 @@ def train():
             if args.use_actions:
                 actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
                 quantized_actions = lam.quantizer(actions) # [batch_size, seq_len-1, action_dim]
+                quantized_actions = torch.cat([torch.zeros_like(quantized_actions[:, :1]), quantized_actions], dim=1) # [batch_size, seq_len, action_dim]
             else:
                 quantized_actions = None
 

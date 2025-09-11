@@ -141,7 +141,7 @@ def parse_args():
                        help="Log interval")
     parser.add_argument("--context_length", type=int, default=4,
                        help="Context length")
-    parser.add_argument("--batch_size", type=int, default=128,
+    parser.add_argument("--batch_size", type=int, default=384,
                        help="Batch size")
     parser.add_argument("--n_actions", type=int, default=8,
                        help="Number of actions")
@@ -179,8 +179,8 @@ def main():
         sys.executable, "src/vqvae/main.py",
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "1",  # Reduced for faster training
-        "--learning_rate", str(args.learning_rate),  # Increased from 1e-4 for better convergence
+        "--n_updates", "10000",
+        "--learning_rate", str(args.learning_rate),
         "--log_interval", str(args.log_interval),
         "--context_length", str(args.context_length),
         "--patch_size", str(args.patch_size),
@@ -219,16 +219,16 @@ def main():
         sys.executable, "src/latent_action_model/main.py",
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "1",  # Reduced for faster training
+        "--n_updates", "10000",
         "--learning_rate", str(args.learning_rate),
-        "--log_interval", "50",
+        "--log_interval", str(args.log_interval),
         "--seq_length", str(args.context_length),
-        "--patch_size", str(args.patch_size),  # Match video tokenizer patch_size
+        "--patch_size", str(args.patch_size),
         "--embed_dim", str(args.embed_dim),
         "--num_heads", str(args.num_heads),
         "--hidden_dim", str(args.hidden_dim),
         "--num_blocks", str(args.num_blocks),
-        "--n_actions", str(args.n_actions),  # Exactly 8 actions for SONIC
+        "--n_actions", str(args.n_actions),
         "--frame_size", str(args.frame_size),
     ]
     if args.amp:
@@ -279,7 +279,7 @@ def main():
         "--lam_path", lam_checkpoint,
         "--dataset", args.dataset,
         "--batch_size", str(args.batch_size),
-        "--n_updates", "1",
+        "--n_updates", "10000",
         "--learning_rate", str(args.learning_rate),
         "--log_interval", str(args.log_interval),
         "--context_length", str(args.context_length),

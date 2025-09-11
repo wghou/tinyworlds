@@ -141,7 +141,7 @@ class LAM(nn.Module):
         
         # Compute reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [batch_size, seq_len-1, channels, height, width]
-        recon_loss = F.mse_loss(pred_frames, target_frames)
+        recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
 
         return recon_loss, pred_frames
 
