@@ -78,40 +78,42 @@ class Decoder(nn.Module):
         Returns:
             pred_frames: [batch_size, seq_len-1, channels, height, width] - predicted next frames from t=1 to t=seq_len-1
         """
-        batch_size, seq_len, C, H, W = frames.shape
+        B, S, C, H, W = frames.shape
 
-        frames = frames[:, :-1] # [batch_size, seq_len-1, channels, height, width]
-        
-        # # Apply random masking during training
-        # if training and self.training:
-        #     # Sample masking (keep) rate uniformly from 0.1 to 0.5
-        #     masking_rate = torch.rand(1).item() * 0.3 + 0.1  # [0.1, 0.5]
-            
-        #     # Create mask with Bernoulli distribution
-        #     mask = torch.bernoulli(torch.full((batch_size, seq_len, 1, 1, 1), masking_rate, device=frames.device))
-        #     mask[:, 0] = 1  # never mask first frame (anchor) TODO: try rid of ablation
-            
-        #     # Apply mask (zero out masked frames)
-        #     frames = frames * mask
-        
+        frames = frames[:, :-1] # [B, S-1, C, H, W]
+
         # Convert frames to patch embeddings (frame t context)
-        video_embeddings = self.patch_embed(frames)  # [batch_size, seq_len-1, num_patches, embed_dim]
+        video_embeddings = self.patch_embed(frames)  # [B, S-1, P, E]
 
-        transformed = self.transformer(video_embeddings, conditioning=actions)  # [batch_size, seq_len-1, num_patches, embed_dim]
-         
+        _, _, P, E = video_embeddings.shape
+
+        # Apply random masking during training
+        if training and self.training:
+            # Sample masking (keep) rate uniformly from 0.0 to 0.5
+            masking_rate = torch.rand(1).item() * 0.5  # [0.0, 0.5] keep probability
+
+            # Create mask with Bernoulli distribution
+            mask = torch.bernoulli(torch.full((B, S - 1, P, 1), masking_rate, device=frames.device))
+            mask[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
+
+            # Apply mask to certain videotokens
+            video_embeddings = video_embeddings * mask
+
+        transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, S-1, P, E]
+
         # Predict frame patches for all t (predict t+1)
-        patches = self.frame_head(transformed)  # [batch_size, seq_len-1, num_patches, 3 * patch_size * patch_size]
-         
+        patches = self.frame_head(transformed)  # [B, S-1, P, 3 * patch_size * patch_size]
+
         # Reshape to frames
         patches = rearrange(
             patches, 'b s p (c p1 p2) -> b s c p p1 p2', c=3, p1=self.patch_size, p2=self.patch_size
-        ) # [batch_size, seq_len-1, channels, num_patches, patch_size, patch_size]
+        ) # [B, S-1, C, P, patch_size, patch_size]
         frames_out = rearrange(
             patches, 'b s c (h w) p1 p2 -> b s c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
-        ) # [batch_size, seq_len-1, channels, pixel_height, pixel_width]
-         
+        ) # [B, S-1, C, H, W]
+
         # Return predictions with length S-1
-        return frames_out  # [batch_size, seq_len-1, channels, pixel_height, pixel_width]
+        return frames_out  # [B, S-1, C, H, W]
 
 class LAM(nn.Module):
     """ST-Transformer based Latent Action Model"""
@@ -126,6 +128,10 @@ class LAM(nn.Module):
             latent_dim=self.action_dim, num_bins=NUM_LAM_BINS
         )
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
+        
+        # Variance regularization hyper-params
+        self.var_target = 0.05  # target per-dim variance after LayerNorm ~1; keep high
+        self.var_lambda = 0.001
 
     def forward(self, frames):
         # frames: Tensor of shape [batch_size, seq_len, channels, height, width]
@@ -142,8 +148,13 @@ class LAM(nn.Module):
         # Compute reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [batch_size, seq_len-1, channels, height, width]
         recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
+        
+        # Encourage non-collapsed encoder variance per-dimension
+        z_var = actions.var(dim=0, unbiased=False).mean()
+        var_penalty = F.relu(self.var_target - z_var)
+        total_loss = recon_loss + self.var_lambda * var_penalty
 
-        return recon_loss, pred_frames
+        return total_loss, pred_frames
 
     def encode(self, prev_frame, next_frame):
         # for inference when we only need to yield an action given sequence of previous frame

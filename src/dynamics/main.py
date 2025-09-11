@@ -28,6 +28,7 @@ from src.utils.wandb_utils import (
     log_system_metrics, finish_wandb, create_wandb_config
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
+from utils import readable_timestamp
 
 # Import wandb if available
 try:
@@ -38,10 +39,6 @@ except ImportError:
     print("⚠️ wandb not available. Install with: pip install wandb")
 
 parser = argparse.ArgumentParser()
-
-def readable_timestamp():
-    """Generate a readable timestamp for filenames"""
-    return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
 
 """
 Hyperparameters

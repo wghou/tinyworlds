@@ -300,7 +300,8 @@ class AdaLN(nn.Module):
                 nn.SiLU(),
                 nn.Linear(conditioning_dim, 2 * embed_dim)
             )
-            nn.init.zeros_(self.to_gamma_beta[-1].weight)
+            # Initialize with small non-zero weights so conditioning is active from step 1
+            nn.init.normal_(self.to_gamma_beta[-1].weight, mean=0.0, std=1e-3)
             nn.init.zeros_(self.to_gamma_beta[-1].bias)
 
     def forward(self, x, conditioning=None):

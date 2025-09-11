@@ -12,17 +12,11 @@ import argparse
 from tqdm import tqdm
 from src.latent_action_model.utils import visualize_reconstructions
 from src.vqvae.utils import load_data_and_data_loaders
+from utils import readable_timestamp
 import multiprocessing
 import time
 import json
 import wandb
-
-# Performance flags via CLI
-# We place parser creation early to apply backend flags ASAP
-
-def readable_timestamp():
-    """Generate a readable timestamp for filenames"""
-    return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
 
 
 def save_run_configuration(args, run_dir, timestamp, device):
@@ -111,25 +105,6 @@ def main():
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Speed-related backend settings
-    if torch.cuda.is_available():
-        try:
-            torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
-            torch.backends.cudnn.allow_tf32 = bool(args.tf32)
-        except Exception:
-            pass
-        torch.backends.cudnn.benchmark = True
-        try:
-            torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
-        except Exception:
-            pass
-
-    # Try to relax inductor settings to avoid fused-attention rank errors
-    try:
-        import torch._inductor.config as inductor_config
-        inductor_config.fuse_attention = False
-    except Exception:
-        pass
     
     # Create organized save directory structure
     if args.save:
@@ -258,13 +233,17 @@ def main():
                 codebook_usage = idx.unique().numel() / model.quantizer.codebook_size
                 # Per-dimension mean variance for clearer signal
                 z_e_var = actions.var(dim=0, unbiased=False).mean().item()
-                print(f"Step {epoch}: loss={loss.item():.6f},codebook_usage: {codebook_usage}, z_e_var: {z_e_var}")
+
+                # compute decoder variance
+                pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
+                print(f"Step {epoch}: loss={loss.item():.6f}, codebook_usage: {codebook_usage}, z_e_var: {z_e_var}, pred_frames_var: {pred_frames_var}")
                 
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:
                     wandb.log({
                         "lam/codebook_usage": codebook_usage,
                         "lam/encoder_variance": z_e_var,
+                        "lam/decoder_variance": pred_frames_var,
                         "step": epoch
                     })
                 
@@ -283,27 +262,6 @@ def main():
     # Finish W&B run
     if args.use_wandb:
         wandb.finish()
-        print("✅ W&B run finished")
-
-    # Verification: Test if similar transitions map to same actions
-    print("\nVerifying model behavior...")
-    test_frames, _ = next(iter(validation_loader))
-    test_frames = test_frames.to(device)
-
-    # Test Case 1: Similar frame transitions
-    prev_frame = test_frames[0:1, 0]
-    next_frame_similar = test_frames[0:1, 1]
-    action1 = model.encode(prev_frame, next_frame_similar)
-
-    next_frame_similar2 = test_frames[0:1, 2]
-    action2 = model.encode(prev_frame, next_frame_similar2)
-
-    print("Actions for similar transitions:", action1.item(), action2.item())
-
-    # Test Case 2: Different frame transition
-    next_frame_different = test_frames[0:1, -1]
-    action3 = model.encode(prev_frame, next_frame_different)
-    print("Action for different transition:", action3.item())
 
 if __name__ == "__main__":
     main()

@@ -17,13 +17,14 @@ import json
 import wandb
 import math
 import torch.nn.functional as F
+from utils import readable_timestamp
 
 parser = argparse.ArgumentParser()
 
 """
 Hyperparameters
 """
-timestamp = utils.readable_timestamp()
+timestamp = readable_timestamp()
 
 parser.add_argument("--batch_size", type=int, default=16)
 parser.add_argument("--n_updates", type=int, default=2000)
