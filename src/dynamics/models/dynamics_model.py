@@ -57,7 +57,7 @@ class DynamicsModel(nn.Module):
         pe_spatial = rearrange(pe_spatial, 'p d -> 1 p d')  # [1, P, D]
         self.register_buffer("pos_spatial_dec", pe_spatial, persistent=False)
         
-        self.mlp = nn.Linear(embed_dim, codebook_size)
+        self.output_mlp = nn.Linear(embed_dim, codebook_size)
         
         # Learned mask token embedding
         self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # Small initialization
@@ -78,39 +78,35 @@ class DynamicsModel(nn.Module):
         
         # Apply random masking during training (MaskGit-style)
         if training and self.training:
-            # 1) Sample per-batch mask ratio in [0.5, 1.0)
-            mask_ratio = 0.5 + torch.rand((), device=discrete_latents.device) * 0.5
+            # TODO: change to thresholded binary mask
+            # per-batch mask ratio in [0.5, 1.0)
+            mask_ratio = 0.5 + torch.rand((), device=discrete_latents.device) * 0.5 
+            mask_positions = (torch.rand(B, S, N, device=discrete_latents.device) < mask_ratio) # [B, S, N]
 
-            # 2) Bernoulli mask per token [B,S,N]
-            mask_positions = (torch.rand(B, S, N, device=discrete_latents.device) < mask_ratio)
-
-            # 3) Guarantee at least one unmasked temporal anchor per (B,N)
+            # Guarantee at least one unmasked temporal anchor per (B,N)
             # Pick a random timestep for each (B,N) and force it to unmask
-            anchor_idx = torch.randint(0, S, (B, N), device=discrete_latents.device)  # [B,N]
-            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(N)[None, :]] = False
+            anchor_idx = torch.randint(0, S, (B, N), device=discrete_latents.device)  # [B, N]
+            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(N)[None, :]] = False # [B, S, N]
 
-            # 4) Broadcast mask token [1,1,1,D] → [B,S,N,D] lazily
-            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, S, N, -1)
-
-            # 5) Replace masked positions
-            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents)
+            # TODO: replace with repeat einops
+            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, S, N, -1) # [B, S, N, D]
+            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, S, N, D]
         else:
             mask_positions = None
 
         embeddings = self.latent_embed(discrete_latents)  # [B, S, N, E]
-        
-        # Add spatial position encoding (affects only first 2/3 of dimensions)
+
+        # Add spatial PE (affects only first 2/3 of dimensions)
+        # STTransformer adds temporal PE to last 1/3 of dimensions
         embeddings = embeddings + self.pos_spatial_dec.to(embeddings.device, embeddings.dtype)
-        
-        # The causal mask ensures each position can only attend to previous positions
-        # STTransformer will add temporal position encoding to last 1/3 of dimensions
         transformed = self.transformer(embeddings, conditioning=conditioning)  # [B, S, N, E]
-        
-        # convert back to latent space
-        next_token_logits = self.mlp(transformed)  # [B, S, N, L^D]
-        
+
+        # transform to logits for each token in codebook
+        next_token_logits = self.output_mlp(transformed)  # [B, S, N, L^D]
+
         return next_token_logits, mask_positions  # [B, S, N, L^D], [B, S, N] or None
 
+    # TODO: make a util
     @torch.no_grad()
     def compute_action_diversity(self, actions_pre_vq, quantized_actions, quantizer):
         a = actions_pre_vq.reshape(-1, actions_pre_vq.size(-1))
@@ -121,4 +117,4 @@ class DynamicsModel(nn.Module):
         p = p / p.sum().clamp_min(1)
         usage = (p > 0).float().mean()
         ent = -(p * (p + 1e-8).log()).sum() / math.log(max(K, 2))
-        return {'pre_vq_var': var, 'action_usage': usage, 'action_entropy': ent}
+        return {'pre_quant_var': var, 'action_usage': usage, 'action_entropy': ent}

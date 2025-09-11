@@ -29,14 +29,7 @@ from src.utils.wandb_utils import (
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
 from src.utils.utils import readable_timestamp
-
-# Import wandb if available
-try:
-    import wandb
-    WANDB_AVAILABLE = True
-except ImportError:
-    WANDB_AVAILABLE = False
-    print("⚠️ wandb not available. Install with: pip install wandb")
+import wandb
 
 parser = argparse.ArgumentParser()
 
@@ -99,26 +92,6 @@ args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Speed-related backend settings
-if torch.cuda.is_available():
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
-        torch.backends.cudnn.allow_tf32 = bool(args.tf32)
-    except Exception:
-        pass
-    torch.backends.cudnn.benchmark = True
-    try:
-        torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
-    except Exception:
-        pass
-
-# Try to relax inductor settings to avoid fused-attention rank errors
-try:
-    import torch._inductor.config as inductor_config
-    inductor_config.fuse_attention = False
-except Exception:
-    pass
-
 # Create organized save directory structure
 if args.save:
     # Create main results directory for this run
@@ -136,15 +109,6 @@ if args.save:
     print(f'Visualizations: {visualizations_dir}')
 
 def save_run_configuration(args, run_dir, timestamp, device):
-    """
-    Save all configuration parameters and run information to a file
-    
-    Args:
-        args: Parsed arguments
-        run_dir: Directory to save configuration
-        timestamp: Timestamp for the run
-        device: Device being used
-    """
     config = {
         'timestamp': timestamp,
         'device': str(device),
@@ -193,19 +157,8 @@ def save_run_configuration(args, run_dir, timestamp, device):
         print(f'Configuration saved to: {config_path}')
 
 def save_dynamics_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
-    """
-    Save dynamics model checkpoint including model state, optimizer state, results and hyperparameters
-    
-    Args:
-        model: The PyTorch model
-        optimizer: The optimizer
-        results: Dictionary containing training results
-        hyperparameters: Dictionary of hyperparameters
-        timestamp: String timestamp for filename
-        checkpoints_dir: Directory to save checkpoints
-    """
     results_to_save = {
-        'model': model.state_dict(),
+        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
         'results': results,
         'hyperparameters': hyperparameters
@@ -214,18 +167,12 @@ def save_dynamics_model_and_results(model, optimizer, results, hyperparameters, 
     torch.save(results_to_save, checkpoint_path)
     return checkpoint_path
 
-"""
-Load data and define batch data loaders
-"""
 training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
     dataset=args.dataset, 
     batch_size=args.batch_size, 
     num_frames=args.context_length
 )
 
-"""
-Load pre-trained models
-"""
 print("Loading pre-trained video tokenizer...")
 video_tokenizer = Video_Tokenizer(
     frame_size=(args.frame_size, args.frame_size), 
@@ -360,7 +307,7 @@ if args.save:
     save_run_configuration(args, run_dir, timestamp, device)
 
 # Initialize W&B if enabled and available
-if args.use_wandb and WANDB_AVAILABLE:
+if args.use_wandb:
     # Create model configuration
     model_config = {
         'frame_size': (args.frame_size, args.frame_size),
@@ -402,8 +349,6 @@ if args.use_wandb and WANDB_AVAILABLE:
     print(f"🚀 W&B run initialized: {wandb.run.name}")
     print(f"📊 Project: {args.wandb_project}")
     print(f"🔗 View at: {wandb.run.get_url()}")
-elif args.use_wandb and not WANDB_AVAILABLE:
-    print("❌ W&B requested but not available. Install with: pip install wandb")
 
 dynamics_model.train()
 
@@ -430,7 +375,7 @@ def train():
             video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
             
             # Apply vector quantization to get discrete latents
-            quantized_video_latents = video_tokenizer.vq(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
+            quantized_video_latents = video_tokenizer.quantizer(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
             
             if args.use_actions:
                 actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
@@ -439,7 +384,7 @@ def train():
             else:
                 quantized_actions = None
 
-        target_next_tokens = video_tokenizer.vq.get_indices_from_latents(quantized_video_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
+        target_next_tokens = video_tokenizer.quantizer.get_indices_from_latents(quantized_video_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
 
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
@@ -487,7 +432,7 @@ def train():
         results["n_updates"] = i
 
         predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [batch_size, seq_len-1, num_patches]
-        predicted_next_latents = video_tokenizer.vq.get_latents_from_indices(predicted_next_indices, dim=-1) # [batch_size, seq_len-1, num_patches, latent_dim]
+        predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [batch_size, seq_len-1, num_patches, latent_dim]
         
         # Log to W&B if enabled
         if args.use_wandb:
@@ -510,7 +455,7 @@ def train():
             wandb.log({
                 'actions/usage': float(div['action_usage']),
                 'actions/entropy': float(div['action_entropy']),
-                'actions/pre_vq_var': float(div['pre_vq_var']),
+                'actions/pre_quant_var': float(div['pre_quant_var']),
                 'step': i
             })
 

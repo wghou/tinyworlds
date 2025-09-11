@@ -68,6 +68,7 @@ class Decoder(nn.Module):
         self.frame_size = frame_size
         self.patch_size = patch_size
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
 
     def forward(self, frames, actions, training=True):
         """
@@ -85,10 +86,13 @@ class Decoder(nn.Module):
 
         # Apply random masking during training
         if training and self.training:
-            masking_rate = torch.rand(1).item() * 0.5  # [0.0, 0.5] keep probability
-            mask = torch.bernoulli(torch.full((B, S - 1, P, 1), masking_rate, device=frames.device))
-            mask[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
-            video_embeddings = video_embeddings * mask
+            keep_rate = torch.rand((), device=frames.device) * 0.5
+            keep = (torch.rand(B, S-1, P, 1, device=frames.device) < keep_rate)
+            keep[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
+            video_embeddings = torch.where(
+                keep, video_embeddings,
+                self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
+            )
 
         transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, S-1, P, E]
         patches = self.frame_head(transformed)  # [B, S-1, P, 3 * patch_size * patch_size]
@@ -116,7 +120,7 @@ class LAM(nn.Module):
         
         # Variance reg hyperparams
         self.var_target = 0.01  # target per-dim variance after LayerNorm ~1; keep high
-        self.var_lambda = 0.05
+        self.var_lambda = 100.0
 
     def forward(self, frames):
         # frames: Tensor of shape [batch_size, seq_len, channels, height, width]

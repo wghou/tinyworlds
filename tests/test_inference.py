@@ -107,7 +107,6 @@ def _test_forward_passes(video_tokenizer, lam, dynamics_model):
     with torch.no_grad():
         latent = video_tokenizer.encoder(test_frame)
         print(f"Encoder output shape: {latent.shape}")
-        # Skip VQ for now due to shape issues, test encoder and decoder separately
         decoded_frame = video_tokenizer.decoder(latent)
     print(f"✅ Video tokenizer: input {test_frame.shape} -> latent {latent.shape} -> output {decoded_frame.shape}")
     

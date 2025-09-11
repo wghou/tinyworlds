@@ -75,26 +75,7 @@ args = parser.parse_args()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Speed-related backend settings
-if torch.cuda.is_available():
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
-        torch.backends.cudnn.allow_tf32 = bool(args.tf32)
-    except Exception:
-        pass
-    torch.backends.cudnn.benchmark = True
-    try:
-        torch.set_float32_matmul_precision('high' if args.tf32 else 'medium')
-    except Exception:
-        pass
-
-# Try to relax inductor settings before compile to avoid fused-attention shape issues
-try:
-    import torch._inductor.config as inductor_config
-    inductor_config.fuse_attention = False
-except Exception:
-    pass
-
+# TODO; make util
 # Create organized save directory structure
 if args.save:
     # Create main results directory for this run
@@ -111,6 +92,7 @@ if args.save:
     print(f'Checkpoints: {checkpoints_dir}')
     print(f'Visualizations: {visualizations_dir}')
 
+# TODO: use same version of these between all main.py files
 def save_run_configuration(args, run_dir, timestamp, device):
     config = {
         'timestamp': timestamp,
@@ -156,7 +138,7 @@ def save_run_configuration(args, run_dir, timestamp, device):
 
 def save_videotokenizer_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
     results_to_save = {
-        'model': model.state_dict(),
+        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'results': results,
@@ -228,6 +210,7 @@ results = {
 }
 
 if args.checkpoint:
+    # TODO: use util for loading checkpoint and optimizer/scheduler state dicts
     if os.path.isfile(args.checkpoint):
         print(f"Loading checkpoint from {args.checkpoint}")
         checkpoint = torch.load(args.checkpoint)
@@ -253,6 +236,7 @@ if args.save:
 
 # Initialize W&B if enabled and available
 if args.use_wandb:
+    # TODO: use wandb util from wandb_utils.py (create if not there)
     # Create model configuration
     model_config = {
         'frame_size': (64, 64),
@@ -297,104 +281,6 @@ if args.use_wandb:
 
 model.train()
 
-# ------------- DEBUG HELPERS -------------
-def _compute_grad_norm(parameters) -> float:
-    total_sq = 0.0
-    for p in parameters:
-        if p.grad is None:
-            continue
-        param_norm = p.grad.data.float().norm(2)
-        total_sq += float(param_norm.item() ** 2)
-    return float(total_sq ** 0.5)
-
-@torch.no_grad()
-def _module_param_l2_norm(module) -> float:
-    total_sq = 0.0
-    for p in module.parameters():
-        if p is None:
-            continue
-        n = p.data.float().norm(2)
-        total_sq += float(n.item() ** 2)
-    return float(total_sq ** 0.5)
-
-def _module_grad_l2_norm(module) -> float:
-    total_sq = 0.0
-    for p in module.parameters():
-        if p.grad is None:
-            continue
-        n = p.grad.data.float().norm(2)
-        total_sq += float(n.item() ** 2)
-    return float(total_sq ** 0.5)
-
-@torch.no_grad()
-def _debug_fsq_and_embedding_stats(model, x, num_bins):
-    stats = {}
-    embeddings = model.encoder(x)
-    stats["embed_mean"] = float(embeddings.mean().item())
-    stats["embed_std"] = float(embeddings.std().item())
-    stats["embed_min"] = float(embeddings.min().item())
-    stats["embed_max"] = float(embeddings.max().item())
-
-    tanh_z = torch.tanh(embeddings)
-    stats["tanh_abs_gt_0.99_frac"] = float((tanh_z.abs() > 0.99).float().mean().item())
-
-    bounded = 0.5 * (tanh_z + 1.0) * (num_bins - 1)
-    eps = 1e-3
-    edge_mask = (bounded <= eps) | (bounded >= (num_bins - 1 - eps))
-    stats["bounded_edge_frac"] = float(edge_mask.float().mean().item())
-
-    quantized = model.vq(embeddings)
-    indices = model.vq.get_indices_from_latents(quantized, dim=-1)
-    unique_vals, unique_counts = torch.unique(indices, return_counts=True)
-    num_unique = int(unique_vals.numel())
-    top_share = float((unique_counts.max().float() / indices.numel()).item()) if unique_counts.numel() > 0 else 0.0
-    stats["codebook_unique_count"] = num_unique
-    stats["codebook_size"] = int(model.codebook_size)
-    stats["top_code_share"] = top_share
-    stats["unique_ratio"] = float(num_unique / max(1, model.codebook_size))
-
-    # Decoder pathway activations
-    dec_in = model.decoder.latent_embed(quantized)
-    dec_in = dec_in + model.decoder.pos_spatial_dec.to(dec_in.device, dec_in.dtype)
-    stats["decoder_in_std"] = float(dec_in.std().item())
-    dec_mid = model.decoder.transformer(dec_in)
-    stats["decoder_mid_std"] = float(dec_mid.std().item())
-
-    # Parameter norms (coarse: encoder vs decoder)
-    stats["param_norm/encoder"] = _module_param_l2_norm(model.encoder)
-    stats["param_norm/decoder"] = _module_param_l2_norm(model.decoder)
-    stats["param_norm/total"] = stats["param_norm/encoder"] + stats["param_norm/decoder"]
-
-    return stats
-# ------------- END DEBUG HELPERS -------------
-
-# Adaptive tau control state
-_edge_high_streak = 0
-
-def _maybe_adjust_tau(model, dbg, streak_steps=1000, edge_thresh=0.10, tau_increment=0.5):
-    global _edge_high_streak
-    edge_frac = dbg.get('bounded_edge_frac', 0.0)
-    # Access FSQ gate
-    fsq_gate = model.vq.fsq_gate if hasattr(model.vq, 'fsq_gate') else None
-    if fsq_gate is None:
-        return None
-    if edge_frac > edge_thresh:
-        _edge_high_streak += 1
-    else:
-        _edge_high_streak = 0
-    adjusted = False
-    if _edge_high_streak >= streak_steps:
-        new_min = min(fsq_gate.max_tau, fsq_gate.min_tau + tau_increment)
-        if new_min > fsq_gate.min_tau:
-            fsq_gate.min_tau = new_min
-            adjusted = True
-        _edge_high_streak = 0
-    # Report current tau (clamped view)
-    with torch.no_grad():
-        tau_now = fsq_gate.log_tau.exp().clamp(fsq_gate.min_tau, fsq_gate.max_tau).item()
-    return {'adjusted': adjusted, 'tau': tau_now, 'min_tau': fsq_gate.min_tau, 'max_tau': fsq_gate.max_tau, 'streak': _edge_high_streak}
-
-
 def train():
     start_iter = max(args.start_iteration, results['n_updates'])
     
@@ -419,12 +305,7 @@ def train():
 
         # Clip gradients before stepping
         scaler.unscale_(optimizer)
-        grad_norm_before_clip = _compute_grad_norm([p for p in model.parameters() if p.requires_grad])
-        # Per-module grad norms (after unscale)
-        enc_grad_norm = _module_grad_l2_norm(model.encoder)
-        dec_grad_norm = _module_grad_l2_norm(model.decoder)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()  # Step the learning rate scheduler
@@ -439,18 +320,8 @@ def train():
             metrics = {
                 'train/loss': recon_loss.item(),
                 'train/learning_rate': scheduler.get_last_lr()[0],
-                'train/grad_norm_before_clip': grad_norm_before_clip,
-                'train/grad_norm_encoder': enc_grad_norm,
-                'train/grad_norm_decoder': dec_grad_norm,
-                'train/grad_ratio_dec_over_enc': (dec_grad_norm / (enc_grad_norm + 1e-8)),
-                'train/x_variance': torch.var(x, dim=0).mean().item(),
-                'train/x_hat_variance': torch.var(x_hat.detach(), dim=0).mean().item(),
                 'step': i
             }
-
-            # Quick NaN/Inf guards
-            metrics['debug/has_nan_loss'] = int(not torch.isfinite(recon_loss))
-            metrics['debug/has_nan_xhat'] = int(not torch.isfinite(x_hat).all())
 
             # Calculate codebook usage only during log intervals
             if i % args.log_interval == 0:
@@ -458,32 +329,20 @@ def train():
                     indices = model.tokenize(x)
                     unique_codes = torch.unique(indices).numel()
                     metrics['train/codebook_usage'] = unique_codes / model.codebook_size
-                    # Extra FSQ/embedding stats
-                    dbg = _debug_fsq_and_embedding_stats(model, x, args.num_bins)
-                    for k, v in dbg.items():
-                        metrics[f'debug/{k}'] = v
-
-            wandb.log(metrics)
             
             # Log system metrics
             if torch.cuda.is_available():
-                wandb.log({
-                    'system/gpu_memory_allocated': torch.cuda.memory_allocated() / 1024**3,  # GB
-                    'system/gpu_memory_reserved': torch.cuda.memory_reserved() / 1024**3,    # GB
-                    'step': i
-                })
+                metrics['system/gpu_memory_allocated'] = torch.cuda.memory_allocated() / 1024**3
+                metrics['system/gpu_memory_reserved'] = torch.cuda.memory_reserved() / 1024**3
+                metrics['step'] = i
             
             # Log learning rate
             for j, param_group in enumerate(optimizer.param_groups):
-                wandb.log({
-                    f'learning_rate/group_{j}': param_group['lr'],
-                    'step': i
-                })
+                metrics[f'learning_rate/group_{j}'] = param_group['lr']
+                metrics['step'] = i
 
+            wandb.log(metrics)
         if i % args.log_interval == 0:
-            """
-            save model and print values
-            """
             if args.save:
                 hyperparameters = args.__dict__
                 save_videotokenizer_model_and_results(
@@ -494,29 +353,6 @@ def train():
                 x_vis = x.detach().cpu()
                 save_path = os.path.join(visualizations_dir, f'vqvae_recon_step_{i}_{args.filename}.png')
                 visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
-
-            # Print consolidated debug info
-            if args.debug_stats:
-                dbg = _debug_fsq_and_embedding_stats(model, x, args.num_bins)
-                tau_info = _maybe_adjust_tau(model, dbg)
-                lr_now = scheduler.get_last_lr()[0]
-                tau_str = ""
-                if tau_info is not None:
-                    tau_str = f" tau={tau_info['tau']:.3f} min_tau={tau_info['min_tau']:.3f} max_tau={tau_info['max_tau']:.3f} streak={tau_info['streak']}"
-                    if tau_info['adjusted']:
-                        print("[ADAPT] Increased FSQ min_tau by +0.5 due to sustained edge saturation.")
-                print(
-                    f"[DBG] step={i} lr={lr_now:.6g} loss={recon_loss.item():.6g} "
-                    f"grad_norm(pre-clip)={grad_norm_before_clip:.3f} enc_gn={enc_grad_norm:.3f} dec_gn={dec_grad_norm:.3f} "
-                    f"embed(mean/std/min/max)={dbg['embed_mean']:.3f}/{dbg['embed_std']:.3f}/"
-                    f"{dbg['embed_min']:.3f}/{dbg['embed_max']:.3f} tanh_sat>0.99={dbg['tanh_abs_gt_0.99_frac']:.3%} "
-                    f"edge_frac={dbg['bounded_edge_frac']:.3%} unique_codes={dbg['codebook_unique_count']}/"
-                    f"{dbg['codebook_size']} (ratio {dbg['unique_ratio']:.3%}) top_code_share={dbg['top_code_share']:.3%} "
-                    f"dec_in_std={dbg['decoder_in_std']:.4f} dec_mid_std={dbg['decoder_mid_std']:.4f} "
-                    f"||enc||={dbg['param_norm/encoder']:.2f} ||dec||={dbg['param_norm/decoder']:.2f}{tau_str}"
-                )
-                if dbg['top_code_share'] > 0.5 or dbg['unique_ratio'] < 0.01:
-                    print("[WARN] Codebook collapse signal detected: high top_code_share or very low unique_ratio.")
 
             print('Update #', i, 'Recon Loss:',
                   torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())

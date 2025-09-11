@@ -240,11 +240,6 @@ def encode_frame_to_tokens(video_tokenizer, frame):
         
         return quantized_latent
     
-# def sample_first_frame_from_dataloader(dataloader):
-#     batch = next(iter(dataloader))
-#     frame = batch[0]
-#     return frame
-    
 def sample_random_action(n_actions):
     random_action = torch.randint(0, n_actions, (1,))
     return random_action

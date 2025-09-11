@@ -119,8 +119,6 @@ class TestVideoTokenizer:
             # Check outputs
             assert isinstance(vq_loss, torch.Tensor)
             assert quantized_latents.shape == latents.shape
-            # The VQ returns indices for each latent dimension, so shape should be [batch, seq, num_patches, latent_dim]
-            print(f"indices.shape: {indices.shape}, latents.shape: {latents.shape}")
             assert indices.shape == latents.shape  # [batch_size, seq_len, num_patches, latent_dim]
 
     def test_main_script_config_saving(self, temp_dir):

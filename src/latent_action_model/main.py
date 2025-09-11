@@ -21,6 +21,7 @@ import wandb
 
 def save_run_configuration(args, run_dir, timestamp, device):
     """Save all configuration parameters and run information to a file"""
+    # TODO: delete when shift to using yaml config files
     config = {
         'timestamp': timestamp,
         'device': str(device),
@@ -32,15 +33,13 @@ def save_run_configuration(args, run_dir, timestamp, device):
             'num_heads': args.num_heads,
             'hidden_dim': args.hidden_dim,
             'num_blocks': args.num_blocks,
-            'beta': args.beta,
-            'quantization_method': 'Vector Quantization (VQ)'
         },
         'training_parameters': {
             'batch_size': args.batch_size,
             'n_updates': args.n_updates,
             'learning_rate': args.learning_rate,
             'log_interval': args.log_interval,
-            'seq_length': args.seq_length,
+            'context_length': args.context_length,
             'dataset': args.dataset
         },
         'directories': {
@@ -60,7 +59,7 @@ def save_run_configuration(args, run_dir, timestamp, device):
 def save_lam_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
     """Save LAM model checkpoint including model state, optimizer state, results and hyperparameters"""
     results_to_save = {
-        'model': model.state_dict(),
+        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
         'results': results,
         'hyperparameters': hyperparameters
@@ -84,28 +83,25 @@ def main():
     parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
     parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
     parser.add_argument("--dataset", type=str, default="SONIC")
-    parser.add_argument("--seq_length", type=int, default=8, help="Length of frame sequences")
-    parser.add_argument("--beta", type=float, default=0.05, help="VQ loss weight")
+    parser.add_argument("--context_length", type=int, default=4, help="Length of frame sequences")
     parser.add_argument("-save", action="store_true", default=True)
     parser.add_argument("--filename", type=str, default=readable_timestamp())
     parser.add_argument("--log_interval", type=int, default=50, help="Interval for saving model and logging")
-    
+
     # W&B arguments
     parser.add_argument("--use_wandb", action="store_true", default=True, help="Enable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_media", action="store_true", default=False, help="Log images/videos to W&B (off by default)")
 
-    parser.add_argument("--vq_reinit_check_interval", type=int, default=100, help="Steps between dead-code usage-window checks")
     # Performance flags
     parser.add_argument("--amp", action="store_true", default=False, help="Enable mixed precision (bfloat16)")
     parser.add_argument("--tf32", action="store_true", default=False, help="Enable TF32 on Ampere+")
     parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
-    
+
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    
     # Create organized save directory structure
     if args.save:
         run_dir = os.path.join(os.getcwd(), 'src', 'latent_action_model', 'results', f'lam_{readable_timestamp()}')
@@ -120,7 +116,7 @@ def main():
     _, _, training_loader, validation_loader, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
-        num_frames=args.seq_length
+        num_frames=args.context_length
     )
 
     # Initialize model

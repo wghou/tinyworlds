@@ -116,28 +116,29 @@ class PatchEmbedding(nn.Module):
         self.embed_dim = embed_dim
         self.Hp, self.Wp = H // patch_size, W // patch_size
         self.num_patches = self.Hp * self.Wp
-        
+
+        # TODO: clean and functionalize this
         # Split embedding dimensions, ensuring each split is even
         base_split = (embed_dim // 3) & ~1  # Round down to even number
         remaining_dim = embed_dim - base_split  # Remaining after temporal
-        
+
         # Split remaining dimensions between x and y, ensuring even numbers
         self.spatial_x_dim = (remaining_dim // 2) & ~1  # Round down to even
         self.spatial_y_dim = remaining_dim - self.spatial_x_dim  # Give remainder to y
         self.temporal_dim = base_split  # Keep temporal dimension as base even split
-        
+
         assert (self.spatial_x_dim + self.spatial_y_dim + self.temporal_dim) == embed_dim, \
             f"Dimension mismatch: {self.spatial_x_dim} + {self.spatial_y_dim} + {self.temporal_dim} != {embed_dim}"
         assert self.spatial_x_dim % 2 == 0 and self.spatial_y_dim % 2 == 0 and self.temporal_dim % 2 == 0, \
             f"All dimensions must be even: x={self.spatial_x_dim}, y={self.spatial_y_dim}, t={self.temporal_dim}"
-        
+
         # conv projection for patches
         self.proj = nn.Conv2d(3 * self.patch_size * self.patch_size, self.embed_dim, 1)
-        
+
         # Generate separate spatial x and y position encodings
         pe_x = sincos_1d(self.Wp, self.spatial_x_dim, device='cpu', dtype=torch.float32)  # [Wp, D/3+]
         pe_y = sincos_1d(self.Hp, self.spatial_y_dim, device='cpu', dtype=torch.float32)  # [Hp, D/3+]
-        
+
         # Expand to 2D grid
         pe_x = pe_x.unsqueeze(0).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
         pe_y = pe_y.unsqueeze(1).expand(self.Hp, self.Wp, -1)  # [Hp, Wp, D/3+]
@@ -179,28 +180,20 @@ class SpatialAttention(nn.Module):
         self.norm = AdaLN(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
-        """
-        Args:
-            x: [B, S, P, E]
-        Returns:
-            out: [B, S, P, E]
-        """
         B, S, P, E = x.shape
 
-        # Project to Q, K, V and reshape: [B, S, P, E] -> [B, S, H, P, E/H]
-        q = rearrange(self.q_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
-        k = rearrange(self.k_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b s p (n d) -> b s n p d', n=self.num_heads)
+        # Project to Q, K, V and reshape: [B, S, P, E] -> [(B*S), H, P, E/H] to work with torch compile attention
+        q = rearrange(self.q_proj(x), 'b s p (h d) -> (b s) h p d', h=self.num_heads)
+        k = rearrange(self.k_proj(x), 'b s p (h d) -> (b s) h p d', h=self.num_heads)
+        v = rearrange(self.v_proj(x), 'b s p (h d) -> (b s) h p d', h=self.num_heads)
 
-        k_t = k.transpose(-2, -1) # [B, S, H, D, P]
+        k_t = k.transpose(-2, -1) # [(B*S), H, P, D, P]
 
         # Compute attention
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [B, S, H, P, P]
-        attn_weights = F.softmax(scores, dim=-1) # [B, S, H, P, P]
-
-        # Apply attention to values:
-        attn_output = torch.matmul(attn_weights, v) # [B, S, H, P, D]
-        attn_output = rearrange(attn_output, 'b s n p d -> b s p (n d)') # [B, S, P, E]
+        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*S), H, P, P]
+        attn_weights = F.softmax(scores, dim=-1) # [(B*S), H, P, P]
+        attn_output = torch.matmul(attn_weights, v) # [(B*S), H, P, D]
+        attn_output = rearrange(attn_output, '(b s) h p d -> b s p (h d)', b=B, s=S) # [B, S, P, E]
 
         # Final projection to mix heads
         attn_out = self.out_proj(attn_output)  # [B, S, P, E]
@@ -228,42 +221,39 @@ class TemporalAttention(nn.Module):
         self.causal = causal
         
     def forward(self, x, conditioning=None):
-        # x: [B, S, P, E]
-        # out: [B, S, P, E]
         B, S, P, E = x.shape
         
-        # Project to Q, K, V and reshape: [B, S, P, E] -> [B, P, H, S, D]
-        q = rearrange(self.q_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
-        k = rearrange(self.k_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
-        v = rearrange(self.v_proj(x), 'b s p (n d) -> b p n s d', n=self.num_heads)
+        # Project to Q, K, V and reshape: [B, S, P, E] -> [(B*P), H, S, D] to work with torch compile attention
+        q = rearrange(self.q_proj(x), 'b s p (h d) -> (b p) h s d', h=self.num_heads)
+        k = rearrange(self.k_proj(x), 'b s p (h d) -> (b p) h s d', h=self.num_heads)
+        v = rearrange(self.v_proj(x), 'b s p (h d) -> (b p) h s d', h=self.num_heads) # [B, P, H, S, D]
 
-        k_t = k.transpose(-2, -1) # [B, P, H, D, S]
+        k_t = k.transpose(-2, -1) # [(B*P), H, S, D, S]
 
-        # Compute attention: [B, P, H, S, D] -> [B, P, H, S, S]
+        # Compute attention: [(B*P), H, S, D] -> [(B*P), H, S, S]
         scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
 
         # Apply causal mask if needed (for each token t in seq, mask out all tokens to the right of t (after t))
         if self.causal:
             mask = torch.triu(torch.ones(S, S), diagonal=1).bool().to(x.device)
-            scores = scores.masked_fill(mask, -torch.inf) # [B, P, H, S, S]
+            scores = scores.masked_fill(mask, -torch.inf) # [(B*P), H, S, S]
 
-        attn_weights = F.softmax(scores, dim=-1)
-
-        # Apply attention to values: [B, P, H, S, D] -> [B, P, H, S, D]
-        attn_output = torch.matmul(attn_weights, v)
-        attn_output = rearrange(attn_output, 'b p n s d -> b s p (n d)') # [B, S, P, E]
+        attn_weights = F.softmax(scores, dim=-1) # [(B*P), H, S, S]
+        attn_output = torch.matmul(attn_weights, v) # [(B*P), H, S, D]
+        attn_output = rearrange(attn_output, '(b p) h s d -> b s p (h d)', b=B, p=P) # [B, S, P, E]
 
         # Final projection to mix heads
         attn_out = self.out_proj(attn_output)  # [B, S, P, E]
 
         # Add residual and normalize
         out = self.norm(x + attn_out, conditioning)
-        
+
         return out
 
 class FeedForward(nn.Module):
     def __init__(self, embed_dim, hidden_dim, conditioning_dim=None):
         super().__init__()
+        # TODO: add MoE
         h = math.floor(2 * hidden_dim / 3)
         self.w_v = nn.Linear(embed_dim, h)
         self.w_g = nn.Linear(embed_dim, h)
@@ -276,6 +266,7 @@ class FeedForward(nn.Module):
         out = self.w_o(v * g)
         return self.norm(x + out, conditioning)
 
+# TODO: rename to FiLM or adaptive normalization?
 class AdaLN(nn.Module):
     # Adaptive Layer Normalization, optionally unconditioned simple RMSNorm
     def __init__(self, embed_dim, conditioning_dim=None):
@@ -284,6 +275,7 @@ class AdaLN(nn.Module):
         self.rms = None
         self.to_gamma_beta = None
         if conditioning_dim is None:
+            # TODO: replace with manual RMSNorm and LayerNorm Immplementations
             # Prefer RMSNorm when unconditioned
             self.rms = nn.RMSNorm(embed_dim)
         else:
@@ -530,7 +522,7 @@ class Video_Tokenizer(nn.Module):
         super().__init__()
         self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
-        self.vq = FiniteScalarQuantizer(latent_dim, num_bins)
+        self.quantizer = FiniteScalarQuantizer(latent_dim, num_bins)
         self.codebook_size = num_bins**latent_dim
 
     def forward(self, frames):
@@ -538,7 +530,7 @@ class Video_Tokenizer(nn.Module):
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
 
         # Apply vector quantization
-        quantized_z = self.vq(embeddings)
+        quantized_z = self.quantizer(embeddings)
 
         # Decode quantized latents back to frames
         x_hat = self.decoder(quantized_z)  # [batch_size, seq_len, channels, height, width]
@@ -550,9 +542,9 @@ class Video_Tokenizer(nn.Module):
         embeddings = self.encoder(frames)  # [batch_size, seq_len, num_patches, latent_dim]
 
         # Apply vector quantization
-        quantized_z = self.vq(embeddings)
+        quantized_z = self.quantizer(embeddings)
 
-        indices = self.vq.get_indices_from_latents(quantized_z, dim=-1)
+        indices = self.quantizer.get_indices_from_latents(quantized_z, dim=-1)
 
         return indices
 
