@@ -2,6 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import os
 
+# TODO: clean up and merge with total utils
 def normalize_for_display(tensor):
     """Scale tensor values to [0,1] range for display"""
     b, c, h, w = tensor.shape

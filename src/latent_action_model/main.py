@@ -11,7 +11,7 @@ from models.lam import LAM
 import argparse
 from tqdm import tqdm
 from src.latent_action_model.utils import visualize_reconstructions
-from src.vqvae.utils import load_data_and_data_loaders
+from datasets.utils import load_data_and_data_loaders
 from utils import readable_timestamp
 import multiprocessing
 import time

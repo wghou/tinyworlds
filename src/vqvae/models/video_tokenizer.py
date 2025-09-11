@@ -387,7 +387,7 @@ class FiniteScalarQuantizer(nn.Module):
     Quantizes each dimension independently by bounding to 0, num_bins then rounding to nearest integer
     Prevents token collapse and no auxiliary losses necessary 
     """
-    def __init__(self, latent_dim=6, num_bins=4):
+    def __init__(self, latent_dim=5, num_bins=4):
         super().__init__()
         self.num_bins = num_bins
         self.levels_np = torch.tensor(latent_dim * [num_bins])
@@ -450,7 +450,7 @@ class FiniteScalarQuantizer(nn.Module):
 class Encoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
-                 hidden_dim=256, num_blocks=4, latent_dim=3):
+                 hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
@@ -492,7 +492,7 @@ class PixelShuffleFrameHead(nn.Module):
 class Decoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
-                 hidden_dim=256, num_blocks=4, latent_dim=3):
+                 hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
         H, W = frame_size
         self.height = H

@@ -5,7 +5,7 @@ from src.dynamics.models.dynamics_model import DynamicsModel
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
 import argparse
-from src.vqvae.utils import load_data_and_data_loaders
+from datasets.utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt
 import time
 import os

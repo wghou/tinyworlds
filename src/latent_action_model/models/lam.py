@@ -15,7 +15,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
-        
+
         # Action prediction head
         self.action_head = nn.Sequential(
             nn.LayerNorm(embed_dim * 2),
@@ -23,7 +23,7 @@ class Encoder(nn.Module):
             nn.GELU(),
             nn.Linear(4 * action_dim, action_dim)
         )
-        
+
     def forward(self, frames):
         # frames: [batch_size, seq_len, channels, height, width]
         batch_size, seq_len, C, H, W = frames.shape
@@ -57,18 +57,18 @@ class Decoder(nn.Module):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=conditioning_dim)
-        
+
         # Frame prediction head
         self.frame_head = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, 3 * patch_size * patch_size),
             nn.Tanh()
         )
-        
+
         self.frame_size = frame_size
         self.patch_size = patch_size
         self.num_patches = (frame_size[0] // patch_size) * (frame_size[1] // patch_size)
-        
+
     def forward(self, frames, actions, training=True):
         """
         Args:
@@ -79,41 +79,26 @@ class Decoder(nn.Module):
             pred_frames: [batch_size, seq_len-1, channels, height, width] - predicted next frames from t=1 to t=seq_len-1
         """
         B, S, C, H, W = frames.shape
-
         frames = frames[:, :-1] # [B, S-1, C, H, W]
-
-        # Convert frames to patch embeddings (frame t context)
         video_embeddings = self.patch_embed(frames)  # [B, S-1, P, E]
-
         _, _, P, E = video_embeddings.shape
 
         # Apply random masking during training
         if training and self.training:
-            # Sample masking (keep) rate uniformly from 0.0 to 0.5
             masking_rate = torch.rand(1).item() * 0.5  # [0.0, 0.5] keep probability
-
-            # Create mask with Bernoulli distribution
             mask = torch.bernoulli(torch.full((B, S - 1, P, 1), masking_rate, device=frames.device))
             mask[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
-
-            # Apply mask to certain videotokens
             video_embeddings = video_embeddings * mask
 
         transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, S-1, P, E]
-
-        # Predict frame patches for all t (predict t+1)
         patches = self.frame_head(transformed)  # [B, S-1, P, 3 * patch_size * patch_size]
-
-        # Reshape to frames
         patches = rearrange(
             patches, 'b s p (c p1 p2) -> b s c p p1 p2', c=3, p1=self.patch_size, p2=self.patch_size
         ) # [B, S-1, C, P, patch_size, patch_size]
-        frames_out = rearrange(
+        pred_frames = rearrange(
             patches, 'b s c (h w) p1 p2 -> b s c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
         ) # [B, S-1, C, H, W]
-
-        # Return predictions with length S-1
-        return frames_out  # [B, S-1, C, H, W]
+        return pred_frames  # [B, S-1, C, H, W]
 
 class LAM(nn.Module):
     """ST-Transformer based Latent Action Model"""
@@ -129,9 +114,9 @@ class LAM(nn.Module):
         )
         self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
         
-        # Variance regularization hyper-params
-        self.var_target = 0.05  # target per-dim variance after LayerNorm ~1; keep high
-        self.var_lambda = 0.001
+        # Variance reg hyperparams
+        self.var_target = 0.01  # target per-dim variance after LayerNorm ~1; keep high
+        self.var_lambda = 0.05
 
     def forward(self, frames):
         # frames: Tensor of shape [batch_size, seq_len, channels, height, width]

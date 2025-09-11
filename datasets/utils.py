@@ -7,12 +7,12 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-from src.vqvae.datasets.block import BlockDataset, LatentBlockDataset
-from src.vqvae.datasets.pong import PongDataset
-from src.vqvae.datasets.sonic import SonicDataset
-from src.vqvae.datasets.pole_position import PolePositionDataset
-from src.vqvae.datasets.picodoom import PicoDoomDataset
-from src.vqvae.datasets.zelda import ZeldaDataset
+from datasets.block import BlockDataset, LatentBlockDataset
+from datasets.pong import PongDataset
+from datasets.sonic import SonicDataset
+from datasets.pole_position import PolePositionDataset
+from datasets.picodoom import PicoDoomDataset
+from datasets.zelda import ZeldaDataset
 
 def load_cifar():
     train = datasets.CIFAR10(root="data", train=True, download=True,
