@@ -1,9 +1,6 @@
 # python run_inference.py --use_latest_checkpoints --use_actions
 
 import torch
-from src.dynamics.models.dynamics_model import DynamicsModel
-from src.vqvae.models.video_tokenizer import Video_Tokenizer
-from src.latent_action_model.models.lam import LAM
 import argparse
 from datasets.utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt
@@ -11,70 +8,10 @@ import time
 import os
 import random
 import glob
-from einops import rearrange
-import json
+from src.utils.utils import load_videotokenizer_from_checkpoint, load_lam_from_checkpoint, load_dynamics_from_checkpoint
 
 # Check if CUDA is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-def _read_arch_from_run_config(ckpt_path, fallback_hp_keys=None):
-    """Read model architecture from a checkpoint's run_config.json or hyperparameters.
-    Returns a dict of keys -> values. fallback_hp_keys maps target keys to keys in hyperparameters.
-    """
-    arch = {}
-    if ckpt_path and os.path.isfile(ckpt_path):
-        try:
-            run_dir = os.path.dirname(os.path.dirname(ckpt_path))
-            cfg_path = os.path.join(run_dir, 'run_config.json')
-            if os.path.isfile(cfg_path):
-                with open(cfg_path, 'r') as f:
-                    cfg = json.load(f)
-                arch = cfg.get('model_architecture', {})
-                return arch
-        except Exception:
-            pass
-        # Fallback: load from checkpoint hyperparameters section
-        try:
-            ck = torch.load(ckpt_path, map_location='cpu')
-            hp = ck.get('hyperparameters', {})
-            if fallback_hp_keys:
-                for k, src_k in fallback_hp_keys.items():
-                    if src_k in hp:
-                        arch[k] = hp[src_k]
-            else:
-                arch = hp
-        except Exception:
-            pass
-    return arch
-
-def predict_next_tokens(dynamics_model, video_latents, action_latent=None, temperature=1.0, use_actions=True):
-    """Use dynamics model to predict next video tokens with temperature sampling"""
-    with torch.no_grad():
-        # Prepare inputs for dynamics model
-        # video_latents: [1, seq_len, num_patches, latent_dim]
-        # action_latent: [1, action_dim] (optional)
-        
-        batch_size, seq_len, num_patches, latent_dim = video_latents.shape
-
-        if use_actions and action_latent is not None:
-            assert action_latent.shape[1] == latent_dim, "Action latent dimension must match video latent dimension"
-            
-            # Expand action to match video latents shape for each timestep
-            action_expanded = action_latent.unsqueeze(1).unsqueeze(1).expand(-1, seq_len, num_patches, -1).to(video_latents.device)  # [1, seq_len, num_patches, action_dim]
-            
-            # Add action latents to video latents (not concatenate)
-            combined_latents = video_latents + action_expanded  # [1, seq_len, num_patches, latent_dim]
-        else:
-            # Use only video latents without action latents
-            combined_latents = video_latents  # [1, seq_len, num_patches, latent_dim]
-        
-        # Predict next video tokens using the dynamics model
-        next_video_latents, _ = dynamics_model(combined_latents, training=False)  # [1, seq_len, num_patches, latent_dim]
-        
-        print(f"next_video_latents shape: {next_video_latents.shape}")
-        
-        return next_video_latents
 
 def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1, device=None):
     """Sample action with diversity to avoid getting stuck in loops"""
@@ -86,181 +23,52 @@ def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0
     recent_actions = previous_actions[-5:]  # Last 5 actions
     action_counts = torch.bincount(torch.tensor([a.item() for a in recent_actions], device=device), minlength=n_actions)
     
-    # Calculate diversity penalty (favor less frequent actions)
-    diversity_penalty = action_counts.float() / len(recent_actions)
-    
     # Sample with diversity
     if torch.rand(1, device=device).item() < diversity_weight:
         # Sample from less frequent actions
         min_count = action_counts.min()
         candidate_actions = torch.where(action_counts == min_count)[0]
-        action_index = candidate_actions[torch.randint(0, len(candidate_actions), (1,), device=device)]
+        sampled_action_index = candidate_actions[torch.randint(0, len(candidate_actions), (1,), device=device)]
     else:
         # Sample randomly
-        action_index = torch.randint(0, n_actions, (1,), device=device)
+        sampled_action_index = torch.randint(0, n_actions, (1,), device=device)
     
-    return action_index
+    return sampled_action_index
 
 def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actions=True):
     """Load trained models (LAM is optional if not using actions)"""
     print("Loading trained models...")
     
-    # Load video tokenizer
+    # Load video tokenizer from its saved config in checkpoint
     print(f"Loading video tokenizer from {video_tokenizer_path}")
-    vt_arch = _read_arch_from_run_config(
-        video_tokenizer_path,
-        fallback_hp_keys={
-            'patch_size': 'patch_size',
-            'embed_dim': 'embed_dim',
-            'num_heads': 'num_heads',
-            'hidden_dim': 'hidden_dim',
-            'num_blocks': 'num_blocks',
-            'latent_dim': 'latent_dim',
-            'num_bins': 'num_bins',
-        }
-    )
-    video_tokenizer = Video_Tokenizer(
-        frame_size=(64, 64),
-        patch_size=vt_arch.get('patch_size', 4),
-        embed_dim=vt_arch.get('embed_dim', 128),
-        num_heads=vt_arch.get('num_heads', 8),
-        hidden_dim=vt_arch.get('hidden_dim', 512),
-        num_blocks=vt_arch.get('num_blocks', 4),
-        latent_dim=vt_arch.get('latent_dim', 6),
-        num_bins=vt_arch.get('num_bins', 4)
-    ).to(device)
-    
-    # Try loading with weights_only=True first, fallback to False if it fails
-    try:
-        checkpoint = torch.load(video_tokenizer_path, map_location=device, weights_only=True)
-    except Exception as e:
-        print(f"weights_only=True failed, trying weights_only=False: {e}")
-        checkpoint = torch.load(video_tokenizer_path, map_location=device, weights_only=False)
-    
-    video_tokenizer.load_state_dict(checkpoint['model'])
+    video_tokenizer, _vt_ckpt = load_videotokenizer_from_checkpoint(video_tokenizer_path, device)
     video_tokenizer.eval()
-    print("✅ Video tokenizer loaded")
+    print("✅ Video tokenizer loaded from checkpoint config")
     
-    # Load LAM only if using actions
+    # Load LAM only if using actions, from its saved config
     lam = None
     if use_actions:
         print(f"Loading LAM from {lam_path}")
-        lam_arch = _read_arch_from_run_config(
-            lam_path,
-            fallback_hp_keys={
-                'patch_size': 'patch_size',
-                'embed_dim': 'embed_dim',
-                'num_heads': 'num_heads',
-                'hidden_dim': 'hidden_dim',
-                'num_blocks': 'num_blocks',
-                'action_dim': 'action_dim',
-            }
-        )
-        lam = LAM(
-            frame_size=(64, 64),
-            n_actions=8,
-            patch_size=lam_arch.get('patch_size', vt_arch.get('patch_size', 4)),
-            embed_dim=lam_arch.get('embed_dim', vt_arch.get('embed_dim', 128)),
-            num_heads=lam_arch.get('num_heads', vt_arch.get('num_heads', 8)),
-            hidden_dim=lam_arch.get('hidden_dim', vt_arch.get('hidden_dim', 512)),
-            num_blocks=lam_arch.get('num_blocks', vt_arch.get('num_blocks', 4)),
-            action_dim=lam_arch.get('action_dim', vt_arch.get('latent_dim', 6)),
-            beta=1.0
-        ).to(device)
-        
-        # Try loading with weights_only=True first, fallback to False if it fails
-        try:
-            checkpoint = torch.load(lam_path, map_location=device, weights_only=True)
-        except Exception as e:
-            print(f"weights_only=True failed, trying weights_only=False: {e}")
-            checkpoint = torch.load(lam_path, map_location=device, weights_only=False)
-        
-        lam.load_state_dict(checkpoint['model'])
+        lam, _lam_ckpt = load_lam_from_checkpoint(lam_path, device)
         lam.eval()
-        print("✅ LAM loaded")
+        print("✅ LAM loaded from checkpoint config")
     else:
         print("⚠️ Skipping LAM loading (not using actions)")
     
-    # Load dynamics model
+    # Load dynamics model from its saved config in checkpoint
     print(f"Loading dynamics model from {dynamics_path}")
-    dyn_arch = _read_arch_from_run_config(
-        dynamics_path,
-        fallback_hp_keys={
-            'patch_size': 'patch_size',
-            'embed_dim': 'embed_dim',
-            'num_heads': 'num_heads',
-            'hidden_dim': 'hidden_dim',
-            'num_blocks': 'num_blocks',
-            'latent_dim': 'latent_dim',
-            'num_bins': 'num_bins',
-        }
-    )
-    dynamics_model = DynamicsModel(
-        frame_size=(64, 64),
-        patch_size=dyn_arch.get('patch_size', vt_arch.get('patch_size', 4)),
-        embed_dim=dyn_arch.get('embed_dim', vt_arch.get('embed_dim', 128)),
-        num_heads=dyn_arch.get('num_heads', vt_arch.get('num_heads', 8)),
-        hidden_dim=dyn_arch.get('hidden_dim', vt_arch.get('hidden_dim', 512)),
-        num_blocks=dyn_arch.get('num_blocks', vt_arch.get('num_blocks', 4)),
-        latent_dim=dyn_arch.get('latent_dim', vt_arch.get('latent_dim', 6)),
-        num_bins=dyn_arch.get('num_bins', vt_arch.get('num_bins', 4))
-    ).to(device)
-    
-    # Try loading with weights_only=True first, fallback to False if it fails
-    try:
-        checkpoint = torch.load(dynamics_path, map_location=device, weights_only=True)
-    except Exception as e:
-        print(f"weights_only=True failed, trying weights_only=False: {e}")
-        checkpoint = torch.load(dynamics_path, map_location=device, weights_only=False)
-    
-    dynamics_model.load_state_dict(checkpoint['model'])
+    dynamics_model, _dyn_ckpt = load_dynamics_from_checkpoint(dynamics_path, device)
     dynamics_model.eval()
-    print("✅ Dynamics model loaded")
+    print("✅ Dynamics model loaded from checkpoint config")
     
     return video_tokenizer, lam, dynamics_model
-
-def encode_frame_to_tokens(video_tokenizer, frame):
-    """Encode a single frame to video tokens"""
-    with torch.no_grad():
-        # Add batch and sequence dimensions if needed
-        if frame.dim() == 3:
-            frame = frame.unsqueeze(0).unsqueeze(0)  # [C, H, W] -> [1, 1, C, H, W]
-        elif frame.dim() == 4:
-            frame = frame.unsqueeze(1)  # [1, C, H, W] -> [1, 1, C, H, W]
-        
-        # Encode frame to latent representation
-        latent = video_tokenizer.encoder(frame)  # [1, 1, num_patches, latent_dim]
-
-        print(f"latent shape: {latent.shape}")
-        
-        # Quantize to get video tokens
-        quantized_latent = video_tokenizer.vq(latent)
-
-        print(f"quantized_latent shape: {quantized_latent.shape}")
-        
-        return quantized_latent
     
 def sample_random_action(n_actions):
     random_action = torch.randint(0, n_actions, (1,))
     return random_action
 
-def get_lam_latent_from_action_index(lam, action_index):
-    with torch.no_grad():
-        action_latent = lam.quantizer.embedding.weight[action_index] # get the latent action embedding in the codebook at action index
-        return action_latent
-    
+# TODO: use utils fun
 def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions, fps, use_actions=True):
-    """
-    Visualize the inference results showing ground truth vs predicted frames side by side.
-    Also save an MP4 file showing just the predicted frames in order.
-    
-    Args:
-        predicted_frames: Tensor of shape [batch_size, num_frames, C, H, W] - predicted frames
-        ground_truth_frames: Tensor of shape [batch_size, num_frames, C, H, W] - ground truth frames
-        inferred_actions: List of action indices
-        fps: Frames per second for the MP4 video
-        use_actions: Whether actions were used in generation
-    """
     # Move to CPU and convert to numpy
     predicted_frames = predicted_frames.detach().cpu()
     ground_truth_frames = ground_truth_frames.detach().cpu()
@@ -285,16 +93,13 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
     if num_frames == 1:
         axes = axes.reshape(2, 1)
 
-    print(f"ground_truth_frames shape: {ground_truth_frames.shape}")
-    print(f"predicted_frames shape: {predicted_frames.shape}")
-    
     # Plot ground truth frames (top row)
     for i in range(num_gt_frames):
         frame = ground_truth_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
         axes[0, i].imshow(frame)
         axes[0, i].set_title(f'Ground Truth {i+1}', fontsize=12, color='green')
         axes[0, i].axis('off')
-    
+
     # Plot predicted frames (bottom row)
     for i in range(num_frames):
         frame = predicted_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
@@ -339,6 +144,7 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
     else:
         print(f"No actions used.")
 
+# TODO: get working mp4
 def save_frames_as_mp4(frames, output_path, fps=2):
     """
     Save frames as an MP4 video file.
@@ -373,23 +179,7 @@ def save_frames_as_mp4(frames, output_path, fps=2):
     out.release()
     print(f"MP4 video saved to: {output_path}")
 
-def get_model_context_sizes(video_tokenizer, dynamics_model):
-    """Get the context window sizes for both models"""
-    # Since models don't have explicit max_seq_len, use the default context lengths
-    # Both video tokenizer and dynamics model are trained with context_length=4 by default
-    video_context_size = 4  # Default from training
-    dynamics_context_size = 4  # Default from training
-    
-    print(f"Video tokenizer context size: {video_context_size}")
-    print(f"Dynamics model context size: {dynamics_context_size}")
-    
-    # Return the minimum of both
-    context_window = min(video_context_size, dynamics_context_size)
-    print(f"Using context window size: {context_window}")
-    
-    return context_window
-
-
+# TODO: name mskgit schedule
 def exp_schedule_torch(t, T, N, k=5.0, device=None):
     x = t / T
     k_tensor = torch.tensor(k, device=device)
@@ -416,27 +206,18 @@ def main(args):
 
     ground_truth_sequence = og_ground_truth_sequence[:, :frames_to_load, :, :, :]  # [1, frames_to_load, C, H, W]
     
-    print(f"Loaded ground truth sequence with shape: {ground_truth_sequence.shape}")
-    
     # Start with initial context (first context_window GT frames)
     context_frames = ground_truth_sequence[:, :args.context_window, :, :, :]
     generated_frames = context_frames.clone()
 
     # Initialize action tracking
     if args.use_actions:
-        n_actions = lam.quantizer.n_e  # Use n_e instead of codebook_size
+        n_actions = lam.quantizer.codebook_size
         inferred_actions = []
     else:
         n_actions = 0
         inferred_actions = []
     
-    # Get context window size from models
-    context_window = get_model_context_sizes(video_tokenizer, dynamics_model)
-    
-    print(f"context_window: {context_window}")
-    print(f"context_frames shape: {context_frames.shape}")
-    model_input_frames = context_frames
-
     # Ensure we don’t exceed available GT frames in teacher-forced mode
     max_possible_steps = ground_truth_sequence.shape[1] - args.context_window
     if args.teacher_forced and args.generation_steps > max_possible_steps:
@@ -453,45 +234,32 @@ def main(args):
             context_frames = generated_frames[:, -args.context_window:, :, :, :]
 
         # Encode context frames each iteration
-        video_latents = encode_frame_to_tokens(video_tokenizer, context_frames)
-        print(f"video_latent_sequence shape: {video_latents.shape}")
+        video_indices = video_tokenizer.tokenize(context_frames)
+        video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_indices)
 
         # Sample action only if using actions
         if args.use_gt_actions:
             # pass last 2 frames through lam to get action latent
-            print(f"context_frames shape: {context_frames.shape}")
-            action_index = lam.encode(context_frames[:, -1], ground_truth_sequence[:, i + args.context_window])
-            print(f"action_index shape: {action_index.shape}")
-            inferred_actions.append(action_index)
-
-            action_latent = lam.indices_to_latent(action_index)
-            print(f"action_latent shape: {action_latent.shape}")
+            gt_action_latents = lam.encode(context_frames) # [1, seq_len - 1, action_dim]
+            sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device) # [1, 1, action_dim]
+            inferred_actions.append(sampled_action_index)
+            sampled_action_latent = lam.quantizer.get_latents_from_indices(sampled_action_index).unsqueeze(1) # [1, 1, action_dim]
+            action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, seq_len, action_dim]
         elif args.use_actions:
-            action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
-            inferred_actions.append(action_index)
-            new_action_latent = get_lam_latent_from_action_index(lam, action_index)
-            print(f"new_action_latent shape: {new_action_latent.shape}")
-            # to get old action latents, infer action latents using lam given 
-            actions, _ = lam.encoder(context_frames)  # [batch_size, seq_len, action_dim]
-            print(f"actions shape: {actions.shape}")
-            # Quantize actions (TODO: is reshape necessary?)
-            actions_flat = actions.reshape(-1, actions.size(-1)) # [batch_size * seq_len-1, action_dim]
-            _, quantized_actions_flat, _ = lam.quantizer(actions_flat) # [batch_size * seq_len-1, action_dim]
-            quantized_actions = quantized_actions_flat.reshape(actions.shape)  # [batch_size, seq_len-1, action_dim]
-            
-            # expand actions to add num_patches dimension
-            quantized_old_actions = rearrange(quantized_actions, 'b s a -> b s 1 a') # [batch_size, seq_len-1, 1, action_dim]
-            new_action_latent = rearrange(new_action_latent, 'b a -> b 1 1 a') # [batch_size, 1, 1, action_dim]
-            print(f"quantized_old_actions shape: {quantized_old_actions.shape}")
-            action_latent = torch.cat([quantized_old_actions, new_action_latent], dim=1) # [batch_size, seq_len, 1, action_dim]
-            print(f"action_latent shape: {action_latent.shape}")
+            sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
+            inferred_actions.append(sampled_action_index)
+            recent_inferred_actions = inferred_actions[-args.context_window:] if len(inferred_actions) > args.context_window else inferred_actions
+            action_latent = lam.quantizer.get_latents_from_indices(torch.tensor(recent_inferred_actions, device=args.device)).unsqueeze(0) # [1, seq_len, action_dim]
+            if len(recent_inferred_actions) < args.context_window:
+                # if we dont have enough inferred actions (in the beginning) add enough gt to fill the sequence
+                gt_pad_actions = lam.encode(context_frames[:, :args.context_window - len(recent_inferred_actions) + 1])  # [1, context_window - len(inferred_actions), action_dim]
+                quantized_gt_pad_actions = lam.quantizer(gt_pad_actions) # [1, context_window - len(inferred_actions), action_dim]
+                action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1) # [1, seq_len, action_dim]
         else:
-            action_index = None
+            sampled_action_index = None
             action_latent = None
 
-        print(f"context_frames shape: {context_frames.shape}")
-
-        # Implement MaskGit-style iterative decoding
+        # MaskGit-style iterative decoding
         # for timestep t in range T: 
         # 1. run inference with all tokens masked
         # 2. get argmax tokens and their corresponding probabilities
@@ -503,9 +271,6 @@ def main(args):
         
         # Start with all tokens masked
         current_latents = video_latents.clone() # [1, seq_len, num_patches, latent_dim]
-
-        if args.use_actions:
-            current_latents = current_latents + action_latent # [1, seq_len, num_patches, latent_dim]
 
         # append mask frame
         mask_token_value = dynamics_model.mask_token.data  # Extract the actual tensor value
@@ -527,8 +292,11 @@ def main(args):
             
             # Run dynamics model to get predictions
             with torch.no_grad():
-                predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, S, N, codebook_size]
-            
+                if args.use_actions:
+                    predicted_logits, _ = dynamics_model(input_latents, training=False, conditioning=action_latent)  # [B, S, N, codebook_size]
+                else:
+                    predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, S, N, codebook_size]
+
             # Get probabilities and top predictions
             probs = torch.softmax(predicted_logits, dim=-1)  # [B, S, N, codebook_size]
 
@@ -562,7 +330,7 @@ def main(args):
                 mask[0, -1, tokens_to_unmask_indices, 0] = False
                 
                 for idx in tokens_to_unmask_indices:
-                    predicted_latent = video_tokenizer.vq.get_latents_from_indices(
+                    predicted_latent = video_tokenizer.quantizer.get_latents_from_indices(
                         predicted_indices[0:1, -1:, idx:idx+1], dim=-1
                     ).to(args.device)  # [1, 1, 1, latent_dim]
                     
@@ -582,25 +350,17 @@ def main(args):
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
         
         if args.use_actions:
-            print(f"Step {i+1}: Generated frame with action {action_index.item()}, sequence length: {context_frames.shape[1]}")
-        else:
-            print(f"Step {i+1}: Generated frame (no actions), sequence length: {context_frames.shape[1]}")
-    
+            print(f"Step {i+1}: Generated frame with action {sampled_action_index.item()}, sequence length: {context_frames.shape[1]}")
+
     # Determine how many frames were actually generated
     pred_len = min(effective_steps, generated_frames.shape[1] - args.context_window)
 
     predicted_frames = generated_frames
     ground_truth_frames = ground_truth_sequence
-    
-    print(f"Ground truth frames shape: {ground_truth_frames.shape}")
-    print(f"Predicted frames shape: {predicted_frames.shape}")
-    
-    if pred_len == 0:
-        print("[INFO] No frames generated under current settings; skipping visualization and metrics.")
-        return
 
     visualize_inference(predicted_frames, ground_truth_frames, inferred_actions, args.fps, use_actions=args.use_actions)
 
+# TODO: replace with yaml
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with the trained video generation pipeline")
     parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_20_21_50_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_20_21_50_32_2025.pth")
@@ -616,10 +376,11 @@ def parse_args():
                         help="Run teacher-forced inference (always use ground-truth context).")
     parser.add_argument("--use_latest_checkpoints", action="store_true", default=True, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
-    parser.add_argument("--dataset", type=str, default="SONIC", help="Dataset to use")
+    parser.add_argument("--dataset", type=str, default="ZELDA", help="Dataset to use")
     parser.add_argument("--use_gt_actions", action="store_true", default=False, help="Whether to use ground-truth (lam inferred) action latents")
     return parser.parse_args()
 
+# TODO: use utils fun
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
     """
     Visualize predicted and ground truth sequences side by side.

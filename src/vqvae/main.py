@@ -4,6 +4,7 @@ import torch.optim as optim
 import sys
 import os
 
+# TODO: remove path hacks
 # Add the project root to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -16,6 +17,7 @@ import wandb
 import torch.nn.functional as F
 from src.utils.utils import readable_timestamp
 from src.utils.config import VQVAEConfig, load_config
+from src.utils.utils import save_training_state
 
 # Load config (YAML + dotlist overrides)
 args: VQVAEConfig = load_config(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'vqvae.yaml'))
@@ -24,32 +26,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Create organized save directory structure
 if args.save:
+    # TODO: make create dir util
     # Create main results directory for this run
     timestamp = args.filename or readable_timestamp()
     run_dir = os.path.join(os.getcwd(), 'src', 'vqvae', 'results', f'videotokenizer_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
-    
+
     # Create subdirectories
     checkpoints_dir = os.path.join(run_dir, 'checkpoints')
     visualizations_dir = os.path.join(run_dir, 'visualizations')
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(visualizations_dir, exist_ok=True)
-    
-    print(f'Results will be saved in {run_dir}')
-    print(f'Checkpoints: {checkpoints_dir}')
-    print(f'Visualizations: {visualizations_dir}')
 
-
-def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='videotokenizer'):
-    state = {
-        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-        'config': config,
-    }
-    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
-    torch.save(state, ckpt_path)
-    return ckpt_path
 
 training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
     dataset=args.dataset, 
@@ -244,9 +232,7 @@ def train():
         if i % args.log_interval == 0:
             if args.save:
                 hyperparameters = args.__dict__
-                save_training_state(
-                    model, optimizer, scheduler, hyperparameters, checkpoints_dir
-                )
+                save_training_state(model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='videotokenizer', step=i)
                 # Visualizations
                 x_hat_vis = x_hat.detach().cpu()
                 x_vis = x.detach().cpu()
@@ -260,6 +246,8 @@ def train():
     if args.use_wandb:
         wandb.finish()
         print("✅ W&B run finished")
+
+    print("DEBUG: Training finished")
 
 if __name__ == "__main__":
     train()

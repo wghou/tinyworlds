@@ -110,9 +110,6 @@ class PatchEmbedding(nn.Module):
     """Convert frames to patch embeddings for ST-Transformer"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128):
         super().__init__()
-        print(f"PatchEmbedding frame_size: {frame_size}")
-        print(f"PatchEmbedding patch_size: {patch_size}")
-        print(f"PatchEmbedding embed_dim: {embed_dim}")
         H, W = frame_size
         self.frame_size = frame_size
         self.patch_size = patch_size
@@ -269,6 +266,7 @@ class FeedForward(nn.Module):
         out = self.w_o(v * g)
         return self.norm(x + out, conditioning)
 
+# TODO: move basic building blocks into a models.py or something better named
 # TODO: rename to FiLM or adaptive normalization?
 class AdaLN(nn.Module):
     # Adaptive Layer Normalization, optionally unconditioned simple RMSNorm
@@ -293,16 +291,24 @@ class AdaLN(nn.Module):
 
     def forward(self, x, conditioning=None):
         # x: [B, S, P, E]
-        # conditioning: [B, S, C]
+        # conditioning: [B, S, C] or [B, S - 1, C]
         if self.to_gamma_beta is None or conditioning is None:
             normed = self.rms(x) if self.rms is not None else self.ln(x)
             return normed
-        
+
         x = self.ln(x)
         B, S, P, E = x.shape
         out = self.to_gamma_beta(conditioning) # [B, S, 2 * E]
         out = repeat(out, 'b s twoe -> b s p twoe', p=P) # [B, S, P, 2 * E]
         gamma, beta = out.chunk(2, dim=-1) # each [B, S, P, E]
+
+        # preppend with zeros since a_t-1 should impact z_t (and a_0 is used for z_1 etc)
+        if gamma.shape[1] == x.shape[1] - 1 and beta.shape[1] == x.shape[1] - 1:
+            gamma = torch.cat([torch.zeros_like(gamma[:, :1]), gamma], dim=1)
+            beta = torch.cat([torch.zeros_like(beta[:, :1]), beta], dim=1)
+
+        assert gamma.shape[1] == x.shape[1], f"gamma shape: {gamma.shape} != x shape: {x.shape}"
+        assert beta.shape[1] == x.shape[1], f"beta shape: {beta.shape} != x shape: {x.shape}"
         x = x * (1 + gamma) + beta # [B, S, P, E]
         return x
 
@@ -426,6 +432,7 @@ class FiniteScalarQuantizer(nn.Module):
         return indices
     
     def get_latents_from_indices(self, indices, dim=-1):
+        # TODO: do we need the unsqueeze here?
         # indices: [batch_size, seq_len, num_patches]
         # recover each entry of latent in range [0, num_bins - 1] by repeatedly dividing by L^current_dim and taking mod
         digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins   # [B, S, P, L]
@@ -439,13 +446,7 @@ class Encoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
-        print(f"Encoder frame_size: {frame_size}")
-        print(f"Encoder patch_size: {patch_size}")
-        print(f"Encoder embed_dim: {embed_dim}")
-        print(f"Encoder num_heads: {num_heads}")
-        print(f"Encoder hidden_dim: {hidden_dim}")
-        print(f"Encoder num_blocks: {num_blocks}")
-        print(f"Encoder latent_dim: {latent_dim}")
+
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         

@@ -29,6 +29,7 @@ from src.utils.wandb_utils import (
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
 from src.utils.utils import readable_timestamp
+from src.utils.utils import save_training_state, load_videotokenizer_from_checkpoint, load_lam_from_checkpoint
 
 from src.utils.config import DynamicsConfig, load_config
 import wandb
@@ -51,69 +52,25 @@ if args.save:
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(visualizations_dir, exist_ok=True)
 
-def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='dynamics'):
-    state = {
-        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-        'config': config,
-    }
-    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
-    torch.save(state, ckpt_path)
-    return ckpt_path
-
-training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
-    dataset=args.dataset, 
-    batch_size=args.batch_size, 
-    num_frames=args.context_length
-)
-
 print("Loading pre-trained video tokenizer...")
-video_tokenizer = Video_Tokenizer(
-    frame_size=(args.frame_size, args.frame_size), 
-    patch_size=args.patch_size,
-    embed_dim=args.embed_dim,
-    num_heads=args.num_heads,
-    hidden_dim=args.hidden_dim,
-    num_blocks=args.num_blocks,
-    latent_dim=args.latent_dim,
-    num_bins=args.num_bins
-).to(device)
-
-# Load video tokenizer checkpoint
 if os.path.isfile(args.video_tokenizer_path):
     print(f"Loading video tokenizer from {args.video_tokenizer_path}")
-    checkpoint = torch.load(args.video_tokenizer_path, map_location=device)
-    video_tokenizer.load_state_dict(checkpoint['model'])
-    video_tokenizer.eval()  # Set to evaluation mode
-    # Freeze all parameters to prevent gradient computation
-    for param in video_tokenizer.parameters():
-        param.requires_grad = False
-    print("✅ Video tokenizer loaded and frozen")
+    video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
+    video_tokenizer.eval()
+    for p in video_tokenizer.parameters():
+        p.requires_grad = False
+    print("✅ Video tokenizer loaded from its saved config and frozen")
 else:
     raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
 print("Loading pre-trained latent action model...")
-lam = LAM(
-    frame_size=(args.frame_size, args.frame_size),
-    n_actions=args.n_actions,  # Match full pipeline
-    patch_size=args.patch_size,  # Match LAM training
-    embed_dim=args.embed_dim,  # Match LAM training
-    num_heads=args.num_heads,  # Match LAM training
-    hidden_dim=args.hidden_dim,  # Match LAM training
-    num_blocks=args.num_blocks,  # Align with checkpoint (4 blocks)
-).to(device)
-
-# Load LAM checkpoint
 if os.path.isfile(args.lam_path):
     print(f"Loading LAM from {args.lam_path}")
-    checkpoint = torch.load(args.lam_path, map_location=device)
-    lam.load_state_dict(checkpoint['model'])
-    lam.eval()  # Set to evaluation mode
-    # Freeze all parameters to prevent gradient computation
-    for param in lam.parameters():
-        param.requires_grad = False
-    print("✅ LAM loaded and frozen")
+    lam, lam_ckpt = load_lam_from_checkpoint(args.lam_path, device)
+    lam.eval()
+    for p in lam.parameters():
+        p.requires_grad = False
+    print("✅ LAM loaded from its saved config and frozen")
 else:
     raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
 
@@ -249,7 +206,6 @@ def train():
             if args.use_actions:
                 actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
                 quantized_actions = lam.quantizer(actions) # [batch_size, seq_len-1, action_dim]
-                quantized_actions = torch.cat([torch.zeros_like(quantized_actions[:, :1]), quantized_actions], dim=1) # [batch_size, seq_len, action_dim]
             else:
                 quantized_actions = None
 
@@ -338,7 +294,7 @@ def train():
             """
             if args.save:
                 hyperparameters = args.__dict__
-                save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics')
+                save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
                 
                 # Decode predicted latents (predicted_next_latents: [B, seq_len-1, ...])
                 with torch.no_grad():

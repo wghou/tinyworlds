@@ -15,21 +15,10 @@ from src.utils.utils import readable_timestamp
 import json
 import wandb
 from src.utils.config import LAMConfig, load_config
+from src.utils.utils import save_training_state
 
 # Load config (YAML + dotlist overrides)
 args: LAMConfig = load_config(LAMConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'lam.yaml'))
-
-def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='lam'):
-    state = {
-        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-        'config': config,
-    }
-    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
-    torch.save(state, ckpt_path)
-    return ckpt_path
-
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -169,7 +158,7 @@ def main():
         # Save model and visualize results periodically
         if epoch % args.log_interval == 0 and args.save:
             hyperparameters = vars(args)
-            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='lam')
+            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='lam', step=epoch)
             
             visualize_reconstructions(
                 frame_sequences[:, 0], 

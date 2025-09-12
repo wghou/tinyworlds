@@ -63,6 +63,7 @@ class DynamicsModel(nn.Module):
         self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # Small initialization
         
     def forward(self, discrete_latents, training=True, conditioning=None):
+        # TODO: rename S to T
         # discrete_latents: [B, S, P, L]
         # TODO: should I pass in token ids instead of discrete latents?
         B, S, P, L = discrete_latents.shape
@@ -95,9 +96,9 @@ class DynamicsModel(nn.Module):
         transformed = self.transformer(embeddings, conditioning=conditioning)  # [B, S, P, E]
 
         # transform to logits for each token in codebook
-        next_token_logits = self.output_mlp(transformed)  # [B, S, P, L^D]
+        predicted_logits = self.output_mlp(transformed)  # [B, S, P, L^D]
 
-        return next_token_logits, mask_positions  # [B, S, P, L^D], [B, S, P] or None
+        return predicted_logits, mask_positions  # [B, S, P, L^D], [B, S, P] or None
 
     # TODO: make a util
     @torch.no_grad()
