@@ -110,6 +110,9 @@ class PatchEmbedding(nn.Module):
     """Convert frames to patch embeddings for ST-Transformer"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128):
         super().__init__()
+        print(f"PatchEmbedding frame_size: {frame_size}")
+        print(f"PatchEmbedding patch_size: {patch_size}")
+        print(f"PatchEmbedding embed_dim: {embed_dim}")
         H, W = frame_size
         self.frame_size = frame_size
         self.patch_size = patch_size
@@ -436,6 +439,13 @@ class Encoder(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
+        print(f"Encoder frame_size: {frame_size}")
+        print(f"Encoder patch_size: {patch_size}")
+        print(f"Encoder embed_dim: {embed_dim}")
+        print(f"Encoder num_heads: {num_heads}")
+        print(f"Encoder hidden_dim: {hidden_dim}")
+        print(f"Encoder num_blocks: {num_blocks}")
+        print(f"Encoder latent_dim: {latent_dim}")
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
         

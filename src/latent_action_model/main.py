@@ -8,103 +8,36 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from models.lam import LAM
-import argparse
 from tqdm import tqdm
 from src.latent_action_model.utils import visualize_reconstructions
 from datasets.utils import load_data_and_data_loaders
 from src.utils.utils import readable_timestamp
-import multiprocessing
-import time
 import json
 import wandb
+from src.utils.config import LAMConfig, load_config
 
+# Load config (YAML + dotlist overrides)
+args: LAMConfig = load_config(LAMConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'lam.yaml'))
 
-def save_run_configuration(args, run_dir, timestamp, device):
-    """Save all configuration parameters and run information to a file"""
-    # TODO: delete when shift to using yaml config files
-    config = {
-        'timestamp': timestamp,
-        'device': str(device),
-        'model_architecture': {
-            'frame_size': (args.frame_size, args.frame_size),
-            'n_actions': args.n_actions,
-            'patch_size': args.patch_size,
-            'embed_dim': args.embed_dim,
-            'num_heads': args.num_heads,
-            'hidden_dim': args.hidden_dim,
-            'num_blocks': args.num_blocks,
-        },
-        'training_parameters': {
-            'batch_size': args.batch_size,
-            'n_updates': args.n_updates,
-            'learning_rate': args.learning_rate,
-            'log_interval': args.log_interval,
-            'context_length': args.context_length,
-            'dataset': args.dataset
-        },
-        'directories': {
-            'run_dir': run_dir,
-            'checkpoints_dir': os.path.join(run_dir, 'checkpoints') if args.save else None,
-            'visualizations_dir': os.path.join(run_dir, 'visualizations') if args.save else None
-        }
-    }
-    
-    config_path = os.path.join(run_dir, 'run_config.json') if args.save else None
-    if config_path:
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2, default=str)
-        print(f'Configuration saved to: {config_path}')
-
-
-def save_lam_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
-    """Save LAM model checkpoint including model state, optimizer state, results and hyperparameters"""
-    results_to_save = {
+def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='lam'):
+    state = {
         'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
-        'results': results,
-        'hyperparameters': hyperparameters
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+        'config': config,
     }
-    checkpoint_path = os.path.join(checkpoints_dir, f'lam_checkpoint_{timestamp}.pth')
-    torch.save(results_to_save, checkpoint_path)
-    return checkpoint_path
+    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
+    torch.save(state, ckpt_path)
+    return ckpt_path
 
 
 def main():
-    # Parse arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--n_updates", type=int, default=1000)
-    parser.add_argument("--learning_rate", type=float, default=1e-3)
-    parser.add_argument("--frame_size", type=int, default=64)
-    parser.add_argument("--n_actions", type=int, default=8)
-    parser.add_argument("--patch_size", type=int, default=4, help="Patch size for ST-Transformer")
-    parser.add_argument("--embed_dim", type=int, default=128, help="Embedding dimension for ST-Transformer")
-    parser.add_argument("--num_heads", type=int, default=8, help="Number of attention heads")
-    parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
-    parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
-    parser.add_argument("--dataset", type=str, default="SONIC")
-    parser.add_argument("--context_length", type=int, default=4, help="Length of frame sequences")
-    parser.add_argument("-save", action="store_true", default=True)
-    parser.add_argument("--filename", type=str, default=readable_timestamp())
-    parser.add_argument("--log_interval", type=int, default=50, help="Interval for saving model and logging")
-
-    # W&B arguments
-    parser.add_argument("--use_wandb", action="store_true", default=True, help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
-    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
-    parser.add_argument("--wandb_media", action="store_true", default=False, help="Log images/videos to W&B (off by default)")
-
-    # Performance flags
-    parser.add_argument("--amp", action="store_true", default=False, help="Enable mixed precision (bfloat16)")
-    parser.add_argument("--tf32", action="store_true", default=False, help="Enable TF32 on Ampere+")
-    parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
-
-    args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create organized save directory structure
     if args.save:
-        run_dir = os.path.join(os.getcwd(), 'src', 'latent_action_model', 'results', f'lam_{readable_timestamp()}')
+        ts = readable_timestamp()
+        run_dir = os.path.join(os.getcwd(), 'src', 'latent_action_model', 'results', f'lam_{args.filename or ts}')
         os.makedirs(run_dir, exist_ok=True)
         checkpoints_dir = os.path.join(run_dir, 'checkpoints')
         visualizations_dir = os.path.join(run_dir, 'visualizations')
@@ -161,12 +94,9 @@ def main():
         'recon_losses': [],
     }
 
-    if args.save:
-        save_run_configuration(args, run_dir, args.filename, device)
-
     # Initialize W&B if enabled and available
     if args.use_wandb:
-        run_name = args.wandb_run_name or f"lam_{args.filename}"
+        run_name = args.wandb_run_name or f"lam_{readable_timestamp()}"
         wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
 
     # Training loop
@@ -212,13 +142,6 @@ def main():
                     'step': epoch
                 })
             
-            # Log learning rate
-            for j, param_group in enumerate(optimizer.param_groups):
-                wandb.log({
-                    f'learning_rate/group_{j}': param_group['lr'],
-                    'step': epoch
-                })
-
         # Print progress every 50 steps
         if (epoch - 1) % 50 == 0:
             with torch.no_grad():
@@ -245,14 +168,14 @@ def main():
                 
         # Save model and visualize results periodically
         if epoch % args.log_interval == 0 and args.save:
-            hyperparameters = args.__dict__
-            checkpoint_path = save_lam_model_and_results(model, optimizer, results, hyperparameters, args.filename, checkpoints_dir)
+            hyperparameters = vars(args)
+            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='lam')
             
             visualize_reconstructions(
                 frame_sequences[:, 0], 
                 frame_sequences[:, -1], 
                 pred_frames[:, -1],
-                os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename}.png')
+                os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename or "run"}.png')
             )
     
     # Finish W&B run

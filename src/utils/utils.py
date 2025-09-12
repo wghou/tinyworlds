@@ -38,6 +38,7 @@ def run_command(cmd, description):
         result = subprocess.run(cmd, check=True, capture_output=False, env=env)
         return True
     except subprocess.CalledProcessError as e:
-        raise Exception(f"\n{description} failed with error code {e.returncode}")
+        print(f"Error: {e.stderr}")
+        return False
     except KeyboardInterrupt:
-        raise Exception(f"\n{description} interrupted by user")
+        return False

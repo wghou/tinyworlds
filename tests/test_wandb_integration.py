@@ -50,7 +50,6 @@ class TestWandbIntegration:
                 self.log_interval = 100
                 self.dataset = 'SONIC'
                 self.context_length = 4
-                self.seq_length = 8
         
         args = MockArgs()
         model_config = {
@@ -60,7 +59,6 @@ class TestWandbIntegration:
             'hidden_dim': 512,
             'num_blocks': 2,
             'latent_dim': 32,
-            'dropout': 0.1
         }
         
         config = create_wandb_config(args, model_config)

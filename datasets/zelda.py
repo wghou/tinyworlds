@@ -9,14 +9,14 @@ import numpy as np
 import torch
 
 class ZeldaDataset(Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128)):
         self.transform = transform
         self.train = train
         self.num_frames = num_frames
         self.fps = 15
         self.frame_skip = 60 // self.fps
         self.fraction_of_frames = 0.2
-        
+        self.resolution = resolution
         if save_path and os.path.exists(save_path):
             print(f"Loading preprocessed frames from {save_path}")
             with h5py.File(save_path, 'r') as h5_file:  # Use context manager
@@ -71,7 +71,7 @@ class ZeldaDataset(Dataset):
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, (64, 64), interpolation=cv2.INTER_AREA)
+            frame = cv2.resize(frame, self.resolution, interpolation=cv2.INTER_AREA)
             frames.append(frame)
             
         video.release()

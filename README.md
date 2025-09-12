@@ -12,59 +12,59 @@ The core purpose of a world model is to predict the next state of some environme
 
 We now want to learn a neural network which can map some image to some other image, conditioned on actions.
 
+This can be used for training robotics models, for explicitly giving models understanding of the physical world, and for simulating new worlds (eventually full universes) we want to experience.
+
+## Installation
+
+```bash
+git clone https://github.com/AlmondGod/nano-genie.git
+
+cd nano-genie
+
+pip install -r requirements.txt
+
+export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
+
+python train_full_pipeline.py --config configs/pipeline.yaml
+```
+
 ## Architecture 
 
-This world model is autoregressive over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model.
+This world model is autoregressive over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the 1024 tokens in our vocabulary.
 
-FSQ-VAE video tokenizer: Tokenize video into discrete tokens
+FSQ-VAE video tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the most information contained in the base video.
 
-FSQ Latent Action Model: Infer the discrete action between two frames
+FSQ Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on a discrete bottleneck of actions, and our uncompressed previous frame.
 
-Dynamics Model: Given latent action and past frame tokens, predict latent next frame of video tokens
+Dynamics Model: Given latent action and past frame tokens, predict latent next frame of video tokens. This is the core of our world model that captures the dynamics of the video we give.
 
 For all 3, we use the STTransformer, which we will go over first.
 
-
-## ST Transformer
+## Space-Time Transformer (STT)
 Papers: STTransformer(https://arxiv.org/pdf/2001.02908), FiLM (https://arxiv.org/pdf/1709.07871), RMSNorm(https://arxiv.org/pdf/1910.07467), SwiGLU(https://arxiv.org/pdf/2002.05202)
 
-The ST Transformer consists of L spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer.
+The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, look here(TODO: add best link).
 
-In the spatial layer, attention operates over slices of 1 x P tokens, where P = Hp x Wp tokens within each timestep, where Hp = Pixel height / patch size (# patches along the H dimension) and Wp = Pixel width / patch size (# patches along the width dimension).
+In the spatial layer, each token attends to all other tokens within its timestep. Attention operates over a given timestep with P tokens, where P = Hp x Wp, Hp = Pixel height / patch size (# patches along the H dimension), and Wp = Pixel width / patch size (# patches along the width dimension). 
 
-In the temporal layer, attention operates causally over slices of T x 1 across T timesteps for the same token. So a token in a given position attends to all other previous tokens in the exact same position but previous timesteps.
+In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps. Attention operates causally over slices of T x 1 across T timesteps for the same token.
 
-In the Feedforward Layer, we could have a basic Wx + b, ReLU, Wx + b, LayerNorm
-However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
-SwiGLU comes from Swish, which is x * sigmoid(x). SwiGLU adds a Gated Linear Unit (GLU), so w first compute x_t = Swish(W_1x + b) to W_2x + b, and then we have a final wx_t + b.
+In the feedforward Layer, we could use a basic FFL: Wx + b -> ReLU -> Wx + b -> LayerNorm. However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
+SwiGLU comes from Swish, which is x * sigmoid(x). SwiGLU adds a Gated Linear Unit (GLU), so we first compute x_t = Swish(W_1x + b) to W_2x + b, and then we have a final wx_t + b.
 
-Both attentions and the feedforward have norms afterwards, either unconditioned (for Video Tokenizer and LAM Encoder) or conditioned (for LAM decoder and the dynamics model). 
+Both attentions and the feedforward have norms afterward (postnorm), either unconditioned (for Video Tokenizer and LAM Encoder) or conditioned on actions (for LAM decoder and the dynamics model). 
 
 For unconditioned STTransformer, we use RMSNorm, which computes norm as sqrt(eps + x / sum of x^2)
 
 For conditioned STTransformer, we use Feature-wise Linear Modulation (FiLM). FiLM takes in the conditioning, in this case, actions for each timestep. It then uses a FeedForward Layer to transform each action latent into one beta vector and one gamma vector, both of embedding dim length. we then compute the norm as layernorm(x) * gamma + (1 + beta)
 
-## Latent Action Model
-
-The latent action model allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
-
-Encoder takes in all previous frames $(x_1...x_t)$ and next frame $x_{t + 1}$, outputs corresponding set of continuous latent actions $(a_1...a_t)$
-
-Decoder takes in all previous frames and latent actions as input and predicts the next frame $x_{t + 1}$
-
-To train model, use FSQ objective to limit number of predicted actions to small discrete set of codes
-
-Limit vocab size $|A|$ of FSQ codebook (max number of possible latent actions)
-
-Decoder only has access to history and latent action, $a_t$ should encode most meaningful change between past and future for decoder to successfully reconstruct future frame
-
-Decoder gives training signal but is abandoned at inference time and replaced with user action
-
-ST-transformer architecture for latent action model with causal mask in temporal layer to take entire video as input and generate actions between frames.
 
 ## Video Tokenizer
 
-Compress videos into discrete tokens to reduce dimensionality and have higher quality video generation using FSQ VAE.
+The video tokenizer compresses videos into discrete tokens to reduce dimensionality and have higher quality video generation.
+It does so as an FSQVAE implemented with an STTransformer that attends to tokens full-spatially and temporal-causally. 
+Thus, each token contains information about its frame in relation to itself and to previous frames. 
+Here is how FSQVAE works:
 
 ## Finite Scalar Quantization Variational Autoencoder (FSQ-VAE)
 Paper: https://arxiv.org/pdf/2309.15505
@@ -104,7 +104,6 @@ Input $x$ passed through encoder to produce $z_e(x)$, and discrete latent $z$ is
 
 the resulting discrete latent vector $e_k$ is used as input to decoder network.
  
-
 -------- TODO: CLARIFY THIS SECTION --------
 
 VQVAE is a VAE where we can bound $log p(x)$ with ELBO
@@ -121,28 +120,19 @@ We thus need no extra loss terms unlike in VQVAE, which makes this method sigini
 stopgrad is the stopgradient operator (in pytorch, .detach()) that is identity at forward computation time and has zero partial derivatives, and thus constrains the operand to be non-updated constant.
 
 
-## FSQVAE for Video
+## Latent Action Model (LAM)
 
-We can model 128 x 128 x 3 images by compressing to 32 x 32 x 1 discrete space. We use L = 5 and D = 4 yielding a 1024-length discrete codebook.
+The Latent Action Model allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
 
-Initial 4 frames input to model.
+The LAM Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous latent actions between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
 
-Generation is purely in latent space $z_t$ without need to generate actual imgaes themselves
+The LAM Decoder takes in all previous frames $(x_1...x_t)$ and latent actions $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
 
-Each image in sequence $x_t$ created by mapping latents with deterministic decoder to pixel space after all latents generated using prior model $p(z_1,...,z_T)
+To create the discrete bottleneck that becomes our action vocabulary, we again use an FSQ objective to limit number of predicted actions to small discrete set of codes that is the number of actions we want to be able to take. 
 
+Since the decoder only has access to frame history and the latent action, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
 
-# Train Info
-
-55M 16s video clips at 10FPS with 160 x 90 resolution
-Final dataset 6.8M 16s video clips
-
-11B parameter model
-
-200M video tokenizer, patch size of 4, codebook with embedding size 32 and 1024 unique codes
-
-LAM 300M, patch size 16, codebook embedding size 32, 8 unqiue codes (actions)
-
+Decoder gives training signal but is abandoned at inference time and replaced with user action
 
 # Dynamics Model
 
@@ -154,17 +144,26 @@ We condition on latent action sequences with Feature-wise Linear Modulation: con
 
 We base the image prediction on MaskGIT. We randomly mask input tokens at train time according to bernoulli distribution with masking rate sampled uniformly from 0.5 to 1, and our goal is to predict the masked tokens.
 
+# Inference Time
+Paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
+
 At inference time, we append a fully masked frame, and have our model iteratively predict next frame tokens using MaskGIT Inference, which operates as follows:
 For T steps:
 1. Predict logits at each masked position and retrive token probabilities
 2. Take the k most likely tokens of the unmasked positions and sample them, unmasking their positions
 for k, we choose the cosine schedule such that the number of tokens sampled at each step increases exponentially.
 
-
-# Inference Time
-Paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
 Uses maskGIT inference
 
-Player prompts model with initial frame, image tokenized with video encoder, then player specifies discrete latent action to take by choosing integer value in $[0, |A|]$, use to predict next frame
+Player prompts model with initial frame, we tokenize the image with our video tokenizer, then the player specifies one of the n_actions discrete latent actions to take by choosing integer value in $[0, |A|]$, we use that index to access the corresponding latent, and then condition the dynamics model with context window c on the video tokens t-c...t and latent actions t-c..t using the maskgit inference process. 
 
-Repeat process autoregressively as actions passed to model and tokens decoded into video frames with decoder
+We repeat process autoregressively over the time dimension as actions are passed to model and tokens are predicted by the dynamics model and detokenized into frames to display to the user.
+
+# Data
+
+THe data is downsampled from youtube videos. Currently we have:
+1. PicoDoom
+2. Pong
+3. Zelda Ocarina of Tima
+4. Pole Position
+5. Sonic

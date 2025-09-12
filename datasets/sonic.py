@@ -8,6 +8,7 @@ from tqdm import tqdm
 import numpy as np
 import torch
 
+# TODO: use same datalaoder for datasets lmao they're exaclty the same
 class SonicDataset(Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4):
         self.transform = transform

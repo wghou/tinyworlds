@@ -86,7 +86,7 @@ class Decoder(nn.Module):
 
         # Apply random masking during training
         if training and self.training:
-            keep_rate = torch.rand((), device=frames.device) * 0.5
+            keep_rate = 0.0
             keep = (torch.rand(B, S-1, P, 1, device=frames.device) < keep_rate)
             keep[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
             video_embeddings = torch.where(

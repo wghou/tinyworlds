@@ -29,73 +29,20 @@ from src.utils.wandb_utils import (
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
 from src.utils.utils import readable_timestamp
+
+from src.utils.config import DynamicsConfig, load_config
 import wandb
 
-parser = argparse.ArgumentParser()
-
-"""
-Hyperparameters
-"""
-timestamp = readable_timestamp()
-
-parser.add_argument("--batch_size", type=int, default=16)
-parser.add_argument("--n_updates", type=int, default=2000)
-parser.add_argument("--learning_rate", type=float, default=1e-4)
-parser.add_argument("--log_interval", type=int, default=10)
-parser.add_argument("--dataset",  type=str, default='SONIC')
-parser.add_argument("--context_length", type=int, default=4)
-parser.add_argument("--frame_size", type=int, default=128)
-
-# Model architecture parameters - must match the video tokenizer parameters
-parser.add_argument("--patch_size", type=int, default=4)  # Match video tokenizer
-parser.add_argument("--embed_dim", type=int, default=256)  # Match video tokenizer
-parser.add_argument("--num_heads", type=int, default=8)   # Match video tokenizer
-parser.add_argument("--hidden_dim", type=int, default=512)  # Match video tokenizer
-parser.add_argument("--num_blocks", type=int, default=4)  # Match video tokenizer
-parser.add_argument("--latent_dim", type=int, default=5)
-parser.add_argument("--num_bins", type=int, default=4)  # Match video tokenizer num_bins
-parser.add_argument("--dropout", type=float, default=0.1)
-parser.add_argument("--n_actions", type=int, default=8)
-
-# Paths to pre-trained models
-parser.add_argument("--video_tokenizer_path", type=str, required=True, 
-                   help="Path to pre-trained video tokenizer checkpoint")
-parser.add_argument("--lam_path", type=str, required=False, 
-                   help="Path to pre-trained latent action model checkpoint")
-
-# whether or not to save model
-parser.add_argument("-save", action="store_true", default=True)
-parser.add_argument("--filename",  type=str, default=timestamp)
-
-# Add checkpoint arguments
-parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
-parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
-
-# use actions or not
-parser.add_argument("--use_actions", action="store_true", default=False)
-
-# W&B arguments
-parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
-parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
-parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
-
-# Learning rate scheduler parameters
-parser.add_argument("--lr_step_size", type=int, default=1000, help="Step size for learning rate decay")
-parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
-
-# Performance flags
-parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
-parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
-parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
-
-args = parser.parse_args()
+# Load config (YAML + dotlist overrides)
+args: DynamicsConfig = load_config(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Create organized save directory structure
 if args.save:
+    ts = readable_timestamp()
     # Create main results directory for this run
-    run_dir = os.path.join(os.getcwd(), 'src', 'dynamics', 'results', f'dynamics_{timestamp}')
+    run_dir = os.path.join(os.getcwd(), 'src', 'dynamics', 'results', f'dynamics_{args.filename or ts}')
     os.makedirs(run_dir, exist_ok=True)
     
     # Create subdirectories
@@ -103,69 +50,17 @@ if args.save:
     visualizations_dir = os.path.join(run_dir, 'visualizations')
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(visualizations_dir, exist_ok=True)
-    
-    print(f'Results will be saved in {run_dir}')
-    print(f'Checkpoints: {checkpoints_dir}')
-    print(f'Visualizations: {visualizations_dir}')
 
-def save_run_configuration(args, run_dir, timestamp, device):
-    config = {
-        'timestamp': timestamp,
-        'device': str(device),
-        'model_architecture': {
-            'frame_size': (args.frame_size, args.frame_size),
-            'patch_size': args.patch_size,
-            'embed_dim': args.embed_dim,
-            'num_heads': args.num_heads,
-            'hidden_dim': args.hidden_dim,
-            'num_blocks': args.num_blocks,
-            'latent_dim': args.latent_dim,
-            'dropout': args.dropout,
-            'height': args.frame_size,
-            'width': args.frame_size,
-            'channels': 3
-        },
-        'training_parameters': {
-            'batch_size': args.batch_size,
-            'n_updates': args.n_updates,
-            'learning_rate': args.learning_rate,
-            'log_interval': args.log_interval,
-            'context_length': args.context_length,
-            'dataset': args.dataset,
-            'lr_step_size': args.lr_step_size,
-            'lr_gamma': args.lr_gamma
-        },
-        'pretrained_models': {
-            'video_tokenizer_path': args.video_tokenizer_path,
-            'lam_path': args.lam_path
-        },
-        'checkpoint_info': {
-            'checkpoint_path': args.checkpoint,
-            'start_iteration': args.start_iteration
-        },
-        'directories': {
-            'run_dir': run_dir,
-            'checkpoints_dir': os.path.join(run_dir, 'checkpoints') if args.save else None,
-            'visualizations_dir': os.path.join(run_dir, 'visualizations') if args.save else None
-        }
-    }
-    
-    config_path = os.path.join(run_dir, 'run_config.json') if args.save else None
-    if config_path:
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2, default=str)
-        print(f'Configuration saved to: {config_path}')
-
-def save_dynamics_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
-    results_to_save = {
+def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='dynamics'):
+    state = {
         'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
-        'results': results,
-        'hyperparameters': hyperparameters
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+        'config': config,
     }
-    checkpoint_path = os.path.join(checkpoints_dir, f'dynamics_checkpoint_{timestamp}.pth')
-    torch.save(results_to_save, checkpoint_path)
-    return checkpoint_path
+    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
+    torch.save(state, ckpt_path)
+    return ckpt_path
 
 training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
     dataset=args.dataset, 
@@ -277,37 +172,15 @@ scheduler = create_cosine_scheduler(optimizer, args.n_updates)
 # AMP scaler for mixed precision
 scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
-"""
-Load checkpoint if specified
-"""
 results = {
     'n_updates': 0,
     'dynamics_losses': [],
     'loss_vals': [],
 }
 
-start_iter = args.start_iteration
-if args.checkpoint:
-    if os.path.isfile(args.checkpoint):
-        print(f"Loading checkpoint from {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        dynamics_model.load_state_dict(checkpoint['model'])
-        if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'results' in checkpoint:
-            results = checkpoint['results']
-        if 'n_updates' in results:
-            start_iter = results['n_updates'] + 1  # Resume from next iteration
-        print(f"Resuming from update {results.get('n_updates', 0)}")
-    else:
-        print(f"⚠️ No checkpoint found at {args.checkpoint}. Starting from scratch.")
-
-# Save configuration after model setup
-if args.save:
-    save_run_configuration(args, run_dir, timestamp, device)
-
 # Initialize W&B if enabled and available
 if args.use_wandb:
+    # TODO: make one function util for this
     # Create model configuration
     model_config = {
         'frame_size': (args.frame_size, args.frame_size),
@@ -317,7 +190,6 @@ if args.use_wandb:
         'hidden_dim': args.hidden_dim,
         'num_blocks': args.num_blocks,
         'latent_dim': args.latent_dim,
-        'dropout': args.dropout,
         'use_actions': args.use_actions
     }
     
@@ -331,11 +203,11 @@ if args.use_wandb:
         'context_length': args.context_length,
         'model_architecture': model_config,
         'device': str(device),
-        'timestamp': timestamp
+        'timestamp': ts
     }
     
     # Initialize W&B
-    run_name = args.wandb_run_name or f"dynamics_{timestamp}"
+    run_name = args.wandb_run_name or f"dynamics_{ts}"
     wandb.init(
         project=args.wandb_project,
         config=wandb_config,
@@ -353,12 +225,9 @@ if args.use_wandb:
 dynamics_model.train()
 
 def train():
-    global start_iter  # Use the start_iter set above
-    print(f"Starting dynamics model training from iteration {start_iter}")
-    
     train_iter = iter(training_loader)
     
-    for i in tqdm(range(start_iter, args.n_updates)):
+    for i in tqdm(range(0, args.n_updates)):
         try:
             x, _ = next(train_iter)
         except StopIteration:
@@ -469,9 +338,7 @@ def train():
             """
             if args.save:
                 hyperparameters = args.__dict__
-                save_dynamics_model_and_results(
-                    dynamics_model, optimizer, results, hyperparameters, args.filename, checkpoints_dir
-                )
+                save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics')
                 
                 # Decode predicted latents (predicted_next_latents: [B, seq_len-1, ...])
                 with torch.no_grad():

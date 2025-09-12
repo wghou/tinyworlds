@@ -24,7 +24,6 @@ def load_video_tokenizer(checkpoint_path, device):
         hidden_dim=512,
         num_blocks=2,
         latent_dim=6,
-        dropout=0.1,
         num_bins=4,
         beta=0.01
     ).to(device)
@@ -49,7 +48,6 @@ def load_dynamics_model(checkpoint_path, device):
         num_blocks=2,
         latent_dim=6,
         num_bins=4,
-        dropout=0.1
     ).to(device)
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)

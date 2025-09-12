@@ -236,16 +236,6 @@ def finish_wandb():
 
 
 def create_wandb_config(args, model_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create a comprehensive config dictionary for W&B
-    
-    Args:
-        args: Command line arguments
-        model_config: Model-specific configuration
-    
-    Returns:
-        Dictionary containing all configuration parameters
-    """
     config = {
         # Training parameters
         "batch_size": args.batch_size,
@@ -256,7 +246,6 @@ def create_wandb_config(args, model_config: Dict[str, Any]) -> Dict[str, Any]:
         # Dataset parameters
         "dataset": getattr(args, 'dataset', 'SONIC'),
         "context_length": getattr(args, 'context_length', 4),
-        "seq_length": getattr(args, 'seq_length', 8),
         
         # Model architecture
         "model_architecture": model_config,

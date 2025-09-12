@@ -1,0 +1,36 @@
+# Pipeline switches
+use_wandb: true
+wandb_project: nano-genie-pipeline
+dataset: ZELDA
+
+# Stage configs
+vqvae_config: configs/vqvae.yaml
+lam_config: configs/lam.yaml
+dynamics_config: configs/dynamics.yaml
+
+vqvae_overrides:
+  - "n_updates=1"
+  - "batch_size=16"
+  - "num_blocks=1"
+  - "embed_dim=16"
+  - "num_heads=4"
+  - "hidden_dim=32"
+lam_overrides:
+  - "n_updates=1"
+  - "batch_size=16"
+  - "num_blocks=1"
+  - "embed_dim=16"
+  - "num_heads=4"
+  - "hidden_dim=32"
+dynamics_overrides:
+  - "n_updates=1"
+  - "batch_size=16"
+  - "num_blocks=1"
+  - "embed_dim=16"
+  - "num_heads=4"
+  - "hidden_dim=32"
+
+# Which stages to run
+run_vqvae: true
+run_lam: true
+run_dynamics: true 

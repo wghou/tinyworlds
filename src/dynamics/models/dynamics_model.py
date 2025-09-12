@@ -63,48 +63,41 @@ class DynamicsModel(nn.Module):
         self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # Small initialization
         
     def forward(self, discrete_latents, training=True, conditioning=None):
-        """
-        Args:
-            discrete_latents: [batch_size, seq_len, num_patches, latent_dim]
-            training: Whether in training mode (for masking)
-        Returns:
-            next_token_logits: [batch_size, seq_len, num_patches, codebook_size]
-            mask_positions: [batch_size, seq_len, num_patches] or None - positions that were masked
-        """
-        B, S, N, D = discrete_latents.shape
-        
+        # discrete_latents: [B, S, P, L]
+        # TODO: should I pass in token ids instead of discrete latents?
+        B, S, P, L = discrete_latents.shape
+
         # Convert latents to float for embedding
         discrete_latents = discrete_latents.to(dtype=torch.float32)
-        
+
         # Apply random masking during training (MaskGit-style)
         if training and self.training:
-            # TODO: change to thresholded binary mask
             # per-batch mask ratio in [0.5, 1.0)
             mask_ratio = 0.5 + torch.rand((), device=discrete_latents.device) * 0.5 
-            mask_positions = (torch.rand(B, S, N, device=discrete_latents.device) < mask_ratio) # [B, S, N]
+            mask_positions = (torch.rand(B, S, P, device=discrete_latents.device) < mask_ratio) # [B, S, P]
 
-            # Guarantee at least one unmasked temporal anchor per (B,N)
-            # Pick a random timestep for each (B,N) and force it to unmask
-            anchor_idx = torch.randint(0, S, (B, N), device=discrete_latents.device)  # [B, N]
-            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(N)[None, :]] = False # [B, S, N]
+            # Guarantee at least one unmasked temporal anchor per (B, P)
+            # Pick a random timestep for each (B,P) and force it to unmask
+            anchor_idx = torch.randint(0, S, (B, P), device=discrete_latents.device)  # [B, P]
+            mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(P)[None, :]] = False # [B, S, P]
 
             # TODO: replace with repeat einops
-            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, S, N, -1) # [B, S, N, D]
-            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, S, N, D]
+            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, S, P, -1) # [B, S, P, 1]
+            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, S, P, 1]
         else:
             mask_positions = None
 
-        embeddings = self.latent_embed(discrete_latents)  # [B, S, N, E]
+        embeddings = self.latent_embed(discrete_latents)  # [B, S, P, E]
 
         # Add spatial PE (affects only first 2/3 of dimensions)
         # STTransformer adds temporal PE to last 1/3 of dimensions
         embeddings = embeddings + self.pos_spatial_dec.to(embeddings.device, embeddings.dtype)
-        transformed = self.transformer(embeddings, conditioning=conditioning)  # [B, S, N, E]
+        transformed = self.transformer(embeddings, conditioning=conditioning)  # [B, S, P, E]
 
         # transform to logits for each token in codebook
-        next_token_logits = self.output_mlp(transformed)  # [B, S, N, L^D]
+        next_token_logits = self.output_mlp(transformed)  # [B, S, P, L^D]
 
-        return next_token_logits, mask_positions  # [B, S, N, L^D], [B, S, N] or None
+        return next_token_logits, mask_positions  # [B, S, P, L^D], [B, S, P] or None
 
     # TODO: make a util
     @torch.no_grad()

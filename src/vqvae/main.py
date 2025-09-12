@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.optim as optim
-import argparse
 import sys
 import os
 
@@ -16,69 +15,17 @@ import json
 import wandb
 import torch.nn.functional as F
 from src.utils.utils import readable_timestamp
+from src.utils.config import VQVAEConfig, load_config
 
-parser = argparse.ArgumentParser()
-
-"""
-Hyperparameters
-"""
-timestamp = readable_timestamp()
-
-parser.add_argument("--batch_size", type=int, default=16)
-parser.add_argument("--n_updates", type=int, default=2000)
-parser.add_argument("--n_hiddens", type=int, default=128)
-parser.add_argument("--n_residual_hiddens", type=int, default=8)
-parser.add_argument("--n_residual_layers", type=int, default=2)
-parser.add_argument("--embedding_dim", type=int, default=64)
-parser.add_argument("--n_embeddings", type=int, default=512)
-parser.add_argument("--learning_rate", type=float, default=4e-4)
-parser.add_argument("--log_interval", type=int, default=100)
-parser.add_argument("--dataset",  type=str, default='SONIC')
-parser.add_argument("--context_length", type=int, default=4)
-parser.add_argument("--frame_size", type=int, default=128)
-
-# Model architecture parameters
-parser.add_argument("--patch_size", type=int, default=4, help="Patch size for ST-Transformer")
-parser.add_argument("--embed_dim", type=int, default=128, help="Embedding dimension for ST-Transformer")
-parser.add_argument("--num_heads", type=int, default=4, help="Number of attention heads")
-parser.add_argument("--hidden_dim", type=int, default=512, help="Hidden dimension for feed-forward")
-parser.add_argument("--num_blocks", type=int, default=2, help="Number of ST-Transformer blocks")
-parser.add_argument("--latent_dim", type=int, default=6, help="Latent dimension")
-parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate")
-parser.add_argument("--num_bins", type=int, default=4, help="Number of bins per dimension for finite scalar quantization")
-
-# whether or not to save model
-parser.add_argument("-save", action="store_true", default=True)
-parser.add_argument("--filename",  type=str, default=timestamp)
-
-# Add checkpoint arguments
-parser.add_argument("--checkpoint", type=str, help="Path to checkpoint file to resume from")
-parser.add_argument("--start_iteration", type=int, default=0, help="Iteration to start from")
-
-parser.add_argument("--use_wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
-parser.add_argument("--wandb_project", type=str, default="nano-genie", help="W&B project name")
-parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name")
-
-# Learning rate scheduler parameters
-parser.add_argument("--lr_step_size", type=int, default=2000, help="Step size for learning rate decay")
-parser.add_argument("--lr_gamma", type=float, default=0.5, help="Gamma for learning rate decay")
-
-# Performance flags
-parser.add_argument("--amp", action="store_true", default=True, help="Enable mixed precision (bfloat16)")
-parser.add_argument("--tf32", action="store_true", default=True, help="Enable TF32 on Ampere+")
-parser.add_argument("--compile", action="store_true", default=False, help="Compile the model with torch.compile")
-
-# Debug flags
-parser.add_argument("--debug_stats", action="store_true", default=True, help="Print extra debug stats at log intervals")
-
-args = parser.parse_args()
+# Load config (YAML + dotlist overrides)
+args: VQVAEConfig = load_config(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'vqvae.yaml'))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# TODO; make util
 # Create organized save directory structure
 if args.save:
     # Create main results directory for this run
+    timestamp = args.filename or readable_timestamp()
     run_dir = os.path.join(os.getcwd(), 'src', 'vqvae', 'results', f'videotokenizer_{timestamp}')
     os.makedirs(run_dir, exist_ok=True)
     
@@ -92,61 +39,17 @@ if args.save:
     print(f'Checkpoints: {checkpoints_dir}')
     print(f'Visualizations: {visualizations_dir}')
 
-# TODO: use same version of these between all main.py files
-def save_run_configuration(args, run_dir, timestamp, device):
-    config = {
-        'timestamp': timestamp,
-        'device': str(device),
-        'model_architecture': {
-            'frame_size': (args.frame_size, args.frame_size),
-            'patch_size': args.patch_size,
-            'embed_dim': args.embed_dim,
-            'num_heads': args.num_heads,
-            'hidden_dim': args.hidden_dim,
-            'num_blocks': args.num_blocks,
-            'latent_dim': args.latent_dim,
-            'dropout': args.dropout,
-            'num_bins': args.num_bins,
-            'quantization_method': 'Finite Scalar Quantization (FSQ)'
-        },
-        'training_parameters': {
-            'batch_size': args.batch_size,
-            'n_updates': args.n_updates,
-            'learning_rate': args.learning_rate,
-            'log_interval': args.log_interval,
-            'context_length': args.context_length,
-            'dataset': args.dataset,
-            'lr_step_size': args.lr_step_size,
-            'lr_gamma': args.lr_gamma
-        },
-        'checkpoint_info': {
-            'checkpoint_path': args.checkpoint,
-            'start_iteration': args.start_iteration
-        },
-        'directories': {
-            'run_dir': run_dir,
-            'checkpoints_dir': os.path.join(run_dir, 'checkpoints') if args.save else None,
-            'visualizations_dir': os.path.join(run_dir, 'visualizations') if args.save else None
-        }
-    }
-    
-    config_path = os.path.join(run_dir, 'run_config.json') if args.save else None
-    if config_path:
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2, default=str)
-        print(f'Configuration saved to: {config_path}')
 
-def save_videotokenizer_model_and_results(model, optimizer, results, hyperparameters, timestamp, checkpoints_dir):
-    results_to_save = {
+def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix='videotokenizer'):
+    state = {
         'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'results': results,
-        'hyperparameters': hyperparameters
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+        'config': config,
     }
-    checkpoint_path = os.path.join(checkpoints_dir, f'videotokenizer_checkpoint_{timestamp}.pth')
-    torch.save(results_to_save, checkpoint_path)
-    return checkpoint_path
+    ckpt_path = os.path.join(checkpoints_dir, f'{prefix}_checkpoint_{readable_timestamp()}.pth')
+    torch.save(state, ckpt_path)
+    return ckpt_path
 
 training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
     dataset=args.dataset, 
@@ -154,6 +57,7 @@ training_data, validation_data, training_loader, validation_loader, x_train_var 
     num_frames=args.context_length
 )
 
+print(f"args frame_size: {args.frame_size}")
 model = Video_Tokenizer(
     frame_size=(args.frame_size, args.frame_size), 
     patch_size=args.patch_size,
@@ -230,23 +134,18 @@ if args.checkpoint:
     else:
         print(f"No checkpoint found at {args.checkpoint}")
 
-# Save configuration after model setup
-if args.save:
-    save_run_configuration(args, run_dir, timestamp, device)
-
 # Initialize W&B if enabled and available
 if args.use_wandb:
     # TODO: use wandb util from wandb_utils.py (create if not there)
     # Create model configuration
     model_config = {
-        'frame_size': (64, 64),
+        'frame_size': (args.frame_size, args.frame_size),
         'patch_size': args.patch_size,
         'embed_dim': args.embed_dim,
         'num_heads': args.num_heads,
         'hidden_dim': args.hidden_dim,
         'num_blocks': args.num_blocks,
         'latent_dim': args.latent_dim,
-        'dropout': args.dropout,
         'num_bins': args.num_bins,
     }
     
@@ -345,8 +244,8 @@ def train():
         if i % args.log_interval == 0:
             if args.save:
                 hyperparameters = args.__dict__
-                save_videotokenizer_model_and_results(
-                    model, optimizer, results, hyperparameters, args.filename, checkpoints_dir
+                save_training_state(
+                    model, optimizer, scheduler, hyperparameters, checkpoints_dir
                 )
                 # Visualizations
                 x_hat_vis = x_hat.detach().cpu()

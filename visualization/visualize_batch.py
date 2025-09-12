@@ -126,7 +126,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize video sequence batches")
     parser.add_argument("--dataset", type=str, default="SONIC", help="Dataset to use")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
-    parser.add_argument("--seq_length", type=int, default=8, help="Sequence length")
+    parser.add_argument("--context_length", type=int, default=4, help="Context length")
     parser.add_argument("--num_batches", type=int, default=4, help="Number of batches to visualize")
     parser.add_argument("--save_dir", type=str, default="batch_visualizations", help="Directory to save visualizations")
     parser.add_argument("--max_batch_display", type=int, default=8, help="Maximum batch elements to display")
@@ -139,7 +139,7 @@ def main():
     _, _, validation_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
-        num_frames=args.seq_length
+        num_frames=args.context_length
     )
     
     print(f"Dataset loaded. Visualizing {args.num_batches} batch(es)...")

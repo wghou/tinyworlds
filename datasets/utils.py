@@ -13,7 +13,7 @@ from datasets.sonic import SonicDataset
 from datasets.pole_position import PolePositionDataset
 from datasets.picodoom import PicoDoomDataset
 from datasets.zelda import ZeldaDataset
-
+# TODO; rename to data utils, and merge the load_""() functions and pass in path as param"
 def load_cifar():
     train = datasets.CIFAR10(root="data", train=True, download=True,
                              transform=transforms.Compose([

@@ -42,7 +42,6 @@ def load_video_tokenizer(checkpoint_path, device):
         hidden_dim=512,
         num_blocks=2,
         latent_dim=6,
-        dropout=0.1,
         num_bins=4,
         beta=0.01
     ).to(device)
