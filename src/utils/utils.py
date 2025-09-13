@@ -2,6 +2,7 @@ import time
 import glob
 import subprocess
 import os
+import re
 
 
 def readable_timestamp():
@@ -16,13 +17,18 @@ def find_latest_checkpoint(base_dir, model_name):
         raise Exception(f"No checkpoints found for {model_name}")
 
     latest_dir = max(results_dirs, key=os.path.getctime)
-    checkpoint_pattern = os.path.join(latest_dir, "checkpoints", f"{model_name}_checkpoint_*.pth")
+    checkpoint_pattern = os.path.join(latest_dir, "checkpoints", f"{model_name}_step_*.pth")
     checkpoint_files = glob.glob(checkpoint_pattern)
-
     if not checkpoint_files:
         raise Exception(f"No checkpoint files found for {model_name}")
+    # Prefer the highest step within the latest dir; tiebreaker by ctime
+    def extract_step(path: str) -> int:
+        fname = os.path.basename(path)
+        m = re.search(rf"{re.escape(model_name)}_step_(\d+)", fname)
+        return int(m.group(1)) if m else -1
 
-    return max(checkpoint_files, key=os.path.getctime)
+    checkpoint_files.sort(key=lambda p: (extract_step(p), os.path.getctime(p)))
+    return checkpoint_files[-1]
 
 def run_command(cmd, description):
     # Recommend environment tweaks for DataLoader throughput TODO: test

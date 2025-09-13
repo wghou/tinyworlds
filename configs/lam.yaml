@@ -21,7 +21,7 @@ tf32: true
 compile: false
 
 # W&B
-use_wandb: true
+use_wandb: false
 wandb_project: nano-genie
 wandb_run_name: null
 wandb_media: false

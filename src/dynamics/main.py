@@ -182,6 +182,11 @@ if args.use_wandb:
 dynamics_model.train()
 
 def train():
+    _, _, training_loader, _, _ = load_data_and_data_loaders(
+        dataset=args.dataset, 
+        batch_size=args.batch_size, 
+        num_frames=args.context_length
+    )
     train_iter = iter(training_loader)
     
     for i in tqdm(range(0, args.n_updates)):
