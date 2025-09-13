@@ -177,7 +177,7 @@ class SpatialAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
-        self.norm = AdaLN(embed_dim, conditioning_dim)
+        self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
         B, S, P, E = x.shape
@@ -217,7 +217,7 @@ class TemporalAttention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         
-        self.norm = AdaLN(embed_dim, conditioning_dim)
+        self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
         self.causal = causal
         
     def forward(self, x, conditioning=None):
@@ -258,7 +258,7 @@ class FeedForward(nn.Module):
         self.w_v = nn.Linear(embed_dim, h)
         self.w_g = nn.Linear(embed_dim, h)
         self.w_o = nn.Linear(h, embed_dim)
-        self.norm = AdaLN(embed_dim, conditioning_dim)
+        self.norm = AdaptiveNormalizer(embed_dim, conditioning_dim)
 
     def forward(self, x, conditioning=None):
         v = F.silu(self.w_v(x))
@@ -266,21 +266,43 @@ class FeedForward(nn.Module):
         out = self.w_o(v * g)
         return self.norm(x + out, conditioning)
 
+class RMSNorm(nn.Module):
+    def __init__(self, embed_dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(embed_dim))  # γ
+
+    def forward(self, x):
+        # RMSNorm(x) = x / sqrt(mean(x^2) + eps)
+        mean_squared = torch.mean(x**2, dim=-1, keepdim=True)
+        # rsqrt is reciprocal sqrt (faster and numerically stable vs dividing by sqrt)
+        rms_normed = x * torch.rsqrt(mean_squared + self.eps)
+        return rms_normed * self.weight
+
+class SimpleLayerNorm(nn.Module):
+    def __init__(self, embed_dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        # Only center at 0 and make stddev 1
+        mean = x.mean(dim=-1, keepdim=True)
+        var  = x.var(dim=-1, unbiased=False, keepdim=True)
+        return (x - mean) * torch.rsqrt(var + self.eps)
+
 # TODO: move basic building blocks into a models.py or something better named
-# TODO: rename to FiLM or adaptive normalization?
-class AdaLN(nn.Module):
-    # Adaptive Layer Normalization, optionally unconditioned simple RMSNorm
+class AdaptiveNormalizer(nn.Module):
+    # Conditioned Feature-wise Linear Modulation, optionally unconditioned simple RMSNorm
     def __init__(self, embed_dim, conditioning_dim=None):
         super().__init__()
         self.ln = None
         self.rms = None
         self.to_gamma_beta = None
         if conditioning_dim is None:
-            # TODO: replace with manual RMSNorm and LayerNorm Immplementations
             # Prefer RMSNorm when unconditioned
-            self.rms = nn.RMSNorm(embed_dim)
+            self.rms = RMSNorm(embed_dim)
         else:
-            self.ln = nn.LayerNorm(embed_dim)
+            self.ln = SimpleLayerNorm(embed_dim)
             self.to_gamma_beta = nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(conditioning_dim, 2 * embed_dim)
@@ -339,7 +361,6 @@ class STTransformer(nn.Module):
     """ST-Transformer with multiple blocks"""
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None):
         super().__init__()
-        # TODO: add conditioning based on actions (or technically any tensor)
         # Split dimensions, ensuring temporal is even
         self.temporal_dim = (embed_dim // 3) & ~1  # Round down to even number
         self.spatial_dims = embed_dim - self.temporal_dim  # Rest goes to spatial

@@ -10,7 +10,6 @@ import random
 import glob
 from src.utils.utils import load_videotokenizer_from_checkpoint, load_lam_from_checkpoint, load_dynamics_from_checkpoint
 
-# Check if CUDA is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0.1, device=None):
@@ -36,31 +35,15 @@ def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0
     return sampled_action_index
 
 def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actions=True):
-    """Load trained models (LAM is optional if not using actions)"""
-    print("Loading trained models...")
-    
-    # Load video tokenizer from its saved config in checkpoint
-    print(f"Loading video tokenizer from {video_tokenizer_path}")
+    # Load tokenizer and dynamics, and LAM if using actions
     video_tokenizer, _vt_ckpt = load_videotokenizer_from_checkpoint(video_tokenizer_path, device)
     video_tokenizer.eval()
-    print("✅ Video tokenizer loaded from checkpoint config")
-    
-    # Load LAM only if using actions, from its saved config
     lam = None
     if use_actions:
-        print(f"Loading LAM from {lam_path}")
         lam, _lam_ckpt = load_lam_from_checkpoint(lam_path, device)
         lam.eval()
-        print("✅ LAM loaded from checkpoint config")
-    else:
-        print("⚠️ Skipping LAM loading (not using actions)")
-    
-    # Load dynamics model from its saved config in checkpoint
-    print(f"Loading dynamics model from {dynamics_path}")
     dynamics_model, _dyn_ckpt = load_dynamics_from_checkpoint(dynamics_path, device)
     dynamics_model.eval()
-    print("✅ Dynamics model loaded from checkpoint config")
-    
     return video_tokenizer, lam, dynamics_model
     
 def sample_random_action(n_actions):
@@ -79,8 +62,6 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
     ground_truth_frames = (ground_truth_frames + 1) / 2
     ground_truth_frames = torch.clamp(ground_truth_frames, 0, 1)
 
-    # predicted_frames = predicted_frames.unsqueeze(1) # This line was removed as per the edit hint
-    
     # Get dimensions
     batch_size, num_frames, C, H, W = predicted_frames.shape
 
@@ -146,13 +127,6 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
 
 # TODO: get working mp4
 def save_frames_as_mp4(frames, output_path, fps=2):
-    """
-    Save frames as an MP4 video file.
-    Args:
-        frames: Tensor of shape [batch_size, num_frames, C, H, W] with values in [0, 1]
-        output_path: Path to save the MP4 file
-        fps: Frames per second for the video
-    """
     import cv2
     import numpy as np
 

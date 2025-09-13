@@ -88,7 +88,6 @@ class Decoder(nn.Module):
                 self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
             )
 
-        print(f"video_embeddings shape: {video_embeddings.shape}, action shape: {actions.shape}")
         transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, S-1, P, E]
         patches = self.frame_head(transformed)  # [B, S-1, P, 3 * patch_size * patch_size]
         patches = rearrange(

@@ -54,10 +54,6 @@ def run_command(cmd, description):
         print("DEBUG: KeyboardInterrupt")
         return False
 
-# -----------------------------
-# Unified checkpoint utilities
-# -----------------------------
-
 def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix, step):
     """Save a checkpoint with model/optimizer/scheduler and the exact config.
     The filename includes the global step and a timestamp for uniqueness.
