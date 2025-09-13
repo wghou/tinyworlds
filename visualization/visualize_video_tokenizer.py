@@ -30,9 +30,7 @@ from datasets.data_utils import load_data_and_data_loaders
 
 
 def load_video_tokenizer(checkpoint_path, device):
-    """Load trained video tokenizer from checkpoint"""
-    print(f"Loading video tokenizer from {checkpoint_path}")
-    
+
     # Initialize model with same architecture as training
     model = Video_Tokenizer(
         frame_size=(64, 64),
@@ -55,13 +53,11 @@ def load_video_tokenizer(checkpoint_path, device):
     
     model.load_state_dict(checkpoint['model'])
     model.eval()
-    print("✅ Video tokenizer loaded successfully")
-    
+
     return model
 
 
 def encode_decode_sequence(video_tokenizer, sequence, device):
-    """Encode and decode a video sequence"""
     with torch.no_grad():
         # Move to device
         sequence = sequence.to(device)

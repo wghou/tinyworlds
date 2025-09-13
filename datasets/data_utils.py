@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
 from datasets.datasets import PongDataset, SonicDataset, PolePositionDataset, PicoDoomDataset, ZeldaDataset
 
+DEFAULT_NUM_WORKERS = 2
+DEFAULT_PREFETCH_FACTOR = 2
+DEFAULT_PIN_MEMORY = False
+DEFAULT_PERSISTENT_WORKERS = True
 
 def _default_video_transform():
     return transforms.Compose([
@@ -83,32 +87,14 @@ def load_zelda(num_frames=4):
     )
 
 def data_loaders(train_data, val_data, batch_size):
-    # Use most of available CPU cores (leave 2 for system), minimum 2
-    env_workers = os.environ.get("NG_NUM_WORKERS")
-    if env_workers is not None and env_workers.isdigit():
-        num_workers = max(2, int(env_workers))
-    else:
-        num_workers = max(2, (os.cpu_count() or 4) - 2)
-    print(f"Using {num_workers} workers for data loading")
-
-    # Prefetch factor override
-    env_prefetch = os.environ.get("NG_PREFETCH_FACTOR")
-    if env_prefetch is not None and env_prefetch.isdigit():
-        prefetch_factor = max(2, int(env_prefetch))
-    else:
-        prefetch_factor = 4
-
-    pin_memory = os.environ.get("NG_PIN_MEMORY", "1") != "0"
-    persistent_workers = os.environ.get("NG_PERSISTENT_WORKERS", "1") != "0"
-
     train_loader = DataLoader(
         train_data,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
+        num_workers=DEFAULT_NUM_WORKERS,
+        pin_memory=DEFAULT_PIN_MEMORY,
+        persistent_workers=DEFAULT_PERSISTENT_WORKERS,
+        prefetch_factor=DEFAULT_PREFETCH_FACTOR,
         drop_last=True
     )
 
@@ -116,10 +102,10 @@ def data_loaders(train_data, val_data, batch_size):
         val_data,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        prefetch_factor=prefetch_factor,
+        num_workers=DEFAULT_NUM_WORKERS,
+        pin_memory=DEFAULT_PIN_MEMORY,
+        persistent_workers=DEFAULT_PERSISTENT_WORKERS,
+        prefetch_factor=DEFAULT_PREFETCH_FACTOR,
         drop_last=True
     )
     return train_loader, val_loader

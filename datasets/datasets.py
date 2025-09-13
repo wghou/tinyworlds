@@ -16,7 +16,7 @@ class VideoHDF5Dataset(Dataset):
         transform=None, # postnormalization
         save_path: Optional[str] = None,
         train: bool = True,
-        disable_test_split: bool = True
+        disable_test_split: bool = True,
         num_frames: int = 4, # context length
         resize_to: Tuple[int, int] = (64, 64), 
         fps: int = 15,
@@ -231,10 +231,10 @@ class ZeldaDataset(VideoHDF5Dataset):
             resize_to=resolution,
             fps=15,
             sequence_stride=None,
-            fraction_of_frames=0.2,
+            fraction_of_frames=1.0,
             load_chunk_size=1000,
             load_start_index=100,
-            preload_ratio=None,
+            preload_ratio=0.2,
             preprocess_read_step=1,
             preprocess_slice=None,
         )

@@ -2,7 +2,7 @@
 
 Inspired by Karpathy's NanoGPT (https://github.com/karpathy/nanoGPT), and Google's Genie 1 Paper (https://arxiv.org/pdf/2402.15391).
 
-The greatest challenge in training world models as opposed to video models is the requirement of action annotations at each timestep. WHen we require actions, we can no longer train on the entire internet's video data and get amazing results like Google's VEO3 (or, hint, Genie 3). 
+The greatest challenge in training world models as opposed to video models is the requirement of action annotations at each timestep. When we require actions, we can no longer train on the entire internet's video data and get amazing results like Google's VEO3 (or, hint, Genie 3). 
 
 Genie solves this problem by inferring the actions between frames, and labelling them in an unsupervised manner. This is the critical unlock to achieving scale with world models.
 
@@ -161,9 +161,15 @@ We repeat process autoregressively over the time dimension as actions are passed
 
 # Data
 
-THe data is downsampled from youtube videos. Currently we have:
+THe data is processed and downsampled into numpy npzs from youtube videos converted to mp4s. Currently we have:
 1. PicoDoom
 2. Pong
 3. Zelda Ocarina of Tima
 4. Pole Position
 5. Sonic
+TODO: add links to dss
+
+# Development Process and Decisions
+
+
+# Next Steps

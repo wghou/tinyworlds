@@ -2,7 +2,7 @@
 batch_size: 256
 n_updates: 20000
 learning_rate: 0.0004
-log_interval: 100
+log_interval: 250
 dataset: ZELDA
 context_length: 4
 frame_size: 128
