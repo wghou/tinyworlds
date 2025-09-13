@@ -10,18 +10,20 @@ def readable_timestamp():
     return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
 
 def find_latest_checkpoint(base_dir, model_name):
-    pattern = os.path.join(base_dir, f"src/*/results/{model_name}_*")
-    results_dirs = glob.glob(pattern)
+    """Find the most recent checkpoint for a given model prefix.
+    Searches recursively under src/*/results/**/checkpoints/ for files named
+    {model_name}_step_*.pt or .pth and returns the newest by step (tiebreak by ctime).
+    """
+    # Search recursively for checkpoints regardless of module/run folder names
+    pattern = os.path.join(base_dir, "src", "**", "results", "**", "checkpoints", f"{model_name}_step_*.*")
+    checkpoint_files = glob.glob(pattern, recursive=True)
 
-    if not results_dirs:
-        raise Exception(f"No checkpoints found for {model_name}")
+    # Accept common torch extensions only
+    checkpoint_files = [p for p in checkpoint_files if os.path.splitext(p)[1] in (".pt", ".pth")]
 
-    latest_dir = max(results_dirs, key=os.path.getctime)
-    checkpoint_pattern = os.path.join(latest_dir, "checkpoints", f"{model_name}_step_*.pth")
-    checkpoint_files = glob.glob(checkpoint_pattern)
     if not checkpoint_files:
         raise Exception(f"No checkpoint files found for {model_name}")
-    # Prefer the highest step within the latest dir; tiebreaker by ctime
+
     def extract_step(path: str) -> int:
         fname = os.path.basename(path)
         m = re.search(rf"{re.escape(model_name)}_step_(\d+)", fname)

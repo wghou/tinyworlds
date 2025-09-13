@@ -319,7 +319,7 @@ def main(args):
         next_video_latents = input_latents
 
         # decode next video tokens to frames
-        next_frames = video_tokenizer.decoder(next_video_latents)  # [1, seq_len, C, H, W]
+        next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, seq_len, C, H, W]
         
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
         

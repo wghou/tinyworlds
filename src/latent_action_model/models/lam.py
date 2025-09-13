@@ -15,8 +15,6 @@ class Encoder(nn.Module):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
-
-        # Action prediction head
         self.action_head = nn.Sequential(
             nn.LayerNorm(embed_dim * 2),
             nn.Linear(embed_dim * 2, 4 * action_dim),
@@ -25,28 +23,25 @@ class Encoder(nn.Module):
         )
 
     def forward(self, frames):
-        # frames: [batch_size, seq_len, channels, height, width]
+        # frames: [B, S, C, H, W]
         batch_size, seq_len, C, H, W = frames.shape
 
-        # Convert frames to patch embeddings
-        embeddings = self.patch_embed(frames)  # [batch_size, seq_len, num_patches, embed_dim]
-
-        # Apply ST-Transformer
+        embeddings = self.patch_embed(frames)  # [B, S, P, E]
         transformed = self.transformer(embeddings)
 
         # TODO: find better method for outputting actions
-        # Global average pooling over patches
-        pooled = transformed.mean(dim=2)  # [batch_size, seq_len, embed_dim]
+        # global average pooling over patches
+        pooled = transformed.mean(dim=2)  # [B, S, E]
 
-        # Predict actions between consecutive frames
+        # predict actions between consecutive frames
         actions = []
         for t in range(seq_len - 1):
-            # Concatenate current and next frame features
-            combined = torch.cat([pooled[:, t], pooled[:, t+1]], dim=1)  # [batch_size, embed_dim*2]
-            action = self.action_head(combined)  # [batch_size, action_dim]
+            # concat current and next frame features
+            combined = torch.cat([pooled[:, t], pooled[:, t+1]], dim=1)  # [B, E*2]
+            action = self.action_head(combined)  # [B, A]
             actions.append(action)
 
-        actions = torch.stack(actions, dim=1)  # [batch_size, seq_len-1, action_dim]
+        actions = torch.stack(actions, dim=1)  # [B, S-1, A]
 
         return actions
 
@@ -72,7 +67,7 @@ class Decoder(nn.Module):
 
     def forward(self, frames, actions, training=True):
         # frames: [B, S, C, H, W]
-        # actions: [B, S - 1, action_dim]
+        # actions: [B, S - 1, A]
         B, S, C, H, W = frames.shape
         frames = frames[:, :-1] # [B, S-1, C, H, W]
         video_embeddings = self.patch_embed(frames)  # [B, S-1, P, E]
@@ -115,8 +110,8 @@ class LAM(nn.Module):
         # frames: [B, S, C, H, W]
     
         # get quantized action latents
-        action_latents = self.encoder(frames) # [B, S - 1, action_dim]
-        action_latents_quantized = self.quantizer(action_latents) # [B, S - 1, action_dim]
+        action_latents = self.encoder(frames) # [B, S - 1, A]
+        action_latents_quantized = self.quantizer(action_latents) # [B, S - 1, A]
 
         # decode to get predicted frames
         pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, S - 1, C, H, W]
@@ -133,6 +128,6 @@ class LAM(nn.Module):
         return total_loss, pred_frames
 
     def encode(self, frames):
-        action_latents = self.encoder(frames)  # [batch_size, seq_len, action_dim]
-        action_latents_quantized = self.quantizer(action_latents) # [batch_size, seq_len, action_dim]
+        action_latents = self.encoder(frames)  # [B, S, A]
+        action_latents_quantized = self.quantizer(action_latents) # [B, S, A]
         return action_latents_quantized

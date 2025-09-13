@@ -20,12 +20,8 @@ from datasets.data_utils import visualize_reconstruction, load_data_and_data_loa
 from tqdm import tqdm
 import json
 from einops import rearrange
-
-# Import wandb utilities
 from src.utils.wandb_utils import (
-    init_wandb, log_training_metrics, log_model_gradients, log_model_parameters,
-    log_learning_rate, log_reconstruction_comparison, log_video_sequence,
-    log_system_metrics, finish_wandb, create_wandb_config
+    init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb
 )
 from src.utils.scheduler_utils import create_cosine_scheduler
 from src.utils.utils import readable_timestamp
@@ -38,11 +34,9 @@ from dataclasses import asdict
 
 
 def main():
-    # Load config (YAML + dotlist overrides)
     args: DynamicsConfig = load_config(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Create organized save directory structure
     if args.save:
         run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('dynamics', args.filename, base_cwd=os.getcwd())
 

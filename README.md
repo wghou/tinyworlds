@@ -1,6 +1,6 @@
-# Nano World Model
+# nanogenie
 
-Inspired by Karpathy's NanoGPT (https://github.com/karpathy/nanoGPT), and Google's Genie 1 Paper (https://arxiv.org/pdf/2402.15391).
+nanogenie is inspired by Karpathy's [NanoGPT ](https://github.com/karpathy/nanoGPT), and Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
 
 The greatest challenge in training world models as opposed to video models is the requirement of action annotations at each timestep. When we require actions, we can no longer train on the entire internet's video data and get amazing results like Google's VEO3 (or, hint, Genie 3). 
 
@@ -30,20 +30,22 @@ python train_full_pipeline.py --config configs/pipeline.yaml
 
 ## Architecture 
 
-This world model is autoregressive over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the 1024 tokens in our vocabulary.
+This world model is autoregressive over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the few (usually ~1024-4096) tokens in our vocabulary.
 
-FSQ-VAE video tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the most information contained in the base video.
+Our world model consists of three modules:
 
-FSQ Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on a discrete bottleneck of actions, and our uncompressed previous frame.
+Video Tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the most information contained in the base video.
+
+Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on a discrete bottleneck of actions, and our uncompressed previous frame.
 
 Dynamics Model: Given latent action and past frame tokens, predict latent next frame of video tokens. This is the core of our world model that captures the dynamics of the video we give.
 
-For all 3, we use the STTransformer, which we will go over first.
+For all 3, I used STTransformer, which we will go over first. For the Tokenizer and LAM, I used FSQVAE.
 
 ## Space-Time Transformer (STT)
-Papers: STTransformer(https://arxiv.org/pdf/2001.02908), FiLM (https://arxiv.org/pdf/1709.07871), RMSNorm(https://arxiv.org/pdf/1910.07467), SwiGLU(https://arxiv.org/pdf/2002.05202)
+papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
 
-The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, look here(TODO: add best link).
+The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
 
 In the spatial layer, each token attends to all other tokens within its timestep. Attention operates over a given timestep with P tokens, where P = Hp x Wp, Hp = Pixel height / patch size (# patches along the H dimension), and Wp = Pixel width / patch size (# patches along the width dimension). 
 
@@ -67,7 +69,7 @@ Thus, each token contains information about its frame in relation to itself and 
 Here is how FSQVAE works:
 
 ## Finite Scalar Quantization Variational Autoencoder (FSQ-VAE)
-Paper: https://arxiv.org/pdf/2309.15505
+Paper: [Finite Scalar Quantization](https://arxiv.org/pdf/2309.15505), [VQ-VAE](https://arxiv.org/pdf/1711.00937)
 
 TLDR, in FSQ:
 1. Encoder-decoder use discrete representations/codes
@@ -80,7 +82,9 @@ VQVAE paper argues using discrete latents is potentially more natural, clearly f
 Discrete latents are appealing since "powerful autoregressive models" (ex: GPTs) have already successful modeled distributions over discrete variables
 
 ## VAEs
-Consist of:
+Paper: [Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
+
+VAEs consist of:
 1. Encoder network to parameterize posterior distribution $q(z | x)$ of discrete latent random variables z fiven input data x
 2. Prior distribution $p(z)$
 3. Decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z
@@ -161,7 +165,7 @@ We repeat process autoregressively over the time dimension as actions are passed
 
 # Data
 
-THe data is processed and downsampled into numpy npzs from youtube videos converted to mp4s. Currently we have:
+The data is processed and downsampled into numpy npzs from youtube videos converted to mp4s. Currently we have:
 1. PicoDoom
 2. Pong
 3. Zelda Ocarina of Tima
@@ -171,5 +175,28 @@ TODO: add links to dss
 
 # Development Process and Decisions
 
+I originally used VQVAE for both the video tokenizer and the latent action model as genie 1 originally used. VQVAE is sometimes unwieldy, for it has 2 auxiliary losses which require careful tuning, and often doesn't result in codebook usage higher than 20% if even.
+
+FSQ came forward as a cleaner alternative to VQVAE.
+
+Conditioning in genie 1 has the action embeddings added to the video embeddings. I found that using film from the action latents both allowed for independent variance of video and action latent space dimensions, and allowed for stronger care for action latents.
+
+The greatest challenge was avoiding latent action model collapse, which was solved by
+1. Switching VQVAE (tended to collapse to 1/8 codes quickly) to FSQVAE
+2. Using only the first frame and masking all others
+3. Perhaps using no context, only the most recent frame
+4. Adding explicit cross-batch encoder variance
+
+I found RMSNorm better than layernorm in ablations (TODO: do full ablation run and loss comparison)
+
+I found SwiCLU better than ReLU and SiLU (TODO: full ablation run/loss comparison)
+
 
 # Next Steps
+
+- [ ] Implement MoE in the Feedforward layer
+- [ ] Scale! Train on more GPUs with DDP
+- [ ] Scale Further! Add FSDP Support
+- [ ] Add Datasets (Terraria, Street Fighter) your favorite retro videogame 
+- [ ] Try Different Optimizers (Muon, SOAP)
+- [ ] Try RoPE/AliBi Pos/Temporal Embeddings

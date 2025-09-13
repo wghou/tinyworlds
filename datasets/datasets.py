@@ -9,7 +9,6 @@ from typing import Optional, Tuple, Union
 
 
 class VideoHDF5Dataset(Dataset):
-
     def __init__(
         self,
         video_path: str,
@@ -37,19 +36,16 @@ class VideoHDF5Dataset(Dataset):
         self.resize_to = resize_to
 
         if save_path and os.path.exists(save_path):
-            print(f"Loading preprocessed frames from {save_path}")
             with h5py.File(save_path, 'r') as h5_file:
                 frames_dset = h5_file['frames']
                 total = len(frames_dset)
                 n_frames = int(total if preload_ratio is None else max(0, min(total, int(total * preload_ratio))))
-                print(f"Loading {n_frames} frames from {save_path}")
 
                 self.data = []
-                for i in tqdm(range(load_start_index, n_frames, load_chunk_size), desc="Loading frames"):
+                for i in tqdm(range(load_start_index, n_frames, load_chunk_size), desc=f"Loading {n_frames} frames"):
                     chunk = frames_dset[i:min(i + load_chunk_size, n_frames)][:]
                     self.data.extend(chunk)
                 self.data = np.array(self.data)
-                print(f"Loaded {len(self.data)} frames")
         else:
             frames = self._preprocess_video(
                 video_path=video_path,

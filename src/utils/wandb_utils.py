@@ -10,17 +10,7 @@ from typing import Dict, Any, Optional
 
 
 def init_wandb(project_name: str, config: Dict[str, Any], run_name: Optional[str] = None) -> wandb.run:
-    """
-    Initialize Weights & Biases run
-    
-    Args:
-        project_name: Name of the W&B project
-        config: Configuration dictionary to log
-        run_name: Optional name for this run
-    
-    Returns:
-        wandb.run: The initialized wandb run
-    """
+
     # Generate run name if not provided
     if run_name is None:
         run_name = f"{project_name}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -41,14 +31,6 @@ def init_wandb(project_name: str, config: Dict[str, Any], run_name: Optional[str
 
 
 def log_training_metrics(step: int, metrics: Dict[str, float], prefix: str = "train"):
-    """
-    Log training metrics to W&B
-    
-    Args:
-        step: Current training step
-        metrics: Dictionary of metrics to log
-        prefix: Prefix for metric names (e.g., "train", "val")
-    """
     # Add prefix to metric names
     prefixed_metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
     prefixed_metrics["step"] = step
@@ -57,13 +39,6 @@ def log_training_metrics(step: int, metrics: Dict[str, float], prefix: str = "tr
 
 
 def log_model_gradients(model: torch.nn.Module, step: int):
-    """
-    Log model gradients to W&B
-    
-    Args:
-        model: PyTorch model
-        step: Current training step
-    """
     # Log gradients for each parameter
     for name, param in model.named_parameters():
         if param.grad is not None:
@@ -74,13 +49,6 @@ def log_model_gradients(model: torch.nn.Module, step: int):
 
 
 def log_model_parameters(model: torch.nn.Module, step: int):
-    """
-    Log model parameters to W&B
-    
-    Args:
-        model: PyTorch model
-        step: Current training step
-    """
     # Log parameters for each layer
     for name, param in model.named_parameters():
         wandb.log({
@@ -90,13 +58,6 @@ def log_model_parameters(model: torch.nn.Module, step: int):
 
 
 def log_learning_rate(optimizer: torch.optim.Optimizer, step: int):
-    """
-    Log learning rate to W&B
-    
-    Args:
-        optimizer: PyTorch optimizer
-        step: Current training step
-    """
     for i, param_group in enumerate(optimizer.param_groups):
         wandb.log({
             f"learning_rate/group_{i}": param_group['lr'],
@@ -106,15 +67,7 @@ def log_learning_rate(optimizer: torch.optim.Optimizer, step: int):
 
 def log_reconstruction_comparison(original: torch.Tensor, reconstructed: torch.Tensor, 
                                 step: int, max_images: int = 16):
-    """
-    Log reconstruction comparison images to W&B
-    
-    Args:
-        original: Original images tensor [B, C, H, W]
-        reconstructed: Reconstructed images tensor [B, C, H, W]
-        step: Current training step
-        max_images: Maximum number of images to log
-    """
+
     # Ensure tensors are on CPU and in the right format
     original = original.detach().cpu()
     reconstructed = reconstructed.detach().cpu()
@@ -141,14 +94,6 @@ def log_reconstruction_comparison(original: torch.Tensor, reconstructed: torch.T
         comparison_images.append(comparison)
 
 def log_video_sequence(frames: torch.Tensor, step: int, caption: str = "Generated Video"):
-    """
-    Log video sequence to W&B
-    
-    Args:
-        frames: Video frames tensor [B, T, C, H, W]
-        step: Current training step
-        caption: Caption for the video
-    """
     # Ensure tensor is on CPU and in the right format
     frames = frames.detach().cpu()
     
@@ -174,14 +119,6 @@ def log_video_sequence(frames: torch.Tensor, step: int, caption: str = "Generate
 
 
 def log_codebook_usage(codebook_usage: float, step: int, model_name: str = "model"):
-    """
-    Log codebook usage statistics
-    
-    Args:
-        codebook_usage: Usage ratio (0-1)
-        step: Current training step
-        model_name: Name of the model (e.g., "vq", "lam")
-    """
     wandb.log({
         f"{model_name}/codebook_usage": codebook_usage,
         "step": step
@@ -189,14 +126,6 @@ def log_codebook_usage(codebook_usage: float, step: int, model_name: str = "mode
 
 
 def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: int):
-    """
-    Log action distribution statistics
-    
-    Args:
-        action_indices: Tensor of action indices
-        step: Current training step
-        n_actions: Total number of possible actions
-    """
     # Convert to CPU and numpy
     action_indices = action_indices.detach().cpu().numpy()
     
@@ -214,12 +143,6 @@ def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: 
 
 
 def log_system_metrics(step: int):
-    """
-    Log system metrics (GPU memory, etc.)
-    
-    Args:
-        step: Current training step
-    """
     if torch.cuda.is_available():
         wandb.log({
             "system/gpu_memory_allocated": torch.cuda.memory_allocated() / 1024**3,  # GB
