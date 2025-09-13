@@ -17,26 +17,23 @@ import wandb
 import torch.nn.functional as F
 from src.utils.utils import readable_timestamp
 from src.utils.config import VQVAEConfig, load_config
-from src.utils.utils import save_training_state
+from src.utils.utils import save_training_state, prepare_run_dirs
+from src.utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
+from dataclasses import asdict
 
 # Load config (YAML + dotlist overrides)
 args: VQVAEConfig = load_config(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'vqvae.yaml'))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Always define a timestamp-like name
+timestamp = args.filename or readable_timestamp()
+
 # Create organized save directory structure
 if args.save:
-    # TODO: make create dir util
-    # Create main results directory for this run
-    timestamp = args.filename or readable_timestamp()
-    run_dir = os.path.join(os.getcwd(), 'src', 'vqvae', 'results', f'videotokenizer_{timestamp}')
-    os.makedirs(run_dir, exist_ok=True)
-
-    # Create subdirectories
-    checkpoints_dir = os.path.join(run_dir, 'checkpoints')
-    visualizations_dir = os.path.join(run_dir, 'visualizations')
-    os.makedirs(checkpoints_dir, exist_ok=True)
-    os.makedirs(visualizations_dir, exist_ok=True)
+    run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('vqvae', args.filename, base_cwd=os.getcwd())
+    # Keep using variable name 'timestamp' below
+    timestamp = run_name
 
 
 training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
@@ -124,47 +121,11 @@ if args.checkpoint:
 
 # Initialize W&B if enabled and available
 if args.use_wandb:
-    # TODO: use wandb util from wandb_utils.py (create if not there)
-    # Create model configuration
-    model_config = {
-        'frame_size': (args.frame_size, args.frame_size),
-        'patch_size': args.patch_size,
-        'embed_dim': args.embed_dim,
-        'num_heads': args.num_heads,
-        'hidden_dim': args.hidden_dim,
-        'num_blocks': args.num_blocks,
-        'latent_dim': args.latent_dim,
-        'num_bins': args.num_bins,
-    }
-    
-    # Create W&B config
-    wandb_config = {
-        'batch_size': args.batch_size,
-        'n_updates': args.n_updates,
-        'learning_rate': args.learning_rate,
-        'log_interval': args.log_interval,
-        'dataset': args.dataset,
-        'context_length': args.context_length,
-        'model_architecture': model_config,
-        'device': str(device),
-        'timestamp': timestamp
-    }
-    
-    # Initialize W&B
+    cfg = asdict(args)
+    cfg.update({'timestamp': timestamp})
     run_name = args.wandb_run_name or f"video_tokenizer_{timestamp}"
-    wandb.init(
-        project=args.wandb_project,
-        config=wandb_config,
-        name=run_name,
-        tags=["video-tokenizer", "training"]
-    )
-    
-    # Watch model for gradients and parameters
+    init_wandb(args.wandb_project, cfg, run_name)
     wandb.watch(model, log="all", log_freq=args.log_interval)
-    
-    print(f"🚀 W&B run initialized: {wandb.run.name}")
-    print(f"📊 Project: {args.wandb_project}")
-    print(f"🔗 View at: {wandb.run.get_url()}")
 
 model.train()
 
@@ -203,32 +164,20 @@ def train():
 
         # Log to W&B if enabled and available
         if args.use_wandb:
-            # Log basic metrics every step
             metrics = {
-                'train/loss': recon_loss.item(),
-                'train/learning_rate': scheduler.get_last_lr()[0],
-                'step': i
+                'loss': recon_loss.item(),
+                'learning_rate': scheduler.get_last_lr()[0],
             }
+            log_training_metrics(i, metrics, prefix='train')
 
-            # Calculate codebook usage only during log intervals
             if i % args.log_interval == 0:
                 with torch.no_grad():
                     indices = model.tokenize(x)
                     unique_codes = torch.unique(indices).numel()
-                    metrics['train/codebook_usage'] = unique_codes / model.codebook_size
+                    wandb.log({'train/codebook_usage': unique_codes / model.codebook_size, 'step': i})
             
-            # Log system metrics
-            if torch.cuda.is_available():
-                metrics['system/gpu_memory_allocated'] = torch.cuda.memory_allocated() / 1024**3
-                metrics['system/gpu_memory_reserved'] = torch.cuda.memory_reserved() / 1024**3
-                metrics['step'] = i
-            
-            # Log learning rate
-            for j, param_group in enumerate(optimizer.param_groups):
-                metrics[f'learning_rate/group_{j}'] = param_group['lr']
-                metrics['step'] = i
+            log_system_metrics(i)
 
-            wandb.log(metrics)
         if i % args.log_interval == 0:
             if args.save:
                 hyperparameters = args.__dict__
@@ -244,8 +193,7 @@ def train():
     
     # Finish W&B run
     if args.use_wandb:
-        wandb.finish()
-        print("✅ W&B run finished")
+        finish_wandb()
 
     print("DEBUG: Training finished")
 

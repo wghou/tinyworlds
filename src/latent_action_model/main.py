@@ -15,7 +15,9 @@ from src.utils.utils import readable_timestamp
 import json
 import wandb
 from src.utils.config import LAMConfig, load_config
-from src.utils.utils import save_training_state
+from src.utils.utils import save_training_state, prepare_run_dirs
+from src.utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb
+from dataclasses import asdict
 
 # Load config (YAML + dotlist overrides)
 args: LAMConfig = load_config(LAMConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'lam.yaml'))
@@ -25,13 +27,7 @@ def main():
 
     # Create organized save directory structure
     if args.save:
-        ts = readable_timestamp()
-        run_dir = os.path.join(os.getcwd(), 'src', 'latent_action_model', 'results', f'lam_{args.filename or ts}')
-        os.makedirs(run_dir, exist_ok=True)
-        checkpoints_dir = os.path.join(run_dir, 'checkpoints')
-        visualizations_dir = os.path.join(run_dir, 'visualizations')
-        os.makedirs(checkpoints_dir, exist_ok=True)
-        os.makedirs(visualizations_dir, exist_ok=True)
+        run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('latent_action_model', args.filename, base_cwd=os.getcwd())
         print(f'Results will be saved in {run_dir}')
 
     # Load sequence data for training
@@ -86,7 +82,7 @@ def main():
     # Initialize W&B if enabled and available
     if args.use_wandb:
         run_name = args.wandb_run_name or f"lam_{readable_timestamp()}"
-        wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
+        init_wandb(args.wandb_project, asdict(args), run_name)
 
     # Training loop
     train_iter = iter(training_loader)
@@ -117,19 +113,11 @@ def main():
         
         # Log to W&B if enabled and available
         if args.use_wandb:
-            # Log training metrics
             wandb.log({
                 'train/total_loss': loss.item(),
                 'step': epoch
             })
-            
-            # Log system metrics
-            if torch.cuda.is_available():
-                wandb.log({
-                    'system/gpu_memory_allocated': torch.cuda.memory_allocated() / 1024**3,  # GB
-                    'system/gpu_memory_reserved': torch.cuda.memory_reserved() / 1024**3,    # GB
-                    'step': epoch
-                })
+            log_system_metrics(epoch)
             
         # Print progress every 50 steps
         if (epoch - 1) % 50 == 0:
@@ -169,7 +157,7 @@ def main():
     
     # Finish W&B run
     if args.use_wandb:
-        wandb.finish()
+        finish_wandb()
 
 if __name__ == "__main__":
     main()

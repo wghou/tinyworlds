@@ -25,7 +25,7 @@ lam_path: null
 # Performance
 amp: true
 tf32: true
-compile: false
+compile: true
 
 # W&B
 use_wandb: true

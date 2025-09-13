@@ -30,158 +30,88 @@ from src.utils.wandb_utils import (
 from src.utils.scheduler_utils import create_cosine_scheduler
 from src.utils.utils import readable_timestamp
 from src.utils.utils import save_training_state, load_videotokenizer_from_checkpoint, load_lam_from_checkpoint
+from src.utils.utils import prepare_run_dirs
 
 from src.utils.config import DynamicsConfig, load_config
 import wandb
+from dataclasses import asdict
 
-# Load config (YAML + dotlist overrides)
-args: DynamicsConfig = load_config(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def main():
+    # Load config (YAML + dotlist overrides)
+    args: DynamicsConfig = load_config(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Create organized save directory structure
-if args.save:
-    ts = readable_timestamp()
-    # Create main results directory for this run
-    run_dir = os.path.join(os.getcwd(), 'src', 'dynamics', 'results', f'dynamics_{args.filename or ts}')
-    os.makedirs(run_dir, exist_ok=True)
-    
-    # Create subdirectories
-    checkpoints_dir = os.path.join(run_dir, 'checkpoints')
-    visualizations_dir = os.path.join(run_dir, 'visualizations')
-    os.makedirs(checkpoints_dir, exist_ok=True)
-    os.makedirs(visualizations_dir, exist_ok=True)
+    # Create organized save directory structure
+    if args.save:
+        run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('dynamics', args.filename, base_cwd=os.getcwd())
 
-print("Loading pre-trained video tokenizer...")
-if os.path.isfile(args.video_tokenizer_path):
-    print(f"Loading video tokenizer from {args.video_tokenizer_path}")
-    video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
-    video_tokenizer.eval()
-    for p in video_tokenizer.parameters():
-        p.requires_grad = False
-    print("✅ Video tokenizer loaded from its saved config and frozen")
-else:
-    raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
+    if os.path.isfile(args.video_tokenizer_path):
+        video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
+        video_tokenizer.eval()
+        for p in video_tokenizer.parameters():
+            p.requires_grad = False
+    else:
+        raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
-print("Loading pre-trained latent action model...")
-if os.path.isfile(args.lam_path):
-    print(f"Loading LAM from {args.lam_path}")
-    lam, lam_ckpt = load_lam_from_checkpoint(args.lam_path, device)
-    lam.eval()
-    for p in lam.parameters():
-        p.requires_grad = False
-    print("✅ LAM loaded from its saved config and frozen")
-else:
-    raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
+    if os.path.isfile(args.lam_path):
+        lam, lam_ckpt = load_lam_from_checkpoint(args.lam_path, device)
+        lam.eval()
+        for p in lam.parameters():
+            p.requires_grad = False
+    else:
+        raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
 
-"""
-Set up dynamics model
-"""
-print("Initializing dynamics model...")
-dynamics_model = DynamicsModel(
-    frame_size=(args.frame_size, args.frame_size),
-    patch_size=args.patch_size,
-    embed_dim=args.embed_dim,
-    num_heads=args.num_heads,
-    hidden_dim=args.hidden_dim,
-    num_blocks=args.num_blocks,
-    conditioning_dim=lam.action_dim,
-    latent_dim=args.latent_dim,
-    num_bins=args.num_bins,
-).to(device)
+    dynamics_model = DynamicsModel(
+        frame_size=(args.frame_size, args.frame_size),
+        patch_size=args.patch_size,
+        embed_dim=args.embed_dim,
+        num_heads=args.num_heads,
+        hidden_dim=args.hidden_dim,
+        num_blocks=args.num_blocks,
+        conditioning_dim=lam.action_dim,
+        latent_dim=args.latent_dim,
+        num_bins=args.num_bins,
+    ).to(device)
 
-# Optionally compile dynamics model
-if args.compile:
-    try:
+    if args.compile:
         dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-        print("✅ Dynamics model compiled with torch.compile")
-    except Exception as e:
-        print(f"⚠️ torch.compile not available or failed: {e}")
 
-"""
-Set up optimizer and training loop
-"""
-# Create parameter groups to avoid weight decay on biases and norm layers
-decay = []
-no_decay = []
-for name, param in dynamics_model.named_parameters():
-    if param.requires_grad:
-        if len(param.shape) == 1 or name.endswith(".bias") or "norm" in name:
-            no_decay.append(param)
-        else:
-            decay.append(param)
+    # Create parameter groups to avoid weight decay on biases and norm layers
+    decay = []
+    no_decay = []
+    for name, param in dynamics_model.named_parameters():
+        if param.requires_grad:
+            if len(param.shape) == 1 or name.endswith(".bias") or "norm" in name:
+                no_decay.append(param)
+            else:
+                decay.append(param)
 
-try:
     optimizer = optim.AdamW([
         {'params': decay, 'weight_decay': 0.01},
         {'params': no_decay, 'weight_decay': 0}
     ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
-    print("✅ Using fused AdamW")
-except TypeError:
-    optimizer = optim.AdamW([
-        {'params': decay, 'weight_decay': 0.01},
-        {'params': no_decay, 'weight_decay': 0}
-    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
 
-# Create cosine scheduler with warmup
-scheduler = create_cosine_scheduler(optimizer, args.n_updates)
+    # Create cosine scheduler with warmup
+    scheduler = create_cosine_scheduler(optimizer, args.n_updates)
 
-# AMP scaler for mixed precision
-scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
+    # AMP scaler for mixed precision
+    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
-results = {
-    'n_updates': 0,
-    'dynamics_losses': [],
-    'loss_vals': [],
-}
-
-# Initialize W&B if enabled and available
-if args.use_wandb:
-    # TODO: make one function util for this
-    # Create model configuration
-    model_config = {
-        'frame_size': (args.frame_size, args.frame_size),
-        'patch_size': args.patch_size,
-        'embed_dim': args.embed_dim,
-        'num_heads': args.num_heads,
-        'hidden_dim': args.hidden_dim,
-        'num_blocks': args.num_blocks,
-        'latent_dim': args.latent_dim,
-        'use_actions': args.use_actions
+    results = {
+        'n_updates': 0,
+        'dynamics_losses': [],
+        'loss_vals': [],
     }
-    
-    # Create W&B config
-    wandb_config = {
-        'batch_size': args.batch_size,
-        'n_updates': args.n_updates,
-        'learning_rate': args.learning_rate,
-        'log_interval': args.log_interval,
-        'dataset': args.dataset,
-        'context_length': args.context_length,
-        'model_architecture': model_config,
-        'device': str(device),
-        'timestamp': ts
-    }
-    
-    # Initialize W&B
-    run_name = args.wandb_run_name or f"dynamics_{ts}"
-    wandb.init(
-        project=args.wandb_project,
-        config=wandb_config,
-        name=run_name,
-        tags=["dynamics", "training"]
-    )
 
-    # Watch model for gradients and parameters
-    wandb.watch(dynamics_model, log="all", log_freq=args.log_interval)
-    
-    print(f"🚀 W&B run initialized: {wandb.run.name}")
-    print(f"📊 Project: {args.wandb_project}")
-    print(f"🔗 View at: {wandb.run.get_url()}")
+    # Initialize W&B if enabled and available
+    if args.use_wandb:
+        run_name = args.wandb_run_name or f"dynamics_{readable_timestamp()}"
+        init_wandb(args.wandb_project, asdict(args), run_name)
+        wandb.watch(dynamics_model, log="all", log_freq=args.log_interval)
 
-dynamics_model.train()
+    dynamics_model.train()
 
-def train():
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
@@ -266,28 +196,14 @@ def train():
         
         # Log to W&B if enabled
         if args.use_wandb:
-            # Log training metrics
             metrics = {
                 'dynamics_loss': dynamics_loss.item(),
                 'total_loss': loss.item(),
-                'masking_rate': masking_rate
+                'masking_rate': masking_rate if mask_positions is not None else 0.0,
             }
             log_training_metrics(i, metrics, prefix="train")
-            # Log system metrics
             log_system_metrics(i)
-            # Log learning rate
             log_learning_rate(optimizer, i)
-
-        # Action diversity metrics (minimal)
-        if args.use_actions and args.use_wandb and quantized_actions is not None:
-            qa = quantized_actions.squeeze(2)
-            div = dynamics_model.compute_action_diversity(actions, qa, lam.quantizer)
-            wandb.log({
-                'actions/usage': float(div['action_usage']),
-                'actions/entropy': float(div['action_entropy']),
-                'actions/pre_quant_var': float(div['pre_quant_var']),
-                'step': i
-            })
 
         # Debug prints
         if i % 10 == 0:  # Print every 10 iterations
@@ -313,37 +229,21 @@ def train():
                 
                 # Convert mask_positions to patch-level mask for visualization
                 if mask_positions is not None:
-                    # mask_positions: [B, S, N] where N is number of patches
-                    # We need to convert this to pixel-level mask
                     B, S, N = mask_positions.shape
                     patch_size = args.patch_size
-                    H, W = args.frame_size, args.frame_size  # Frame size
-                    
-                    # Create pixel-level mask for the target frames (which have seq_len-1)
-                    # We need to slice mask_positions to match target_frames_full
-                    mask_for_viz = mask_positions[:, 1:]  # Remove first timestep to match target_frames_full
+                    H, W = args.frame_size, args.frame_size
+                    mask_for_viz = mask_positions[:, 1:]
                     B_viz, S_viz, N_viz = mask_for_viz.shape
-                    
-                    # Create pixel-level mask
                     pixel_mask = torch.zeros(B_viz, S_viz, H, W, device=mask_positions.device)
-                    
-                    # For each batch and sequence, convert patch mask to pixel mask
                     for b in range(B_viz):
                         for s in range(S_viz):
-                            patch_mask = mask_for_viz[b, s]  # [N]
-                            # Convert patch indices to pixel coordinates
+                            patch_mask = mask_for_viz[b, s]
                             for patch_idx in range(N_viz):
-                                if patch_mask[patch_idx]:  # If patch is masked
-                                    # Calculate patch position
+                                if patch_mask[patch_idx]:
                                     patch_row = (patch_idx // (W // patch_size)) * patch_size
                                     patch_col = (patch_idx % (W // patch_size)) * patch_size
-                                    # Set patch pixels to black (0)
                                     pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
-                    
-                    # Apply mask to frames (set masked patches to black)
-                    # pixel_mask: [B_viz, S_viz, H, W], masked_target_frames_full: [B_viz, S_viz, C, H, W]
-                    # Need to expand pixel_mask to include channel dimension
-                    pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)  # [B_viz, S_viz, C, H, W]
+                    pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
                     masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
 
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
@@ -358,4 +258,4 @@ def train():
         finish_wandb()
 
 if __name__ == "__main__":
-    train()
+    main()

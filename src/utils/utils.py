@@ -41,17 +41,13 @@ def run_command(cmd, description):
     # Prefer TF32 globally
     env.setdefault("TORCH_CUDNN_V8_API_ENABLED", "1")
 
-    print(f"Running command: {cmd}")
-
     try:
         result = subprocess.run(cmd, check=True, capture_output=False, env=env)
-        print(f"debug got here in run_command")
         return True
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stderr}")
         return False
     except KeyboardInterrupt:
-        print("DEBUG: KeyboardInterrupt")
         return False
 
 def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, prefix, step):
@@ -139,3 +135,27 @@ def load_dynamics_from_checkpoint(checkpoint_path, device):
     model = DynamicsModel(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
+
+
+def prepare_run_dirs(module: str, filename: str | None, base_cwd: str | None = None):
+    """
+    Create an organized directory structure for a training run.
+
+    Args:
+        module: submodule name under src (e.g., 'vqvae', 'latent_action_model', 'dynamics')
+        filename: optional custom run name; if None, use a timestamp
+        base_cwd: optional base working directory; defaults to current working directory
+
+    Returns:
+        run_dir, checkpoints_dir, visualizations_dir, run_name
+    """
+    cwd = base_cwd or os.getcwd()
+    ts = readable_timestamp()
+    run_name = filename or ts
+    run_dir = os.path.join(cwd, 'src', module, 'results', f"{module.split('/')[-1]}_{run_name}")
+    os.makedirs(run_dir, exist_ok=True)
+    checkpoints_dir = os.path.join(run_dir, 'checkpoints')
+    visualizations_dir = os.path.join(run_dir, 'visualizations')
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(visualizations_dir, exist_ok=True)
+    return run_dir, checkpoints_dir, visualizations_dir, run_name

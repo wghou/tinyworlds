@@ -1,6 +1,6 @@
 # Training
 batch_size: 256
-n_updates: 10000
+n_updates: 2000
 learning_rate: 0.001
 log_interval: 50
 dataset: ZELDA
@@ -8,7 +8,7 @@ context_length: 4
 frame_size: 128
 
 # Model
-n_actions: 8
+n_actions: 16
 patch_size: 8
 embed_dim: 128
 num_heads: 8
@@ -18,10 +18,10 @@ num_blocks: 4
 # Performance
 amp: true
 tf32: true
-compile: false
+compile: true
 
 # W&B
-use_wandb: false
+use_wandb: true
 wandb_project: nano-genie
 wandb_run_name: null
 wandb_media: false
