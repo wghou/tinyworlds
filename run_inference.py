@@ -2,7 +2,7 @@
 
 import torch
 import argparse
-from datasets.utils import load_data_and_data_loaders
+from datasets.data_utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt
 import time
 import os

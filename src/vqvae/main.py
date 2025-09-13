@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
-from datasets.utils import visualize_reconstruction, load_data_and_data_loaders
+from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from src.utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
 import json

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.dynamics.models.dynamics_model import DynamicsModel
-from datasets.utils import load_data_and_data_loaders
+from datasets.data_utils import load_data_and_data_loaders
 
 def load_video_tokenizer(checkpoint_path, device):
     print(f"Loading video tokenizer from {checkpoint_path}")

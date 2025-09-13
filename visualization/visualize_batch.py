@@ -14,7 +14,7 @@ import argparse
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from datasets.utils import load_data_and_data_loaders
+from datasets.data_utils import load_data_and_data_loaders
 
 def visualize_batch(frames, save_path=None, title="Video Sequences Batch", max_batch_size=8, max_seq_length=8):
     """

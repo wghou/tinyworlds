@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from models.lam import LAM
 from tqdm import tqdm
 from src.latent_action_model.utils import visualize_reconstructions
-from datasets.utils import load_data_and_data_loaders
+from datasets.data_utils import load_data_and_data_loaders
 from src.utils.utils import readable_timestamp
 import json
 import wandb

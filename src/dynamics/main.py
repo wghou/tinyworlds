@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.vqvae.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
 from src.dynamics.models.dynamics_model import DynamicsModel
-from datasets.utils import visualize_reconstruction, load_data_and_data_loaders
+from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 import json
 from einops import rearrange
