@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import math
 from einops import rearrange, repeat, reduce
-from src.vqvae.models.video_tokenizer import STTransformer, PatchEmbedding, FiniteScalarQuantizer
+from src.video_tokenizer.models.video_tokenizer import STTransformer, PatchEmbedding, FiniteScalarQuantizer
 
 NUM_LAM_BINS = 2
 
@@ -23,15 +23,15 @@ class Encoder(nn.Module):
         )
 
     def forward(self, frames):
-        # frames: [B, S, C, H, W]
+        # frames: [B, T, C, H, W]
         batch_size, seq_len, C, H, W = frames.shape
 
-        embeddings = self.patch_embed(frames)  # [B, S, P, E]
+        embeddings = self.patch_embed(frames)  # [B, T, P, E]
         transformed = self.transformer(embeddings)
 
         # TODO: find better method for outputting actions
         # global average pooling over patches
-        pooled = transformed.mean(dim=2)  # [B, S, E]
+        pooled = transformed.mean(dim=2)  # [B, T, E]
 
         # predict actions between consecutive frames
         actions = []
@@ -41,7 +41,7 @@ class Encoder(nn.Module):
             action = self.action_head(combined)  # [B, A]
             actions.append(action)
 
-        actions = torch.stack(actions, dim=1)  # [B, S-1, A]
+        actions = torch.stack(actions, dim=1)  # [B, T-1, A]
 
         return actions
 
@@ -66,32 +66,32 @@ class Decoder(nn.Module):
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
 
     def forward(self, frames, actions, training=True):
-        # frames: [B, S, C, H, W]
-        # actions: [B, S - 1, A]
-        B, S, C, H, W = frames.shape
-        frames = frames[:, :-1] # [B, S-1, C, H, W]
-        video_embeddings = self.patch_embed(frames)  # [B, S-1, P, E]
+        # frames: [B, T, C, H, W]
+        # actions: [B, T - 1, A]
+        B, T, C, H, W = frames.shape
+        frames = frames[:, :-1] # [B, T-1, C, H, W]
+        video_embeddings = self.patch_embed(frames)  # [B, T-1, P, E]
         _, _, P, E = video_embeddings.shape
 
         # Apply random masking during training
         if training and self.training:
             keep_rate = 0.0
-            keep = (torch.rand(B, S-1, P, 1, device=frames.device) < keep_rate)
+            keep = (torch.rand(B, T-1, P, 1, device=frames.device) < keep_rate)
             keep[:, 0] = 1  # never mask first frame tokens (anchor) TODO: try rid of ablation
             video_embeddings = torch.where(
                 keep, video_embeddings,
                 self.mask_token.to(video_embeddings.dtype).expand_as(video_embeddings)
             )
 
-        transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, S-1, P, E]
-        patches = self.frame_head(transformed)  # [B, S-1, P, 3 * patch_size * patch_size]
+        transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, T-1, P, E]
+        patches = self.frame_head(transformed)  # [B, T-1, P, 3 * patch_size * patch_size]
         patches = rearrange(
-            patches, 'b s p (c p1 p2) -> b s c p p1 p2', c=3, p1=self.patch_size, p2=self.patch_size
-        ) # [B, S-1, C, P, patch_size, patch_size]
+            patches, 'b t p (c p1 p2) -> b t c p p1 p2', c=3, p1=self.patch_size, p2=self.patch_size
+        ) # [B, T-1, C, P, patch_size, patch_size]
         pred_frames = rearrange(
-            patches, 'b s c (h w) p1 p2 -> b s c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
-        ) # [B, S-1, C, H, W]
-        return pred_frames  # [B, S-1, C, H, W]
+            patches, 'b t c (h w) p1 p2 -> b t c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
+        ) # [B, T-1, C, H, W]
+        return pred_frames  # [B, T-1, C, H, W]
 
 class LAM(nn.Module):
     """ST-Transformer based Latent Action Model"""
@@ -107,17 +107,17 @@ class LAM(nn.Module):
         self.var_lambda = 100.0
 
     def forward(self, frames):
-        # frames: [B, S, C, H, W]
+        # frames: [B, T, C, H, W]
     
         # get quantized action latents
-        action_latents = self.encoder(frames) # [B, S - 1, A]
-        action_latents_quantized = self.quantizer(action_latents) # [B, S - 1, A]
+        action_latents = self.encoder(frames) # [B, T - 1, A]
+        action_latents_quantized = self.quantizer(action_latents) # [B, T - 1, A]
 
         # decode to get predicted frames
-        pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, S - 1, C, H, W]
+        pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, T - 1, C, H, W]
         
         # Compute reconstruction loss
-        target_frames = frames[:, 1:]  # All frames except first [B, S - 1, C, H, W]
+        target_frames = frames[:, 1:]  # All frames except first [B, T - 1, C, H, W]
         recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
         
         # Encourage non-collapsed encoder variance per-dimension
@@ -128,6 +128,6 @@ class LAM(nn.Module):
         return total_loss, pred_frames
 
     def encode(self, frames):
-        action_latents = self.encoder(frames)  # [B, S, A]
-        action_latents_quantized = self.quantizer(action_latents) # [B, S, A]
+        action_latents = self.encoder(frames)  # [B, T, A]
+        action_latents_quantized = self.quantizer(action_latents) # [B, T, A]
         return action_latents_quantized

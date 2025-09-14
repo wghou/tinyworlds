@@ -1,15 +1,15 @@
 # Training
 batch_size: 256
-n_updates: 2000
+n_updates: 1
 learning_rate: 0.001
 log_interval: 100
-dataset: ZELDA
+dataset: PICODOOM
 context_length: 4
-frame_size: 128
+frame_size: 64
 
 # Model
 n_actions: 16
-patch_size: 8
+patch_size: 4
 embed_dim: 128
 num_heads: 8
 hidden_dim: 256

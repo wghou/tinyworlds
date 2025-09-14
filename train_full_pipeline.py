@@ -9,17 +9,17 @@ pipe: PipelineConfig = load_config(PipelineConfig, default_config_path=os.path.j
 
 
 def main():
-    if pipe.run_vqvae:
+    if pipe.run_video_tokenizer:
         v_cmd = [
-            sys.executable, "src/vqvae/main.py",
-            "--config", pipe.vqvae_config,
+            sys.executable, "src/video_tokenizer/train_video_tokenizer.py",
+            "--config", pipe.video_tokenizer_config,
         ]
         if not run_command(v_cmd, "Video Tokenizer Training"):
             return
 
     if pipe.run_lam:
         lam_cmd = [
-            sys.executable, "src/latent_action_model/main.py",
+            sys.executable, "src/latent_action_model/train_lam.py",
             "--config", pipe.lam_config,
         ]
         if not run_command(lam_cmd, "LAM Training"):
@@ -30,7 +30,7 @@ def main():
 
     if pipe.run_dynamics:
         dyn_cmd = [
-            sys.executable, "src/dynamics/main.py",
+            sys.executable, "src/dynamics/train_dynamics.py",
             "--config", pipe.dynamics_config,
             f"video_tokenizer_path={video_tokenizer_checkpoint}",
             f"lam_path={lam_checkpoint}",

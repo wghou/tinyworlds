@@ -9,13 +9,9 @@ import json
 from tqdm import tqdm
 from einops import rearrange
 import torch.nn.functional as F
-
-# Add the project root to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
-from src.vqvae.models.video_tokenizer import Video_Tokenizer
+from src.video_tokenizer.models.video_tokenizer import Video_Tokenizer
 from src.latent_action_model.models.lam import LAM
-from src.dynamics.models.dynamics_model import DynamicsModel
+from src.dynamics.models.dynamics import DynamicsModel
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 import json
@@ -112,66 +108,44 @@ def main():
         num_frames=args.context_length
     )
     train_iter = iter(training_loader)
-    
+
     for i in tqdm(range(0, args.n_updates)):
         try:
             x, _ = next(train_iter)
         except StopIteration:
             train_iter = iter(training_loader)  # Reset iterator when epoch ends
             x, _ = next(train_iter)
-            
+
         x = x.to(device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
         optimizer.zero_grad(set_to_none=True)
 
-        # Get video tokenizer latents for current frames (frozen model)
-        with torch.no_grad():
-            # TODO: make video tokenizer forward pass for inference return quantized video latents
-            # TODO: should I pass in indices or latents?
-            video_latents = video_tokenizer.encoder(x)  # [batch_size, seq_len, num_patches, latent_dim]
-            
-            # Apply vector quantization to get discrete latents
-            quantized_video_latents = video_tokenizer.quantizer(video_latents) # [batch_size, seq_len, num_patches, latent_dim]
-            
-            if args.use_actions:
-                actions = lam.encoder(x)  # [batch_size, seq_len - 1, action_dim]
-                quantized_actions = lam.quantizer(actions) # [batch_size, seq_len-1, action_dim]
-            else:
-                quantized_actions = None
+        # Get video tokenizer latents for current frames
+        quantized_video_latents = video_tokenizer.tokenize(x) # [B, S, P, L]
+        if args.use_actions:
+            actions = lam.encoder(x)  # [B, S - 1, A]
+            quantized_actions = lam.quantizer(actions) # [B, S - 1, A]
+        else:
+            quantized_actions = None
 
-        target_next_tokens = video_tokenizer.quantizer.get_indices_from_latents(quantized_video_latents, dim=-1) # [batch_size, seq_len-1, num_patches]
+        target_next_tokens = video_tokenizer.quantizer.get_indices_from_latents(quantized_video_latents, dim=-1) # [B, S - 1, P]
 
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            predicted_next_logits, mask_positions = dynamics_model(quantized_video_latents, training=True, conditioning=quantized_actions)  # [batch_size, seq_len, num_patches, codebook_size]
+            predicted_next_logits, mask_positions = dynamics_model(quantized_video_latents, training=True, conditioning=quantized_actions)  # [B, S, P, L^D]
 
-            if mask_positions is not None:
-                num_masked = mask_positions.sum().item()
-                total_positions = mask_positions.numel()
-                masking_rate = num_masked / total_positions
+        num_masked = mask_positions.sum().item() # Scalar
+        total_positions = mask_positions.numel() # Scalar
+        masking_rate = num_masked / total_positions # Scalar
 
-            # Compute loss only on masked tokens (MaskGit-style)
-            if mask_positions is not None:
-                mask_for_loss = mask_positions
-                masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [N, codebook_size]
-                masked_targets = target_next_tokens.reshape(-1)  # [N]
-                masked_mask = mask_for_loss.reshape(-1)  # [N]
-                
-                if masked_mask.sum() > 0:  # If there are masked tokens
-                    assert masked_logits.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_logits.shape[0]} vs {masked_mask.shape[0]}"
-                    assert masked_targets.shape[0] == masked_mask.shape[0], f"Shape mismatch: {masked_targets.shape[0]} vs {masked_mask.shape[0]}"
-                    masked_logits = masked_logits[masked_mask]  # [num_masked, codebook_size]
-                    masked_targets = masked_targets[masked_mask]  # [num_masked]
-                    dynamics_loss = F.cross_entropy(masked_logits, masked_targets)
-                else:
-                    dynamics_loss = torch.tensor(0.0, device=predicted_next_logits.device, requires_grad=True)
-            else:
-                dynamics_loss = F.cross_entropy(
-                    predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1]),  # [N, codebook_size]
-                    target_next_tokens.reshape(-1),  # [N]
-                )
+        # Compute loss only on masked tokens (MaskGit-style)
+        mask_for_loss = mask_positions
+        masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [P, L^D]
+        masked_targets = target_next_tokens.reshape(-1)  # [P]
+        masked_mask = mask_for_loss.reshape(-1)  # [P]
 
-            # Total loss
-            loss = dynamics_loss
+        masked_logits = masked_logits[masked_mask]  # [num_masked, L^D]
+        masked_targets = masked_targets[masked_mask]  # [num_masked]
+        loss = F.cross_entropy(masked_logits, masked_targets)
 
         # Backward + clip with scaler
         scaler.scale(loss).backward()
@@ -181,46 +155,37 @@ def main():
         scaler.update()
         scheduler.step()  # Step the learning rate scheduler
 
-        results["dynamics_losses"].append(dynamics_loss.cpu().detach())
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
-        predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [batch_size, seq_len-1, num_patches]
-        predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [batch_size, seq_len-1, num_patches, latent_dim]
-        
+        predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
+        predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
+
         # Log to W&B if enabled
         if args.use_wandb:
             metrics = {
-                'dynamics_loss': dynamics_loss.item(),
-                'total_loss': loss.item(),
+                'loss': loss.item(),
                 'masking_rate': masking_rate if mask_positions is not None else 0.0,
             }
             log_training_metrics(i, metrics, prefix="train")
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
 
-        # Debug prints
-        if i % 10 == 0:  # Print every 10 iterations
-            print(f"Iteration {i}, Dynamics Loss: {dynamics_loss.item():.6f}")
-
         if i % args.log_interval == 0:
-            """
-            save model and print values
-            """
             if args.save:
                 hyperparameters = args.__dict__
                 save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
-                
-                # Decode predicted latents (predicted_next_latents: [B, seq_len-1, ...])
+
+                # Decode predicted latents (predicted_next_latents: [B, S - 1, ...])
                 with torch.no_grad():
-                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, seq_len-1, ...]
+                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S - 1, ...]
  
                 # Ground truth frames
-                target_frames_full = x[:, 1:]  # [B, seq_len-1, ...]
+                target_frames_full = x[:, 1:]  # [B, S - 1, ...]
 
                 # Display the masked patches in the ground truth frames as black
                 masked_target_frames_full = target_frames_full.clone()
-                
+
                 # Convert mask_positions to patch-level mask for visualization
                 if mask_positions is not None:
                     B, S, N = mask_positions.shape
@@ -243,9 +208,7 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
                 visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
-            print('Update #', i, 'Dynamics Loss:',
-                  torch.mean(torch.stack(results["dynamics_losses"][-args.log_interval:])).item(),
-                  'Total Loss', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
+            print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
     # Finish W&B run
     if args.use_wandb:

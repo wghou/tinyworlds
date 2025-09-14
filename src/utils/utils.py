@@ -6,31 +6,56 @@ import re
 
 
 def readable_timestamp():
-    """Generate a readable timestamp for filenames"""
-    return time.strftime("%a_%b_%d_%H_%M_%S_%Y")
+    """Generate a sortable timestamp for filenames (no weekday)."""
+    return time.strftime("%Y_%m_%d_%H_%M_%S")
 
 def find_latest_checkpoint(base_dir, model_name):
-    """Find the most recent checkpoint for a given model prefix.
-    Searches recursively under src/*/results/**/checkpoints/ for files named
-    {model_name}_step_*.pt or .pth and returns the newest by step (tiebreak by ctime).
+    """Find latest checkpoint by newest run dir, then highest step within it.
+    Looks under a module-specific root when model_name is known.
     """
-    # Search recursively for checkpoints regardless of module/run folder names
-    pattern = os.path.join(base_dir, "src", "**", "results", "**", "checkpoints", f"{model_name}_step_*.*")
-    checkpoint_files = glob.glob(pattern, recursive=True)
+    # Choose module/results root by model name
+    module_map = {
+        'videotokenizer': 'video_tokenizer',
+        'video_tokenizer': 'video_tokenizer',
+        'vqvae': 'video_tokenizer',
+        'lam': 'latent_action_model',
+        'dynamics': 'dynamics',
+    }
+    module = module_map.get(model_name, '**')
 
-    # Accept common torch extensions only
-    checkpoint_files = [p for p in checkpoint_files if os.path.splitext(p)[1] in (".pt", ".pth")]
+    # Gather matching checkpoint files recursively
+    if module == '**':
+        roots = [os.path.join(base_dir, 'src/results', '**', 'checkpoints')]
+    else:
+        roots = [os.path.join(base_dir, 'src', module, 'results', '**', 'checkpoints')]
 
-    if not checkpoint_files:
+    files = []
+    for root in roots:
+        files.extend(glob.glob(os.path.join(root, f"{model_name}_step_*.*"), recursive=True))
+        files.extend(glob.glob(os.path.join(root, f"{model_name}_checkpoint_*.*"), recursive=True))
+    files = [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
+    if not files:
         raise Exception(f"No checkpoint files found for {model_name}")
+
+    def run_dir_of(path: str) -> str:
+        checkpoints_dir = os.path.dirname(path)
+        return os.path.dirname(checkpoints_dir)
+
+    run_dir_to_files = {}
+    for p in files:
+        rd = run_dir_of(p)
+        run_dir_to_files.setdefault(rd, []).append(p)
+
+    newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
+    candidate_files = run_dir_to_files[newest_run_dir]
 
     def extract_step(path: str) -> int:
         fname = os.path.basename(path)
-        m = re.search(rf"{re.escape(model_name)}_step_(\d+)", fname)
+        m = re.search(r"_step_(\d+)", fname)
         return int(m.group(1)) if m else -1
 
-    checkpoint_files.sort(key=lambda p: (extract_step(p), os.path.getctime(p)))
-    return checkpoint_files[-1]
+    candidate_files.sort(key=lambda p: (extract_step(p), os.path.getctime(p)))
+    return candidate_files[-1]
 
 def run_command(cmd, description):
     # Recommend environment tweaks for DataLoader throughput TODO: test
@@ -75,7 +100,7 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
 def load_videotokenizer_from_checkpoint(checkpoint_path, device):
     """Instantiate Video_Tokenizer from a checkpoint's saved config and load weights."""
     import torch
-    from src.vqvae.models.video_tokenizer import Video_Tokenizer
+    from src.video_tokenizer.models.video_tokenizer import Video_Tokenizer
     ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get('config', {}) or {}
     # Build kwargs from saved config with sensible fallbacks
@@ -119,10 +144,20 @@ def load_lam_from_checkpoint(checkpoint_path, device):
 def load_dynamics_from_checkpoint(checkpoint_path, device):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
-    from src.dynamics.models.dynamics_model import DynamicsModel
+    from src.dynamics.models.dynamics import DynamicsModel
     ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
+    # Infer conditioning_dim from checkpoint if missing
+    conditioning_dim = cfg.get('conditioning_dim', None)
+    if conditioning_dim is None:
+        cond_inferred = None
+        for k, v in ckpt.get('model', {}).items():
+            # Linear weight shape: [out_features, in_features]; in_features is conditioning dim
+            if k.endswith('to_gamma_beta.1.weight'):
+                cond_inferred = int(v.shape[1])
+                break
+        conditioning_dim = cond_inferred if cond_inferred is not None else 3
     kwargs = {
         'frame_size': (frame_size, frame_size),
         'patch_size': cfg.get('patch_size', 8),
@@ -130,7 +165,7 @@ def load_dynamics_from_checkpoint(checkpoint_path, device):
         'num_heads': cfg.get('num_heads', 8),
         'hidden_dim': cfg.get('hidden_dim', 256),
         'num_blocks': cfg.get('num_blocks', 4),
-        'conditioning_dim': cfg.get('conditioning_dim', 3),
+        'conditioning_dim': conditioning_dim,
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
     }
@@ -144,7 +179,7 @@ def prepare_run_dirs(module: str, filename: str | None, base_cwd: str | None = N
     Create an organized directory structure for a training run.
 
     Args:
-        module: submodule name under src (e.g., 'vqvae', 'latent_action_model', 'dynamics')
+        module: submodule name under src (e.g., 'video_tokenizer', 'latent_action_model', 'dynamics')
         filename: optional custom run name; if None, use a timestamp
         base_cwd: optional base working directory; defaults to current working directory
 

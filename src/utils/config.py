@@ -113,11 +113,11 @@ class PipelineConfig:
     wandb_project: str = "nano-genie-pipeline"
     dataset: str = "ZELDA"
     # Config paths for stages
-    vqvae_config: str = "configs/vqvae.yaml"
+    video_tokenizer_config: str = "configs/video_tokenizer.yaml"
     lam_config: str = "configs/lam.yaml"
     dynamics_config: str = "configs/dynamics.yaml"
     # Which stages to run
-    run_vqvae: bool = False
+    run_video_tokenizer: bool = False
     run_lam: bool = True
     run_dynamics: bool = True
 

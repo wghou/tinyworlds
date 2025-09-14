@@ -14,6 +14,7 @@ DEFAULT_PREFETCH_FACTOR = 2
 DEFAULT_PIN_MEMORY = False
 DEFAULT_PERSISTENT_WORKERS = True
 
+
 def _default_video_transform():
     return transforms.Compose([
         transforms.ToTensor(),
@@ -54,6 +55,7 @@ def load_pong(num_frames=1):
         num_frames=num_frames
     )
 
+
 def load_sonic(num_frames=4):
     return _load_video_dataset_pair(
         SonicDataset,
@@ -61,6 +63,7 @@ def load_sonic(num_frames=4):
         '/data/Sonic Cleaned_frames.h5',
         num_frames=num_frames
     )
+
 
 def load_pole_position(num_frames=4):
     return _load_video_dataset_pair(
@@ -70,6 +73,7 @@ def load_pole_position(num_frames=4):
         num_frames=num_frames
     )
 
+
 def load_picodoom(num_frames=4):
     return _load_video_dataset_pair(
         PicoDoomDataset,
@@ -78,6 +82,7 @@ def load_picodoom(num_frames=4):
         num_frames=num_frames
     )
 
+
 def load_zelda(num_frames=4):
     return _load_video_dataset_pair(
         ZeldaDataset,
@@ -85,6 +90,7 @@ def load_zelda(num_frames=4):
         '/data/zelda_frames.h5',
         num_frames=num_frames
     )
+
 
 def data_loaders(train_data, val_data, batch_size):
     train_loader = DataLoader(
@@ -135,18 +141,6 @@ def readable_timestamp():
     return time.ctime().replace('  ', ' ').replace(
         ' ', '_').replace(':', '_').lower()
 
-
-def save_model_and_results(model, optimizer, results, hyperparameters, timestamp):
-    SAVE_MODEL_PATH = os.getcwd() + '/results'
-
-    results_to_save = {
-        'model': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'results': results,
-        'hyperparameters': hyperparameters
-    }
-    torch.save(results_to_save,
-               SAVE_MODEL_PATH + '/vqvae_data_' + timestamp + '.pth')
 
 def visualize_reconstruction(original, reconstruction, save_path=None):
     # original: (B, C, H, W) or (B, seq_len, C, H, W)

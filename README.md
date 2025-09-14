@@ -25,6 +25,8 @@ pip install -r requirements.txt
 
 export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
 
+export PYTHONPATH="/workspace/nano-genie:$PYTHONPATH"
+
 python train_full_pipeline.py --config configs/pipeline.yaml
 ```
 
@@ -190,6 +192,23 @@ The greatest challenge was avoiding latent action model collapse, which was solv
 I found RMSNorm better than layernorm in ablations (TODO: do full ablation run and loss comparison)
 
 I found SwiCLU better than ReLU and SiLU (TODO: full ablation run/loss comparison)
+
+# Shape Annotation Key
+
+B: batch size
+T: time/sequence dimension (number of frames)
+P: number of patches
+E: embedding dim
+L: Video Tokenizer latent dim
+A: LAM latent dim (action dim)
+D: number of bins for each video tokenizer dim
+L^D: Size of the video tokenizer codebook
+C: image channels
+H: pixel height
+W: pixel width
+Hp: patch height
+Wp: patch width
+S: patch size
 
 
 # Next Steps

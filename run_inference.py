@@ -8,6 +8,7 @@ import time
 import os
 import random
 import glob
+import re
 from src.utils.utils import load_videotokenizer_from_checkpoint, load_lam_from_checkpoint, load_dynamics_from_checkpoint
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -63,15 +64,15 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
     ground_truth_frames = torch.clamp(ground_truth_frames, 0, 1)
 
     # Get dimensions
-    batch_size, num_frames, C, H, W = predicted_frames.shape
+    B, T, C, H, W = predicted_frames.shape
 
     _, num_gt_frames, _, _, _ = ground_truth_frames.shape
     
     # Create figure with ground truth and predictions side by side
-    fig, axes = plt.subplots(2, num_frames, figsize=(4 * num_frames, 8))
+    fig, axes = plt.subplots(2, T, figsize=(4 * T, 8))
     
     # Handle single subplot case
-    if num_frames == 1:
+    if T == 1:
         axes = axes.reshape(2, 1)
 
     # Plot ground truth frames (top row)
@@ -82,7 +83,7 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
         axes[0, i].axis('off')
 
     # Plot predicted frames (bottom row)
-    for i in range(num_frames):
+    for i in range(T):
         frame = predicted_frames[0, i].permute(1, 2, 0).numpy()  # [H, W, C]
         axes[1, i].imshow(frame)
         title = f'Predicted {i+1}'
@@ -117,7 +118,7 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
     # Calculate and display reconstruction error
     mse_error = torch.mean((predicted_frames - ground_truth_frames) ** 2).item()
     print(f"\nInference Statistics:")
-    print(f"Total frames generated: {num_frames}")
+    print(f"Total frames generated: {T}")
     print(f"Mean Squared Error (GT vs Pred): {mse_error:.6f}")
     if use_actions:
         print(f"Actions used: {[action.item() for action in inferred_actions]}")
@@ -130,13 +131,13 @@ def save_frames_as_mp4(frames, output_path, fps=2):
     import cv2
     import numpy as np
 
-    batch_size, num_frames, C, H, W = frames.shape
+    B, T, C, H, W = frames.shape
 
     # OpenCV expects (W, H)
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     out = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
 
-    for i in range(num_frames):
+    for i in range(T):
         frame = frames[0, i].detach().cpu().permute(1, 2, 0).numpy()  # [H, W, C]
         # Ensure float32
         frame = frame.astype(np.float32)
@@ -154,19 +155,19 @@ def save_frames_as_mp4(frames, output_path, fps=2):
     print(f"MP4 video saved to: {output_path}")
 
 # TODO: name mskgit schedule
-def exp_schedule_torch(t, T, N, k=5.0, device=None):
+def exp_schedule_torch(t, T, P, k=5.0, device=None):
     x = t / T
     k_tensor = torch.tensor(k, device=device)
-    result = N * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
-    # Ensure we reach N by the final step
+    result = P * torch.expm1(k_tensor * x) / torch.expm1(k_tensor)
+    # Ensure we reach P by the final step
     if t == T - 1:
-        return torch.tensor(N, dtype=result.dtype, device=device)
+        return torch.tensor(P, dtype=result.dtype, device=device)
     return result
 
 def main(args):
     # Move models to the specified device
     video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
-    
+
     # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
     frames_to_load = args.context_window + args.generation_steps * args.prediction_horizon
 
@@ -179,7 +180,7 @@ def main(args):
     og_ground_truth_sequence = og_ground_truth_sequence.unsqueeze(0).to(args.device)  # [1, frames_to_load, C, H, W]
 
     ground_truth_sequence = og_ground_truth_sequence[:, :frames_to_load, :, :, :]  # [1, frames_to_load, C, H, W]
-    
+
     # Start with initial context (first context_window GT frames)
     context_frames = ground_truth_sequence[:, :args.context_window, :, :, :]
     generated_frames = context_frames.clone()
@@ -187,11 +188,12 @@ def main(args):
     # Initialize action tracking
     if args.use_actions:
         n_actions = lam.quantizer.codebook_size
+        print(f"n_actions: {n_actions}")
         inferred_actions = []
     else:
         n_actions = 0
         inferred_actions = []
-    
+
     # Ensure we don’t exceed available GT frames in teacher-forced mode
     max_possible_steps = ground_truth_sequence.shape[1] - args.context_window
     if args.teacher_forced and args.generation_steps > max_possible_steps:
@@ -214,84 +216,84 @@ def main(args):
         # Sample action only if using actions
         if args.use_gt_actions:
             # pass last 2 frames through lam to get action latent
-            gt_action_latents = lam.encode(context_frames) # [1, seq_len - 1, action_dim]
-            sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device) # [1, 1, action_dim]
+            gt_action_latents = lam.encode(context_frames) # [1, T - 1, A]
+            sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device) # [1, 1, A]
             inferred_actions.append(sampled_action_index)
-            sampled_action_latent = lam.quantizer.get_latents_from_indices(sampled_action_index).unsqueeze(1) # [1, 1, action_dim]
-            action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, seq_len, action_dim]
+            sampled_action_latent = lam.quantizer.get_latents_from_indices(sampled_action_index).unsqueeze(1) # [1, 1, A]
+            action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, T, A]
         elif args.use_actions:
             sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
             inferred_actions.append(sampled_action_index)
             recent_inferred_actions = inferred_actions[-args.context_window:] if len(inferred_actions) > args.context_window else inferred_actions
-            action_latent = lam.quantizer.get_latents_from_indices(torch.tensor(recent_inferred_actions, device=args.device)).unsqueeze(0) # [1, seq_len, action_dim]
+            action_latent = lam.quantizer.get_latents_from_indices(torch.tensor(recent_inferred_actions, device=args.device)).unsqueeze(0) # [1, seq_len, A]
             if len(recent_inferred_actions) < args.context_window:
                 # if we dont have enough inferred actions (in the beginning) add enough gt to fill the sequence
-                gt_pad_actions = lam.encode(context_frames[:, :args.context_window - len(recent_inferred_actions) + 1])  # [1, context_window - len(inferred_actions), action_dim]
-                quantized_gt_pad_actions = lam.quantizer(gt_pad_actions) # [1, context_window - len(inferred_actions), action_dim]
-                action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1) # [1, seq_len, action_dim]
+                gt_pad_actions = lam.encode(context_frames[:, :args.context_window - len(recent_inferred_actions) + 1])  # [1, context_window - len(inferred_actions), A]
+                quantized_gt_pad_actions = lam.quantizer(gt_pad_actions) # [1, context_window - len(inferred_actions), A]
+                action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1) # [1, S, A]
         else:
             sampled_action_index = None
             action_latent = None
 
         # MaskGit-style iterative decoding
-        # for timestep t in range T: 
+        # for timestep m in range M: 
         # 1. run inference with all tokens masked
         # 2. get argmax tokens and their corresponding probabilities
         # 3. choose top n tokens with highest probabilities and unmask them
-        
-        # scheduling: n = e^(t/T) * N, where T is num steps and N is num patches
-        T = 10  # Number of decoding steps
-        N = video_latents.shape[2]  # Number of patches
-        
+
+        # scheduling: n = e^(t/M) * P, where M is num steps and P is num patches
+        M = 10  # Number of decoding steps
+        P = video_latents.shape[2]  # Number of patches
+
         # Start with all tokens masked
-        current_latents = video_latents.clone() # [1, seq_len, num_patches, latent_dim]
+        current_latents = video_latents.clone() # [1, T, P, L]
 
         # append mask frame
         mask_token_value = dynamics_model.mask_token.data  # Extract the actual tensor value
-        # Expand mask token to match the required shape: [1, 1, N, latent_dim]
-        mask_latents = mask_token_value.expand(1, args.prediction_horizon, N, -1).to(args.device)  # [1, 4, num_patches, latent_dim]
+        # Expand mask token to match the required shape: [1, 1, P, L]
+        mask_latents = mask_token_value.expand(1, args.prediction_horizon, P, -1).to(args.device)  # [1, T, P, L]
 
-        input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, seq_len, num_patches, latent_dim]
+        input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, T, P, L]
 
-        mask = torch.full((1, args.prediction_horizon, N, 1), True, dtype=torch.bool, device=args.device)  # [1, 4, num_patches, 1]
+        mask = torch.full((1, args.prediction_horizon, P, 1), True, dtype=torch.bool, device=args.device)  # [1, T, P, 1]
 
         n_tokens = 0
 
-        for t in range(T):
+        for m in range(M):
             prev_n_tokens = n_tokens
-            n_tokens_raw = exp_schedule_torch(t, T, N, device=args.device)
+            n_tokens_raw = exp_schedule_torch(m, M, P, device=args.device)
             n_tokens = int(n_tokens_raw)
             tokens_to_unmask = n_tokens - prev_n_tokens
-            print(f"DEBUG: t={t}, n_tokens_raw={n_tokens_raw:.2f}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
-            
+            print(f"DEBUG: m={m}, n_tokens_raw={n_tokens_raw:.2f}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
+
             # Run dynamics model to get predictions
             with torch.no_grad():
                 if args.use_actions:
-                    predicted_logits, _ = dynamics_model(input_latents, training=False, conditioning=action_latent)  # [B, S, N, codebook_size]
+                    predicted_logits, _ = dynamics_model(input_latents, training=False, conditioning=action_latent)  # [B, T, P, L^D]
                 else:
-                    predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, S, N, codebook_size]
+                    predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, T, P, L^D]
 
             # Get probabilities and top predictions
-            probs = torch.softmax(predicted_logits, dim=-1)  # [B, S, N, codebook_size]
+            probs = torch.softmax(predicted_logits, dim=-1)  # [B, T, P, L^D]
 
-            max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, S, N]
+            max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, T, P]
 
             # among only the currently masked latents (check the mask tensor), 
             # 1. get the top n_tokens with highest probabilities
             # 2. unmask them in the mask tensor
             # 3. add them to the "input_latents" tensor instead of the mask embeddings in those positions        
-            masked_probs = max_probs[:, -1, :]  # [B, N] - only last timestep
-            masked_mask = mask[:, -1, :, 0]  # [B, N] - only last timestep
-            
+            masked_probs = max_probs[:, -1, :]  # [B, P] - only last timestep
+            masked_mask = mask[:, -1, :, 0]  # [B, P] - only last timestep
+
             # Ensure we unmask at least 1 token if there are still masked tokens
             if masked_mask.sum() > 0 and tokens_to_unmask == 0:
                 tokens_to_unmask = 1
-            
+
             if masked_mask.sum() > 0:
                 # Get indices of masked positions
                 masked_indices = torch.where(masked_mask[0])[0]  # [num_masked]
                 masked_pos_probs = masked_probs[0, masked_indices]  # [num_masked]
-                
+
                 # Select top tokens_to_unmask tokens with highest probabilities
                 if len(masked_pos_probs) > tokens_to_unmask:
                     top_indices = torch.topk(masked_pos_probs, tokens_to_unmask, largest=True).indices
@@ -299,30 +301,30 @@ def main(args):
                 else:
                     # Unmask all remaining tokens
                     tokens_to_unmask_indices = masked_indices
-                
+
                 # 1. Unmask selected positions in the mask tensor
                 mask[0, -1, tokens_to_unmask_indices, 0] = False
-                
+
                 for idx in tokens_to_unmask_indices:
                     predicted_latent = video_tokenizer.quantizer.get_latents_from_indices(
                         predicted_indices[0:1, -1:, idx:idx+1], dim=-1
-                    ).to(args.device)  # [1, 1, 1, latent_dim]
-                    
+                    ).to(args.device)  # [1, 1, 1, L]
+
                     # Update input_latents at the last timestep, this position
                     input_latents[0, -1, idx] = predicted_latent[0, 0, 0]
-                
-                print(f"Step {t+1}/{T}: Unmasked {len(tokens_to_unmask_indices)} tokens (target: {tokens_to_unmask}, remaining: {masked_mask.sum().item()})")
+
+                print(f"Step {m+1}/{M}: Unmasked {len(tokens_to_unmask_indices)} tokens (target: {tokens_to_unmask}, remaining: {masked_mask.sum().item()})")
             else:
-                print(f"Step {t+1}/{T}: No masked tokens remaining")
-        
+                print(f"Step {m+1}/{M}: No masked tokens remaining")
+
         # Final result: input_latents contains the decoded sequence (last timestep)
         next_video_latents = input_latents
 
         # decode next video tokens to frames
-        next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, seq_len, C, H, W]
-        
+        next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, T, C, H, W]
+
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
-        
+
         if args.use_actions:
             print(f"Step {i+1}: Generated frame with action {sampled_action_index.item()}, sequence length: {context_frames.shape[1]}")
 
@@ -337,18 +339,18 @@ def main(args):
 # TODO: replace with yaml
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with the trained video generation pipeline")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/vqvae/results/videotokenizer_sun_jul_20_21_50_32_2025/checkpoints/videotokenizer_checkpoint_sun_jul_20_21_50_32_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/latent_action_model/results/lam_Sat_Jul_12_15_59_55_2025/checkpoints/lam_checkpoint_Sat_Jul_12_15_59_55_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/Users/almondgod/Repositories/nano-genie/src/dynamics/results/dynamics_Tue_Jul_22_20_08_24_2025/checkpoints/dynamics_checkpoint_Tue_Jul_22_20_08_24_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/workspace/nano-genie/src/video_tokenizer/results/vqvae_Sat_Sep_13_11_30_58_2025/checkpoints/videotokenizer_step_47500_Sat_Sep_13_15_24_15_2025.pth")
+    parser.add_argument("--lam_path", type=str, default="/workspace/nano-genie/src/latent_action_model/results/latent_action_model_Sat_Sep_13_15_36_38_2025/checkpoints/lam_step_1900_Sat_Sep_13_15_48_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/workspace/nano-genie/src/dynamics/results/dynamics_Sat_Sep_13_15_49_33_2025/checkpoints/dynamics_step_42500_Sun_Sep_14_02_43_30_2025.pth")
     parser.add_argument("--device", type=str, default=str(device), help="Device to use (cuda/cpu)")
     parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=3, help="Maximum sequence length for context window")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for the MP4 video")
     parser.add_argument("--temperature", type=float, default=0, help="Temperature for sampling (lower = more conservative)")
-    parser.add_argument("--use_actions", action="store_true", default=True, help="Whether to use action latents in the dynamics model (default: False)")
+    parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
     parser.add_argument("--teacher_forced", action="store_true", default=False,
                         help="Run teacher-forced inference (always use ground-truth context).")
-    parser.add_argument("--use_latest_checkpoints", action="store_true", default=True, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
+    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
     parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
     parser.add_argument("--dataset", type=str, default="ZELDA", help="Dataset to use")
     parser.add_argument("--use_gt_actions", action="store_true", default=False, help="Whether to use ground-truth (lam inferred) action latents")
@@ -356,12 +358,6 @@ def parse_args():
 
 # TODO: use utils fun
 def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
-    """
-    Visualize predicted and ground truth sequences side by side.
-    Args:
-        predicted_frames: [1, seq_len, 3, H, W]
-        ground_truth_frames: [1, seq_len, 3, H, W]
-    """
     import matplotlib.pyplot as plt
     import os
     import time
@@ -400,7 +396,7 @@ def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
     print(f"Decoded sequence visualization saved to: {save_path}")
 
 def find_latest_checkpoint(base_dir, model_name):
-    pattern = os.path.join(base_dir, f"src/*/results/{model_name}_*/checkpoints/{model_name}_checkpoint_*.pth")
+    pattern = os.path.join(base_dir, f"src/*/results/{model_name}_*/checkpoints/{model_name}_step_*.pth")
     checkpoint_files = glob.glob(pattern)
     if not checkpoint_files:
         print(f"No checkpoint files found for {model_name}")
@@ -409,33 +405,34 @@ def find_latest_checkpoint(base_dir, model_name):
 
 if __name__ == "__main__":
     args = parse_args()
-    
+
     # Ensure device is set correctly
     if args.device == "cuda" and not torch.cuda.is_available():
         print("[WARN] CUDA requested but not available. Falling back to CPU.")
         args.device = "cpu"
-    
+
     if args.use_latest_checkpoints:
         base_dir = os.path.abspath(os.path.dirname(__file__))
         vt_ckpt = find_latest_checkpoint(base_dir, "videotokenizer")
         lam_ckpt = find_latest_checkpoint(base_dir, "lam")
         dyn_ckpt = find_latest_checkpoint(base_dir, "dynamics")
-        
+
         if vt_ckpt:
             print(f"[INFO] Using latest video tokenizer checkpoint: {vt_ckpt}")
             args.video_tokenizer_path = vt_ckpt
         else:
             print("[WARN] No video tokenizer checkpoint found, using default.")
-            
+
         if lam_ckpt:
             print(f"[INFO] Using latest LAM checkpoint: {lam_ckpt}")
             args.lam_path = lam_ckpt
         else:
             print("[WARN] No LAM checkpoint found, using default.")
-            
+
         if dyn_ckpt:
             print(f"[INFO] Using latest dynamics checkpoint: {dyn_ckpt}")
             args.dynamics_path = dyn_ckpt
         else:
             print("[WARN] No dynamics checkpoint found, using default.")
     main(args)
+ 

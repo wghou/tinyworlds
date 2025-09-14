@@ -3,14 +3,9 @@ import torch.optim as optim
 import sys
 import os
 import torch.nn.functional as F
-
-# Add the project root to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
 from models.lam import LAM
 from tqdm import tqdm
-from src.latent_action_model.utils import visualize_reconstructions
-from datasets.data_utils import load_data_and_data_loaders
+from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from src.utils.utils import readable_timestamp
 import json
 import wandb
@@ -50,28 +45,15 @@ def main():
 
     # Optionally compile
     if args.compile:
-        try:
-            model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-            print("✅ LAM compiled with torch.compile")
-        except Exception as e:
-            print(f"⚠️ torch.compile not available or failed: {e}")
+        model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
 
-    # Optimizer (AdamW with no-decay for codebook and higher LR)
-    base_lr = args.learning_rate
-    weight_decay = 0.01
-    try:
-        optimizer = optim.AdamW([
-            {"params": model.encoder.parameters()},
-            {"params": model.decoder.parameters()},
-            {"params": model.quantizer.embedding.parameters(), "weight_decay": 0.0, "lr": base_lr * 2.0},
-        ], lr=base_lr, weight_decay=weight_decay)
-        print("✅ Using AdamW with no-decay codebook and 2x LR")
-    except Exception:
-        optimizer = optim.AdamW(model.parameters(), lr=base_lr, weight_decay=weight_decay)
+    # AdamW as optimizer
+    param_groups = [{"params": model.parameters(), "weight_decay": 0.01}]
+    optimizer = optim.AdamW(param_groups, lr=args.learning_rate)
 
     # AMP scaler
     scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
-    
+
     # Initialize results tracking
     results = {
         'n_updates': 0,
@@ -94,7 +76,7 @@ def main():
             frame_sequences, _ = next(train_iter)
         
         frame_sequences = frame_sequences.to(device, non_blocking=True)
-        
+
         # Forward pass with current step for warmup under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
             loss, pred_frames = model(frame_sequences)
@@ -106,11 +88,11 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
-        
+
         # Track results
         results["total_losses"].append(loss.cpu().detach())
         results["n_updates"] = epoch
-        
+
         # Log to W&B if enabled and available
         if args.use_wandb:
             wandb.log({
@@ -118,7 +100,7 @@ def main():
                 'step': epoch
             })
             log_system_metrics(epoch)
-            
+  
         # Print progress every 50 steps
         if (epoch - 1) % 50 == 0:
             with torch.no_grad():
@@ -133,7 +115,7 @@ def main():
                 # compute decoder variance
                 pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
                 print(f"Step {epoch}: loss={loss.item():.6f}, codebook_usage: {codebook_usage}, z_e_var: {z_e_var}, pred_frames_var: {pred_frames_var}")
-                
+
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:
                     wandb.log({
@@ -142,19 +124,14 @@ def main():
                         "lam/decoder_variance": pred_frames_var,
                         "step": epoch
                     })
-                
+
         # Save model and visualize results periodically
         if epoch % args.log_interval == 0 and args.save:
             hyperparameters = vars(args)
             checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='lam', step=epoch)
-            
-            visualize_reconstructions(
-                frame_sequences[:, 0], 
-                frame_sequences[:, -1], 
-                pred_frames[:, -1],
-                os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename or "run"}.png')
-            )
-    
+            visualization_save_path = os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename or "run"}.png')
+            visualize_reconstruction(frame_sequences, pred_frames, visualization_save_path)
+
     # Finish W&B run
     if args.use_wandb:
         finish_wandb()
