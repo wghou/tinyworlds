@@ -6,205 +6,216 @@ from omegaconf import OmegaConf
 
 
 @dataclass
-class VQVAEConfig:
-    # Training
-    batch_size: int = 256
-    n_updates: int = 2000
-    learning_rate: float = 0.0004
-    log_interval: int = 100
-    dataset: str = "SONIC"
-    context_length: int = 4
-    frame_size: int = 128
-    # Model
-    patch_size: int = 8
-    embed_dim: int = 128
-    num_heads: int = 8
-    hidden_dim: int = 256
-    num_blocks: int = 4
-    latent_dim: int = 6
-    num_bins: int = 4
-    # Save/IO
-    save: bool = True
-    checkpoint: Optional[str] = None
-    # Perf
-    amp: bool = True
-    tf32: bool = True
-    compile: bool = False
-    # W&B
-    use_wandb: bool = False
-    wandb_project: str = "nano-genie"
+class VideoTokenizerConfig:
+	# Training
+	batch_size: int
+	n_updates: int
+	learning_rate: float
+	log_interval: int
+	dataset: str
+	context_length: int
+	frame_size: int
+	# Model
+	patch_size: int
+	embed_dim: int
+	num_heads: int
+	hidden_dim: int
+	num_blocks: int
+	latent_dim: int
+	num_bins: int
+	# Perf
+	amp: bool
+	tf32: bool
+	compile: bool
+	# W&B
+	use_wandb: bool
+	wandb_project: str
+	# resume from checkpoint
+	checkpoint: Optional[str]
 
 
 @dataclass
 class LatentActionsConfig:
-    # Training
-    batch_size: int = 256
-    n_updates: int = 1000
-    learning_rate: float = 0.001
-    log_interval: int = 50
-    dataset: str = "SONIC"
-    context_length: int = 4
-    frame_size: int = 128
-    # Model
-    n_actions: int = 8
-    patch_size: int = 8
-    embed_dim: int = 128
-    num_heads: int = 8
-    hidden_dim: int = 256
-    num_blocks: int = 4
-    # Perf
-    amp: bool = True
-    tf32: bool = True
-    compile: bool = False
-    # W&B
-    use_wandb: bool = True
-    wandb_project: str = "nano-genie"
-    # Save
-    save: bool = True
-    checkpoint: Optional[str] = None
+	# Training
+	batch_size: int
+	n_updates: int
+	learning_rate: float
+	log_interval: int
+	dataset: str
+	context_length: int
+	frame_size: int
+	# Model
+	n_actions: int
+	patch_size: int
+	embed_dim: int
+	num_heads: int
+	hidden_dim: int
+	num_blocks: int
+	# Perf
+	amp: bool
+	tf32: bool
+	compile: bool
+	# W&B
+	use_wandb: bool
+	wandb_project: str
+	# resume from checkpoint
+	checkpoint: Optional[str]
 
 
 @dataclass
 class DynamicsConfig:
-    # Training
-    batch_size: int = 256
-    n_updates: int = 2000
-    learning_rate: float = 1e-4
-    log_interval: int = 10
-    dataset: str = "SONIC"
-    context_length: int = 4
-    frame_size: int = 128
-    # Model (must match tokenizer)
-    patch_size: int = 8
-    embed_dim: int = 128
-    num_heads: int = 8
-    hidden_dim: int = 256
-    num_blocks: int = 4
-    latent_dim: int = 5
-    num_bins: int = 4
-    n_actions: int = 8
-    use_actions: bool = False
-    # Paths
-    video_tokenizer_path: Optional[str] = None
-    latent_actions_path: Optional[str] = None
-    # Perf
-    amp: bool = True
-    tf32: bool = True
-    compile: bool = False
-    # W&B
-    use_wandb: bool = False
-    wandb_project: str = "nano-genie"
-    # Save
-    save: bool = True
-    checkpoint: Optional[str] = None
+	# Training
+	batch_size: int
+	n_updates: int
+	learning_rate: float
+	log_interval: int
+	dataset: str
+	context_length: int
+	frame_size: int
+	# Model (must match tokenizer)
+	patch_size: int
+	embed_dim: int
+	num_heads: int
+	hidden_dim: int
+	num_blocks: int
+	latent_dim: int
+	num_bins: int
+	n_actions: int
+	use_actions: bool
+	# Paths
+	video_tokenizer_path: Optional[str]
+	latent_actions_path: Optional[str]
+	# Perf
+	amp: bool
+	tf32: bool
+	compile: bool
+	# W&B
+	use_wandb: bool
+	wandb_project: str
+	# resume from checkpoint
+	checkpoint: Optional[str]
 
 
 @dataclass
 class TrainingConfig:
-    use_wandb: bool = True
-    wandb_project: str = "nano-genie"
-    dataset: str = "ZELDA"
-    # Config paths for stages
-    video_tokenizer_config: str = "configs/video_tokenizer.yaml"
-    latent_actions_config: str = "configs/latent_actions.yaml"
-    dynamics_config: str = "configs/dynamics.yaml"
-    # Which stages to run
-    run_video_tokenizer: bool = False
-    run_latent_actions: bool = True
-    run_dynamics: bool = True
-    # Shared model params
-    patch_size: int = 4
-    context_length: int = 4
-    frame_size: int = 64
-    latent_dim: int = 6 # for video tokenizer
-    num_bins: int = 4 # for video tokenizer
-    n_actions: int = 16
-    # Performance
-    amp: bool = True
-    tf32: bool = True
-    compile: bool = True
-    # W&B
-    use_wandb: bool = True
-    wandb_project: str = "nano-genie"
+	use_wandb: bool
+	wandb_project: str
+	dataset: str
+	# Config paths for stages
+	video_tokenizer_config: str
+	latent_actions_config: str
+	dynamics_config: str
+	# Which stages to run
+	run_video_tokenizer: bool
+	run_latent_actions: bool
+	run_dynamics: bool
+	# Shared model params
+	patch_size: int
+	context_length: int
+	frame_size: int
+	latent_dim: int
+	num_bins: int
+	n_actions: int
+	# Performance
+	amp: bool
+	tf32: bool
+	compile: bool
+	# These can vary per model
+	embed_dim: Optional[int] = None
+	num_heads: Optional[int] = None
+	hidden_dim: Optional[int] = None
+	num_blocks: Optional[int] = None
+	learning_rate: Optional[float] = None
+	batch_size: Optional[int] = None
+	log_interval: Optional[int] = None
+	n_updates: Optional[int] = None
+    
+
 
 @dataclass
 class InferenceConfig:
-    video_tokenizer_path: Optional[str] = None
-    latent_actions_path: Optional[str] = None
-    dynamics_path: Optional[str] = None
-    device: str = "cuda"
-    generation_steps: int = 4
-    context_window: int = 3
-    fps: int = 2
-    temperature: float = 0.0
-    use_actions: bool = False
-    teacher_forced: bool = False
-    use_latest_checkpoints: bool = False
-    prediction_horizon: int = 1
-    dataset: str = "ZELDA"
-    use_gt_actions: bool = False
+	video_tokenizer_path: Optional[str]
+	latent_actions_path: Optional[str]
+	dynamics_path: Optional[str]
+	device: str
+	generation_steps: int
+	context_window: int
+	fps: int
+	temperature: float
+	use_actions: bool
+	teacher_forced: bool
+	use_latest_checkpoints: bool
+	prediction_horizon: int
+	dataset: str
+	use_gt_actions: bool
+
 
 def load_config(config_cls, default_config_path: Optional[str] = None):
-    parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--config", type=str, default=default_config_path)
-    # Accept dotlist overrides like key=value
-    parser.add_argument("overrides", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+	parser = argparse.ArgumentParser(add_help=True)
+	parser.add_argument("--config", type=str, default=default_config_path)
+	# Accept dotlist overrides like key=value
+	parser.add_argument("overrides", nargs=argparse.REMAINDER)
+	args = parser.parse_args()
 
-    base = OmegaConf.structured(config_cls())
-    cfg = base
+	# Build a structured schema from the dataclass TYPE, not an instance.
+	# This allows Python-side defaults to be omitted and provided solely via YAML.
+	base = OmegaConf.structured(config_cls)
+	cfg = base
 
-    if args.config is not None:
-        if not os.path.isfile(args.config):
-            raise FileNotFoundError(f"Config file not found: {args.config} (cwd: {os.getcwd()})")
-        file_cfg = OmegaConf.load(args.config)
-        cfg = OmegaConf.merge(cfg, file_cfg)
+	if args.config is not None:
+		if not os.path.isfile(args.config):
+			raise FileNotFoundError(f"Config file not found: {args.config} (cwd: {os.getcwd()})")
+		file_cfg = OmegaConf.load(args.config)
+		cfg = OmegaConf.merge(cfg, file_cfg)
 
-    # Merge dotlist overrides if any (ignore leading '--')
-    dot_overrides = [s.lstrip('-') for s in (args.overrides or []) if '=' in s]
-    if dot_overrides:
-        cli_cfg = OmegaConf.from_dotlist(dot_overrides)
-        cfg = OmegaConf.merge(cfg, cli_cfg)
+	# Merge dotlist overrides if any (ignore leading '--')
+	dot_overrides = [s.lstrip('-') for s in (args.overrides or []) if '=' in s]
+	if dot_overrides:
+		cli_cfg = OmegaConf.from_dotlist(dot_overrides)
+		cfg = OmegaConf.merge(cfg, cli_cfg)
 
-    return OmegaConf.to_object(cfg)  # dataclass instance
+	# Return a typed dataclass instance
+	return OmegaConf.to_object(cfg)
 
 
 def load_stage_config_merged(config_cls, default_config_path: Optional[str] = None, training_config_path: Optional[str] = None):
-    """Load a stage config YAML, then overlay values from training_config.yaml (priority),
-    restricted to keys that exist in the stage schema. CLI dotlist overrides still have highest priority.
-    """
-    parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--config", type=str, default=default_config_path)
-    parser.add_argument("--training_config", type=str, default=training_config_path or os.path.join(os.getcwd(), 'configs', 'training_config.yaml'))
-    parser.add_argument("overrides", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+	"""Load a stage config YAML, then overlay values from training_config.yaml (priority),
+	restricted to keys that exist in the stage schema. CLI dotlist overrides still have highest priority.
+	"""
+	parser = argparse.ArgumentParser(add_help=True)
+	parser.add_argument("--config", type=str, default=default_config_path)
+	parser.add_argument("--training_config", type=str, default=training_config_path or os.path.join(os.getcwd(), 'configs', 'training.yaml'))
+	parser.add_argument("overrides", nargs=argparse.REMAINDER)
+	args = parser.parse_args()
 
-    base = OmegaConf.structured(config_cls())
-    cfg = base
+	# Build a structured schema from the dataclass TYPE, not an instance.
+	base = OmegaConf.structured(config_cls)
+	cfg = base
 
-    # Load stage file
-    if args.config is not None:
-        if not os.path.isfile(args.config):
-            raise FileNotFoundError(f"Config file not found: {args.config} (cwd: {os.getcwd()})")
-        stage_file_cfg = OmegaConf.load(args.config)
-        cfg = OmegaConf.merge(cfg, stage_file_cfg)
+	# Load stage file
+	if args.config is not None:
+		if not os.path.isfile(args.config):
+			raise FileNotFoundError(f"Config file not found: {args.config} (cwd: {os.getcwd()})")
+		stage_file_cfg = OmegaConf.load(args.config)
+		cfg = OmegaConf.merge(cfg, stage_file_cfg)
 
-    # Load training config and filter to known keys
-    if args.training_config and os.path.isfile(args.training_config):
-        training_file_cfg = OmegaConf.load(args.training_config)
-        # Convert to plain dict to filter
-        training_container = OmegaConf.to_container(training_file_cfg, resolve=True) or {}
-        allowed_keys = set(cfg.keys())
-        filtered_training = {k: v for k, v in training_container.items() if k in allowed_keys}
-        if filtered_training:
-            training_cfg_filtered = OmegaConf.create(filtered_training)
-            # Training config takes priority over stage
-            cfg = OmegaConf.merge(cfg, training_cfg_filtered)
+	# Load training config and filter to known keys
+	if args.training_config and os.path.isfile(args.training_config):
+		training_file_cfg = OmegaConf.load(args.training_config)
+		# Convert to plain dict to filter
+		training_container = OmegaConf.to_container(training_file_cfg, resolve=True) or {}
+		allowed_keys = set(cfg.keys())
+		filtered_training = {k: v for k, v in training_container.items() if k in allowed_keys and v is not None}
+		if filtered_training:
+			training_cfg_filtered = OmegaConf.create(filtered_training)
+			# Training config takes priority over stage
+			cfg = OmegaConf.merge(cfg, training_cfg_filtered)
 
-    # Merge CLI overrides if any (ignore leading '--')
-    dot_overrides = [s.lstrip('-') for s in (args.overrides or []) if '=' in s]
-    if dot_overrides:
-        cli_cfg = OmegaConf.from_dotlist(dot_overrides)
-        cfg = OmegaConf.merge(cfg, cli_cfg)
+	# Merge CLI overrides if any (ignore leading '--')
+	dot_overrides = [s.lstrip('-') for s in (args.overrides or []) if '=' in s]
+	if dot_overrides:
+		cli_cfg = OmegaConf.from_dotlist(dot_overrides)
+		cfg = OmegaConf.merge(cfg, cli_cfg)
 
-    return OmegaConf.to_object(cfg) 
+	# Return a typed dataclass instance
+	return OmegaConf.to_object(cfg) 

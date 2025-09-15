@@ -125,7 +125,7 @@ class DynamicsModel(nn.Module):
             tokens_to_unmask = max(0, n_tokens - prev_unmask)
 
             # Predict logits for current input
-            logits, _mask_pos, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)
+            logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)
             probs = torch.softmax(logits, dim=-1)  # [B, T, P, K]
             max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, T, P]
 

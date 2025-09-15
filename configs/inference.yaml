@@ -1,14 +1,22 @@
+# paths (need if not get latest)
 video_tokenizer_path:
 latent_actions_path:
 dynamics_path:
+use_latest_checkpoints: true
+
+# inference params
+dataset: PICODOOM
 device: cuda
 generation_steps: 4
 context_window: 3
 fps: 2
-temperature: 0.0
-use_actions: false
-teacher_forced: false
-use_latest_checkpoints: true
-prediction_horizon: 1
-dataset: PICODOOM
+temperature: 0.0 # 0 is argmax
+teacher_forced: false # for testing/dev
+prediction_horizon: 1 # how many masked frames to append and decode at a time
+
+# use random actions or use lam-inferred actions
+use_actions: true
 use_gt_actions: true
+
+# TODO: add user-inputted actions
+# TODO: add torch compile/amp/tf32

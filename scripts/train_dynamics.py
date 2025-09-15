@@ -17,7 +17,7 @@ from tqdm import tqdm
 import json
 from einops import rearrange
 from utils.wandb_utils import (
-    init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb
+    init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb, log_action_distribution
 )
 from utils.scheduler_utils import create_cosine_scheduler
 from utils.utils import (
@@ -25,6 +25,7 @@ from utils.utils import (
     save_training_state,
     load_videotokenizer_from_checkpoint,
     load_latent_actions_from_checkpoint,
+    load_dynamics_from_checkpoint,
     prepare_pipeline_run_root,
     prepare_stage_dirs,
 )
@@ -40,8 +41,10 @@ def main():
     ddp = init_distributed_from_env()
     device = ddp['device']
 
+    print(f"args.compile: {args.compile}")
+
     is_main = ddp['is_main']
-    if args.save and is_main:
+    if is_main:
         run_root = os.environ.get('NG_RUN_ROOT_DIR')
         if not run_root:
             run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
@@ -77,7 +80,7 @@ def main():
     ).to(device)
 
     if args.checkpoint:
-        model, ckpt = load_dynamics_from_checkpoint(args.checkpoint, device, model)
+        dynamics_model, _ = load_dynamics_from_checkpoint(args.checkpoint, device, dynamics_model)
 
     print_param_count_if_main(dynamics_model, "DynamicsModel", is_main)
 
@@ -121,6 +124,7 @@ def main():
 
     unwrap_model(dynamics_model).train()
 
+    # TODO: add fps and fraction of dataset to use
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
@@ -166,19 +170,17 @@ def main():
 
         # Log to W&B if enabled
         if args.use_wandb and is_main:
-            metrics = {
-                'loss': loss.item(),
-            }
-            log_training_metrics(i, metrics, prefix="train")
+            wandb.log({
+                'train/loss': loss.item(),
+            }, step=i)
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
+            if args.use_actions:
+                log_action_distribution(quantized_actions, i, args.n_actions)
 
         if i % args.log_interval == 0 and is_main:
             predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
             predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
-
-            hyperparameters = args.__dict__
-            save_training_state(unwrap_model(dynamics_model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
 
             # Decode predicted latents
             with torch.no_grad():
@@ -209,9 +211,9 @@ def main():
                 pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
                 masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
 
-            if args.save:
-                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
-
+            hyperparameters = args.__dict__
+            save_training_state(unwrap_model(dynamics_model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+            save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
             visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
             print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())

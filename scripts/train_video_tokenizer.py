@@ -11,7 +11,7 @@ import json
 import wandb
 import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
-from utils.config import VQVAEConfig, load_stage_config_merged
+from utils.config import VideoTokenizerConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_videotokenizer_from_checkpoint
 from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
 from dataclasses import asdict
@@ -21,7 +21,9 @@ from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unw
 def main():
     print(f"Video Tokenizer Training")
     # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
-    args: VQVAEConfig = load_stage_config_merged(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
+    args: VideoTokenizerConfig = load_stage_config_merged(VideoTokenizerConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
+
+    print(f"args.compile: {args.compile}")
 
     # Minimal DDP setup
     ddp = init_distributed_from_env()
@@ -35,7 +37,7 @@ def main():
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = ddp['is_main']
-    if args.save and is_main:
+    if is_main:
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
@@ -58,7 +60,7 @@ def main():
     ).to(device)
 
     if args.checkpoint:
-        model, ckpt = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
+        model, _ = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
 
     print_param_count_if_main(model, "VideoTokenizer", is_main)
 
@@ -150,27 +152,23 @@ def main():
                 'learning_rate': scheduler.get_last_lr()[0],
             }
             log_training_metrics(i, metrics, prefix='train')
+            log_system_metrics(i)
 
-            if i % args.log_interval == 0:
+        if i % args.log_interval == 0 and is_main:
+            if args.use_wandb:
                 with torch.no_grad():
                     indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()
-                    wandb.log({'train/codebook_usage': unique_codes / model.codebook_size, 'step': i})
+                    wandb.log({'train/codebook_usage': unique_codes / model.codebook_size}, step=i)
 
-            log_system_metrics(i)
-
-        if i % args.log_interval == 0:
-            if args.save and is_main:
-                hyperparameters = args.__dict__
-                save_training_state(unwrap_model(model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
-                # Visualizations
-                x_hat_vis = x_hat.detach().cpu()
-                x_vis = x.detach().cpu()
-                save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
-                visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
-
-            if is_main:
-                print('Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
+            hyperparameters = args.__dict__
+            save_training_state(unwrap_model(model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
+            x_hat_vis = x_hat.detach().cpu()
+            x_vis = x.detach().cpu()
+            save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
+            visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
+            
+            print('Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
 
     # Finish W&B run
     if args.use_wandb and is_main:

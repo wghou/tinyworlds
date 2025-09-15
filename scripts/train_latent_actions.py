@@ -34,7 +34,7 @@ def main():
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = ddp['is_main']
-    if args.save and is_main:
+    if is_main:
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
         print(f'Results will be saved in {stage_dir}')
 
@@ -58,7 +58,7 @@ def main():
     ).to(device)
 
     if args.checkpoint:
-        model, ckpt = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
+        model, _ = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
 
     print_param_count_if_main(model, "LatentActionModel", is_main)
 
@@ -117,41 +117,34 @@ def main():
         # Log to W&B if enabled and available
         if args.use_wandb and is_main:
             wandb.log({
-                'train/total_loss': loss.item(),
-                'step': i
-            })
+                'train/loss': loss.item(),
+            }, step=i)
             log_system_metrics(i)
   
-        # Print progress every 50 steps
-        if (i - 1) % 50 == 0 and is_main:
+        # Save model and visualize results periodically
+        if i % args.log_interval == 0 and is_main:
             with torch.no_grad():
                 actions = unwrap_model(model).encoder(frame_sequences)
-                # Quantize actions, compute joint-code usage via indices
                 actions_quantized = unwrap_model(model).quantizer(actions)
                 idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
                 codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
-                # Per-dimension mean variance for clearer signal
                 z_e_var = actions.var(dim=0, unbiased=False).mean().item()
-
-                # compute decoder variance
                 pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
-                print(f"Step {i}: loss={loss.item():.6f}, codebook_usage: {codebook_usage}, z_e_var: {z_e_var}, pred_frames_var: {pred_frames_var}")
 
-                # Log codebook and action statistics to W&B
-                if args.use_wandb and is_main:
-                    wandb.log({
-                        "latent_actions/codebook_usage": codebook_usage,
-                        "latent_actions/encoder_variance": z_e_var,
-                        "latent_actions/decoder_variance": pred_frames_var,
-                        "step": i
-                    })
+            if args.use_wandb:
+                wandb.log({
+                    "latent_actions/codebook_usage": codebook_usage,
+                    "latent_actions/encoder_variance": z_e_var,
+                    "latent_actions/decoder_variance": pred_frames_var,
+                }, step=i)
+                log_action_distribution(actions_quantized, i, args.n_actions)
 
-        # Save model and visualize results periodically
-        if i % args.log_interval == 0 and args.save and is_main:
             hyperparameters = vars(args)
             checkpoint_path = save_training_state(unwrap_model(model), optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
             save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
             visualize_reconstruction(frame_sequences, pred_frames, save_path)
+            
+            print('Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
 
     # Finish W&B run
     if args.use_wandb and is_main:

@@ -11,6 +11,12 @@ latent_dim: 6 # for video tokenizer
 num_bins: 4 # for video tokenizer
 n_actions: 16
 
+# these can vary but for convenience, here
+embed_dim: 128
+num_heads: 8
+hidden_dim: 256
+num_blocks: 4
+
 # performance
 amp: true
 tf32: true
@@ -23,5 +29,5 @@ dynamics_config: configs/dynamics.yaml
 
 # which stages to run
 run_video_tokenizer: true
-run_latent_actions: true
+run_latent_actions: false
 run_dynamics: true

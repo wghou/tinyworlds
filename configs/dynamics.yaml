@@ -1,21 +1,14 @@
 # Training
-batch_size: 256
+batch_size: 512
 n_updates: 100000
 learning_rate: 0.0001
 log_interval: 2500
 
-# Model (must match tokenizer)
-embed_dim: 128
-num_heads: 8
-hidden_dim: 256
-num_blocks: 4
-
-use_actions: true
+use_actions: false
 
 # Paths
-video_tokenizer_path: null
-latent_actions_path: null
+video_tokenizer_path: /workspace/nano-genie/results/2025_09_15_10_39_40/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_15_12_33_10.pth
+latent_actions_path:
 
-# Save
-save: true
-checkpoint: null
+# resume from checkpoint
+checkpoint:
