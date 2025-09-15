@@ -30,7 +30,7 @@ class DynamicsModel(nn.Module):
     def forward(self, discrete_latents, training=True, conditioning=None, targets=None):
         # discrete_latents: [B, T, P, L]
         # targets: [B, T, P] indices
-        # conditioning: [B, T, P, A]
+        # conditioning: [B, T, A]
         B, T, P, L = discrete_latents.shape
 
         # Convert latents to float for embedding
@@ -63,15 +63,16 @@ class DynamicsModel(nn.Module):
         # transform to logits for each token in codebook
         predicted_logits = self.output_mlp(transformed)  # [B, T, P, L^D]
 
-        # compute masked cross-entropy loss
+        # compute masked cross-entropy loss with static shapes
         loss = None
         if targets is not None:
-            logits_flat = predicted_logits.reshape(-1, predicted_logits.shape[-1])
-            targets_flat = targets.reshape(-1)
-            mask_flat = mask_positions.reshape(-1)
-            masked_logits = logits_flat[mask_flat]
-            masked_targets = targets_flat[mask_flat]
-            loss = nn.functional.cross_entropy(masked_logits, masked_targets)
+            K = predicted_logits.shape[-1]
+            logits_flat = predicted_logits.reshape(-1, K)              # [(B*T*P), K]
+            targets_flat = targets.reshape(-1)                          # [(B*T*P)]
+            mask_flat = mask_positions.reshape(-1).to(torch.float32)    # [(B*T*P)]
+            loss_per = nn.functional.cross_entropy(logits_flat, targets_flat, reduction='none')  # [(B*T*P)]
+            denom = mask_flat.sum().clamp_min(1.0)
+            loss = (loss_per * mask_flat).sum() / denom
 
         return predicted_logits, mask_positions, loss  # logits, mask, optional loss
 

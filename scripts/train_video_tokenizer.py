@@ -12,7 +12,7 @@ import wandb
 import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 from utils.config import VQVAEConfig, load_stage_config_merged
-from utils.utils import save_training_state
+from utils.utils import save_training_state, load_videotokenizer_from_checkpoint
 from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed

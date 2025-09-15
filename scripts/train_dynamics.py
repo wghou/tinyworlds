@@ -147,13 +147,11 @@ def main():
         else:
             quantized_actions = None
 
-        target_next_tokens = video_tokens # [B, S, P]
-
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
             predicted_next_logits, mask_positions, loss = unwrap_model(dynamics_model)(
-                video_latents, training=True, conditioning=quantized_actions, targets=target_next_tokens
-            )  # logits, mask, loss
+                video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
+            )
 
         # Backward + clip with scaler
         scaler.scale(loss).backward()

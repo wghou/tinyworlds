@@ -6,7 +6,13 @@ import torch.nn.functional as F
 from models.latent_actions import LatentActionModel
 from tqdm import tqdm
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
-from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
+from utils.utils import (
+    readable_timestamp, 
+    save_training_state, 
+    prepare_stage_dirs, 
+    prepare_pipeline_run_root, 
+    load_latent_actions_from_checkpoint
+)
 import json
 import wandb
 from utils.config import LatentActionsConfig, load_stage_config_merged

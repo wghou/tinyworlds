@@ -50,7 +50,7 @@ class AdaptiveNormalizer(nn.Module):
 
     def forward(self, x, conditioning=None):
         # x: [B, T, P, E]
-        # conditioning: [B, T - 1, C] or [B, T - 1, C]
+        # conditioning: [B, T, C] or [B, T - 1, C]
         if self.to_gamma_beta is None or conditioning is None:
             normed = self.rms(x) if self.rms is not None else self.ln(x)
             return normed

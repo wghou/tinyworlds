@@ -49,22 +49,22 @@ class FiniteScalarQuantizer(nn.Module):
         # to get fsq indices, for each dimension, we get the index and add it (so multiply by L then sum)
         # for each dimension of each latent, get sum of (value * L^current_dim) along latent dim which is the index of that latent in the codebook
         # codebook size = L^latent_dim
-        # latents: [B, T, P, L]
+        # latents: [*, L]
 
         # go from [-1, 1] to [0, num_bins - 1] in each dimension
         digits = torch.round(self.scale_and_shift(latents)).clamp(0, self.num_bins-1)
 
         # get indices for each latent by summing (value * L^current_dim_idx) along latent dim
         # basis is [L^0, L^1, ..., L^(L-1)]
-        indices = torch.sum(digits * self.basis.to(latents.device), dim=dim).long() # [B, T, P]
+        indices = torch.sum(digits * self.basis.to(latents.device), dim=dim).long() # [*]
         return indices
 
     def get_latents_from_indices(self, indices, dim=-1):
-        # indices: [B, T, P]
+        # indices: [*]
         # recover each entry of latent in range [0, num_bins - 1] by repeatedly dividing by L^current_dim and taking mod
         # basis is [L^0, L^1, ..., L^(L-1)]
-        digits = (rearrange(indices, 'b t p -> b t p 1') // self.basis) % self.num_bins   # [B, T, P, L]
+        digits = (indices.unsqueeze(-1) // self.basis) % self.num_bins # [*, L]
 
         # go from [0, num_bins - 1] to [-1, 1] in each dimension
-        latents = self.unscale_and_unshift(digits) # [B, T, P, L]
+        latents = self.unscale_and_unshift(digits) # [*, L]
         return latents

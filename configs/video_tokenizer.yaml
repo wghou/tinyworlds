@@ -1,9 +1,8 @@
 # Training
 batch_size: 256
-n_updates: 100000
+n_updates: 30000
 learning_rate: 0.0004
 log_interval: 2500
-
 
 # Model
 embed_dim: 128

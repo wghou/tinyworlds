@@ -127,6 +127,22 @@ class TrainingConfig:
     use_wandb: bool = True
     wandb_project: str = "nano-genie"
 
+@dataclass
+class InferenceConfig:
+    video_tokenizer_path: Optional[str] = None
+    latent_actions_path: Optional[str] = None
+    dynamics_path: Optional[str] = None
+    device: str = "cuda"
+    generation_steps: int = 4
+    context_window: int = 3
+    fps: int = 2
+    temperature: float = 0.0
+    use_actions: bool = False
+    teacher_forced: bool = False
+    use_latest_checkpoints: bool = False
+    prediction_horizon: int = 1
+    dataset: str = "ZELDA"
+    use_gt_actions: bool = False
 
 def load_config(config_cls, default_config_path: Optional[str] = None):
     parser = argparse.ArgumentParser(add_help=True)
