@@ -20,7 +20,7 @@ class VideoHDF5Dataset(Dataset):
         resize_to: Tuple[int, int] = (64, 64), 
         fps: int = 15,
         sequence_stride: Optional[int] = None, # default 60//fps
-        fraction_of_frames: float = 1.0, # fraction of valid starting indices to expose
+        fraction_of_dataset: float = 1.0, # fraction of valid starting indices to expose
         load_chunk_size: int = 1000, # chunk size when reading from HDF5
         load_start_index: int = 0, # skip initial frames when reading cached HDF5
         preload_ratio: Optional[float] = None, # if set, only load this ratio of cached frames
@@ -32,7 +32,7 @@ class VideoHDF5Dataset(Dataset):
         self.num_frames = num_frames
         self.fps = fps
         self.frame_skip = max(1, (sequence_stride if sequence_stride is not None else 60 // max(1, fps)))
-        self.fraction_of_frames = float(fraction_of_frames)
+        self.fraction_of_dataset = float(fraction_of_dataset)
         self.resize_to = resize_to
 
         if save_path and os.path.exists(save_path):
@@ -110,7 +110,7 @@ class VideoHDF5Dataset(Dataset):
         return frames
 
     def __len__(self) -> int:
-        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)) * self.fraction_of_frames)
+        max_valid_index = int((len(self.data) - (self.num_frames * self.frame_skip)) * self.fraction_of_dataset)
         return max(0, max_valid_index)
 
     def __getitem__(self, index: int):
@@ -140,8 +140,7 @@ class VideoHDF5Dataset(Dataset):
 
 
 class PongDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64)):
-        # Keep behavior: downsample frames during preprocessing and optionally limit cached frames for dev
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64), fps=30, preload_ratio=1):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -149,18 +148,17 @@ class PongDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=60,  # so default stride = 1
+            fps=fps,
+            preload_ratio=preload_ratio,
             sequence_stride=1,
-            fraction_of_frames=1.0,
             load_chunk_size=1000,
             load_start_index=0,
-            preload_ratio=1/20,  # match prior dev subset behavior
             preprocess_read_step=10,  # keep every 10th frame from raw
             preprocess_slice=None,
         )
 
 class PolePositionDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64)):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(64, 64), fps=15, preload_ratio=1):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -168,18 +166,17 @@ class PolePositionDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=60,
+            fps=fps,
+            preload_ratio=preload_ratio,
             sequence_stride=None,
-            fraction_of_frames=0.1,
             load_chunk_size=1000,
             load_start_index=100,
-            preload_ratio=None,
             preprocess_read_step=1,
             preprocess_slice=(1/50, 1/4),
         )
 
 class SonicDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128)):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -187,18 +184,17 @@ class SonicDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=15,
+            fps=fps,
+            preload_ratio=preload_ratio,
             sequence_stride=None,
-            fraction_of_frames=1.0,
             load_chunk_size=1000,
             load_start_index=100,
-            preload_ratio=None,
             preprocess_read_step=1,
             preprocess_slice=None,
         )
 
 class PicoDoomDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128)):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -206,18 +202,17 @@ class PicoDoomDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=15,
+            fps=fps,
+            preload_ratio=preload_ratio,
             sequence_stride=None,
-            fraction_of_frames=1.0,
             load_chunk_size=1000,
             load_start_index=100,
-            preload_ratio=None,
             preprocess_read_step=1,
             preprocess_slice=None,
         )
 
 class ZeldaDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128)):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=0.2):
         super().__init__(
             video_path=video_path,
             transform=transform,
@@ -225,12 +220,11 @@ class ZeldaDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=15,
+            fps=fps,
+            preload_ratio=preload_ratio,
             sequence_stride=None,
-            fraction_of_frames=1.0,
             load_chunk_size=1000,
             load_start_index=100,
-            preload_ratio=0.2,
             preprocess_read_step=1,
             preprocess_slice=None,
         )

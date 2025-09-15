@@ -1,19 +1,23 @@
-# Pipeline switches
+# wandb
 use_wandb: true
 wandb_project: nano-genie-pipeline
+
+# dataset
 dataset: PICODOOM
+fps: 30
+preload_ratio: 0.05
 
 # smaller shared model params
 patch_size: 4
 context_length: 4
 frame_size: 64
-latent_dim: 4 # for video tokenizer
+latent_dim: 6 # for video tokenizer
 num_bins: 2 # for video tokenizer
 n_actions: 8
-embed_dim: 128
-num_heads: 8
-hidden_dim: 256
-num_blocks: 4
+embed_dim: 32
+num_heads: 4
+hidden_dim: 64
+num_blocks: 1
 
 # simplest train settings
 compile: false
@@ -30,6 +34,6 @@ latent_actions_config: configs/latent_actions.yaml
 dynamics_config: configs/dynamics.yaml
 
 # Which stages to run
-run_video_tokenizer: true
+run_video_tokenizer: false
 run_latent_actions: true
 run_dynamics: true 

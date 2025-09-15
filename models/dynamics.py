@@ -48,8 +48,8 @@ class DynamicsModel(nn.Module):
             mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(P)[None, :]] = False # [B, T, P]
 
             # TODO: replace with repeat einops
-            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, T, P, -1) # [B, T, P, 1]
-            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, T, P, 1]
+            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, T, P, -1) # [B, T, P, L]
+            discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, T, P, L]
         else:
             mask_positions = None
 
@@ -75,19 +75,6 @@ class DynamicsModel(nn.Module):
             loss = (loss_per * mask_flat).sum() / denom
 
         return predicted_logits, mask_positions, loss  # logits, mask, optional loss
-
-    # TODO: make a util
-    @torch.no_grad()
-    def compute_action_diversity(self, actions_pre_vq, quantized_actions, quantizer):
-        a = actions_pre_vq.reshape(-1, actions_pre_vq.size(-1))
-        var = a.var(0, unbiased=False).mean()
-        idx = quantizer.get_indices_from_latents(quantized_actions, dim=-1).reshape(-1)
-        K = int(getattr(quantizer, 'codebook_size', quantizer.num_bins ** quantized_actions.size(-1)))
-        p = torch.bincount(idx, minlength=K).float()
-        p = p / p.sum().clamp_min(1)
-        usage = (p > 0).float().mean()
-        ent = -(p * (p + 1e-8).log()).sum() / math.log(max(K, 2))
-        return {'pre_quant_var': var, 'action_usage': usage, 'action_entropy': ent}
 
     @torch.no_grad()
     def forward_inference(self, context_latents, prediction_horizon, num_steps, index_to_latents_fn, conditioning=None, schedule_k=5.0):

@@ -69,7 +69,7 @@ def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: 
     # Convert to CPU and numpy
     flat = action_indices.detach().cpu().reshape(-1)
     # Compute distribution
-    counts = torch.bincount(flat, minlength=n_actions).float()
+    counts = torch.bincount(flat.long(), minlength=n_actions).float()
     probs = counts / counts.sum().clamp_min(1)
     
     wandb.log({

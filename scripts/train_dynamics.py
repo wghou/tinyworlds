@@ -41,8 +41,6 @@ def main():
     ddp = init_distributed_from_env()
     device = ddp['device']
 
-    print(f"args.compile: {args.compile}")
-
     is_main = ddp['is_main']
     if is_main:
         run_root = os.environ.get('NG_RUN_ROOT_DIR')
@@ -124,12 +122,19 @@ def main():
 
     unwrap_model(dynamics_model).train()
 
-    # TODO: add fps and fraction of dataset to use
+    # Build optional loader overrides
+    data_overrides = {}
+    if hasattr(args, 'fps') and args.fps is not None:
+        data_overrides['fps'] = args.fps
+    if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
+        data_overrides['preload_ratio'] = args.preload_ratio
+
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
         num_frames=args.context_length,
-        **get_dataloader_distributed_kwargs(ddp)
+        **get_dataloader_distributed_kwargs(ddp),
+        **data_overrides,
     )
     train_iter = iter(training_loader)
 
@@ -151,24 +156,23 @@ def main():
         else:
             quantized_actions = None
 
-        # Predict next frame latents using dynamics model under autocast
+        # predict masked frame latents with dynamics model (optional mixed precision)
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
             predicted_next_logits, mask_positions, loss = unwrap_model(dynamics_model)(
                 video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
             )
 
-        # Backward + clip with scaler
+        results['n_updates'] = i
+        results['dynamics_losses'].append(loss.detach().cpu())
+        results['loss_vals'].append(loss.detach().cpu())
+
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(unwrap_model(dynamics_model).parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
         scaler.update()
-        scheduler.step()  # Step the learning rate scheduler
+        scheduler.step()
 
-        results["loss_vals"].append(loss.cpu().detach())
-        results["n_updates"] = i
-
-        # Log to W&B if enabled
         if args.use_wandb and is_main:
             wandb.log({
                 'train/loss': loss.item(),
@@ -176,7 +180,8 @@ def main():
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
             if args.use_actions:
-                log_action_distribution(quantized_actions, i, args.n_actions)
+                action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
+                log_action_distribution(action_indices, i, args.n_actions)
 
         if i % args.log_interval == 0 and is_main:
             predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)

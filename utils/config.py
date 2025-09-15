@@ -32,7 +32,8 @@ class VideoTokenizerConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
-
+	fps: Optional[int] = None
+	preload_ratio: Optional[float] = None
 
 @dataclass
 class LatentActionsConfig:
@@ -60,7 +61,8 @@ class LatentActionsConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
-
+	fps: Optional[int] = None
+	preload_ratio: Optional[float] = None
 
 @dataclass
 class DynamicsConfig:
@@ -94,12 +96,15 @@ class DynamicsConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
-
+	fps: Optional[int] = None
+	preload_ratio: Optional[float] = None
 
 @dataclass
 class TrainingConfig:
+    # WandB
 	use_wandb: bool
 	wandb_project: str
+    # Dataset
 	dataset: str
 	# Config paths for stages
 	video_tokenizer_config: str
@@ -129,7 +134,8 @@ class TrainingConfig:
 	batch_size: Optional[int] = None
 	log_interval: Optional[int] = None
 	n_updates: Optional[int] = None
-    
+	fps: Optional[int] = None
+	preload_ratio: Optional[float] = None
 
 
 @dataclass

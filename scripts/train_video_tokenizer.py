@@ -23,8 +23,6 @@ def main():
     # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: VideoTokenizerConfig = load_stage_config_merged(VideoTokenizerConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
-    print(f"args.compile: {args.compile}")
-
     # Minimal DDP setup
     ddp = init_distributed_from_env()
     device = ddp['device']
@@ -41,11 +39,19 @@ def main():
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
+    # Build optional loader overrides
+    data_overrides = {}
+    if hasattr(args, 'fps') and args.fps is not None:
+        data_overrides['fps'] = args.fps
+    if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
+        data_overrides['preload_ratio'] = args.preload_ratio
+
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
         num_frames=args.context_length,
-        **get_dataloader_distributed_kwargs(ddp)
+        **get_dataloader_distributed_kwargs(ddp),
+        **data_overrides,
     )
 
     model = VideoTokenizer(
