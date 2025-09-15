@@ -28,13 +28,13 @@ from utils.utils import (
     prepare_pipeline_run_root,
     prepare_stage_dirs,
 )
-from utils.config import DynamicsConfig, load_config
+from utils.config import DynamicsConfig, load_stage_config_merged
 import wandb
 from dataclasses import asdict
 
 
 def main():
-    args: DynamicsConfig = load_config(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
+    args: DynamicsConfig = load_stage_config_merged(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.save:
@@ -71,6 +71,13 @@ def main():
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
+
+    # Print parameter count
+    try:
+        num_params = sum(p.numel() for p in dynamics_model.parameters())
+        print(f"DynamicsModel parameters: {num_params/1e6:.2f}M ({num_params})")
+    except Exception:
+        pass
 
     if args.compile:
         dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
@@ -177,45 +184,45 @@ def main():
             log_learning_rate(optimizer, i)
 
         if i % args.log_interval == 0:
-                predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
-                predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
+            predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
+            predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
 
-                hyperparameters = args.__dict__
-                save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+            hyperparameters = args.__dict__
+            save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
 
-                # Decode predicted latents
-                with torch.no_grad():
-                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S, C, H, A]
- 
-                # Ground truth frames
-                target_frames_full = x[:, 1:]  # [B, S - 1, ...]
+            # Decode predicted latents
+            with torch.no_grad():
+                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S, C, H, A]
 
-                # Display the masked patches in the ground truth frames as black
-                masked_target_frames_full = target_frames_full.clone()
+            # Ground truth frames
+            target_frames_full = x[:, 1:]  # [B, S - 1, ...]
 
-                # Convert mask_positions to patch-level mask for visualization
-                if mask_positions is not None:
-                    B, S, N = mask_positions.shape
-                    patch_size = args.patch_size
-                    H, W = args.frame_size, args.frame_size
-                    mask_for_viz = mask_positions[:, 1:]
-                    B_viz, S_viz, N_viz = mask_for_viz.shape
-                    pixel_mask = torch.zeros(B_viz, S_viz, H, W, device=mask_positions.device)
-                    for b in range(B_viz):
-                        for s in range(S_viz):
-                            patch_mask = mask_for_viz[b, s]
-                            for patch_idx in range(N_viz):
-                                if patch_mask[patch_idx]:
-                                    patch_row = (patch_idx // (W // patch_size)) * patch_size
-                                    patch_col = (patch_idx % (W // patch_size)) * patch_size
-                                    pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
-                    pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
-                    masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
-                
-                if args.save:
-                    save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
+            # Display the masked patches in the ground truth frames as black
+            masked_target_frames_full = target_frames_full.clone()
 
-                visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
+            # Convert mask_positions to patch-level mask for visualization
+            if mask_positions is not None:
+                B, S, N = mask_positions.shape
+                patch_size = args.patch_size
+                H, W = args.frame_size, args.frame_size
+                mask_for_viz = mask_positions[:, 1:]
+                B_viz, S_viz, N_viz = mask_for_viz.shape
+                pixel_mask = torch.zeros(B_viz, S_viz, H, W, device=mask_positions.device)
+                for b in range(B_viz):
+                    for s in range(S_viz):
+                        patch_mask = mask_for_viz[b, s]
+                        for patch_idx in range(N_viz):
+                            if patch_mask[patch_idx]:
+                                patch_row = (patch_idx // (W // patch_size)) * patch_size
+                                patch_col = (patch_idx % (W // patch_size)) * patch_size
+                                pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
+                pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
+                masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
+            
+            if args.save:
+                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
+
+            visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
             print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 

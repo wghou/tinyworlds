@@ -9,15 +9,16 @@ from datasets.data_utils import visualize_reconstruction, load_data_and_data_loa
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 import json
 import wandb
-from utils.config import LatentActionsConfig, load_config
+from utils.config import LatentActionsConfig, load_stage_config_merged
 from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb
 from dataclasses import asdict
 
-# Load config (YAML + dotlist overrides)
-args: LatentActionsConfig = load_config(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
+    args: LatentActionsConfig = load_stage_config_merged(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
     # Create organized save directory structure under a shared run root
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
@@ -44,6 +45,13 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
     ).to(device)
+
+    # Print parameter count
+    try:
+        num_params = sum(p.numel() for p in model.parameters())
+        print(f"LatentActionModel parameters: {num_params/1e6:.2f}M ({num_params})")
+    except Exception:
+        pass
 
     # Optionally compile
     if args.compile:

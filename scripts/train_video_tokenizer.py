@@ -11,15 +11,16 @@ import json
 import wandb
 import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
-from utils.config import VQVAEConfig, load_config
+from utils.config import VQVAEConfig, load_stage_config_merged
 from utils.utils import save_training_state
 from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
 from dataclasses import asdict
 
+
 def main():
     print(f"Video Tokenizer Training")
-    # Load config (YAML + dotlist overrides)
-    args: VQVAEConfig = load_config(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
+    # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
+    args: VQVAEConfig = load_stage_config_merged(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -50,6 +51,13 @@ def main():
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
+
+    # Print parameter count
+    try:
+        num_params = sum(p.numel() for p in model.parameters())
+        print(f"VideoTokenizer parameters: {num_params/1e6:.2f}M ({num_params})")
+    except Exception:
+        pass
 
     # Optionally compile the model
     if args.compile:
