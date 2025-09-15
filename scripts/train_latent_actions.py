@@ -78,7 +78,7 @@ def main():
 
     # Training loop
     train_iter = iter(training_loader)
-    for epoch in tqdm(range(args.n_updates)):
+    for i in tqdm(range(args.n_updates)):
         try:
             frame_sequences, _ = next(train_iter)
         except StopIteration:
@@ -101,18 +101,18 @@ def main():
 
         # Track results
         results["total_losses"].append(loss.cpu().detach())
-        results["n_updates"] = epoch
+        results["n_updates"] = i
 
         # Log to W&B if enabled and available
         if args.use_wandb:
             wandb.log({
                 'train/total_loss': loss.item(),
-                'step': epoch
+                'step': i
             })
-            log_system_metrics(epoch)
+            log_system_metrics(i)
   
         # Print progress every 50 steps
-        if (epoch - 1) % 50 == 0:
+        if (i - 1) % 50 == 0:
             with torch.no_grad():
                 actions = model.encoder(frame_sequences)
                 # Quantize actions, compute joint-code usage via indices
@@ -124,7 +124,7 @@ def main():
 
                 # compute decoder variance
                 pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
-                print(f"Step {epoch}: loss={loss.item():.6f}, codebook_usage: {codebook_usage}, z_e_var: {z_e_var}, pred_frames_var: {pred_frames_var}")
+                print(f"Step {i}: loss={loss.item():.6f}, codebook_usage: {codebook_usage}, z_e_var: {z_e_var}, pred_frames_var: {pred_frames_var}")
 
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:
@@ -132,15 +132,15 @@ def main():
                         "latent_actions/codebook_usage": codebook_usage,
                         "latent_actions/encoder_variance": z_e_var,
                         "latent_actions/decoder_variance": pred_frames_var,
-                        "step": epoch
+                        "step": i
                     })
 
         # Save model and visualize results periodically
-        if epoch % args.log_interval == 0 and args.save:
+        if i % args.log_interval == 0 and args.save:
             hyperparameters = vars(args)
-            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=epoch)
-            visualization_save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_epoch_{epoch}_{args.filename or "run"}.png')
-            visualize_reconstruction(frame_sequences, pred_frames, visualization_save_path)
+            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
+            save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
+            visualize_reconstruction(frame_sequences, pred_frames, save_path)
 
     # Finish W&B run
     if args.use_wandb:

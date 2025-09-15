@@ -11,6 +11,11 @@ latent_dim: 6 # for video tokenizer
 num_bins: 4 # for video tokenizer
 n_actions: 16
 
+# performance
+amp: true
+tf32: true
+compile: true
+
 # stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
 latent_actions_config: configs/latent_actions.yaml

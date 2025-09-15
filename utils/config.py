@@ -27,7 +27,6 @@ class VQVAEConfig:
     save: bool = True
     filename: Optional[str] = None
     checkpoint: Optional[str] = None
-    start_iteration: int = 0
     # Perf
     amp: bool = True
     tf32: bool = True
@@ -36,8 +35,6 @@ class VQVAEConfig:
     use_wandb: bool = False
     wandb_project: str = "nano-genie"
     wandb_run_name: Optional[str] = None
-    # Debug
-    debug_stats: bool = True
 
 
 @dataclass
@@ -65,10 +62,10 @@ class LatentActionsConfig:
     use_wandb: bool = True
     wandb_project: str = "nano-genie"
     wandb_run_name: Optional[str] = None
-    wandb_media: bool = False
     # Save
     save: bool = True
     filename: Optional[str] = None
+    checkpoint: Optional[str] = None
 
 
 @dataclass
@@ -105,6 +102,7 @@ class DynamicsConfig:
     # Save
     save: bool = True
     filename: Optional[str] = None
+    checkpoint: Optional[str] = None
 
 
 @dataclass

@@ -16,16 +16,3 @@ save: true
 filename: null
 checkpoint: null
 start_iteration: 0
-
-# Performance
-amp: true
-tf32: true
-compile: false
-
-# W&B
-use_wandb: true
-wandb_project: nano-genie
-wandb_run_name: null
-
-# Debug
-debug_stats: true 

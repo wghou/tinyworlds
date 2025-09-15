@@ -16,16 +16,6 @@ use_actions: true
 video_tokenizer_path: null
 latent_actions_path: null
 
-# Performance
-amp: true
-tf32: true
-compile: false
-
-# W&B
-use_wandb: true
-wandb_project: nano-genie
-wandb_run_name: null
-
 # Save
 save: true
 filename: null 

@@ -10,17 +10,6 @@ num_heads: 8
 hidden_dim: 256
 num_blocks: 4
 
-# Performance
-amp: true
-tf32: true
-compile: false
-
-# W&B
-use_wandb: true
-wandb_project: nano-genie
-wandb_run_name: null
-wandb_media: false
-
 # Save
 save: true
 filename: null 

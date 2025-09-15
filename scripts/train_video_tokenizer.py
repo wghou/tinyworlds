@@ -129,10 +129,8 @@ def main():
 
     model.train()
 
-    start_iter = max(args.start_iteration, results['n_updates'])
-
     train_iter = iter(training_loader)
-    for i in tqdm(range(start_iter, args.n_updates)):
+    for i in tqdm(range(args.n_updates)):
         try:
             (x, _) = next(train_iter)
         except StopIteration:
@@ -184,7 +182,7 @@ def main():
                 # Visualizations
                 x_hat_vis = x_hat.detach().cpu()
                 x_vis = x.detach().cpu()
-                save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}_{args.filename}.png')
+                save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
                 visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
 
         print('Update #', i, 'Recon Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())

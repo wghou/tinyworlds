@@ -220,7 +220,7 @@ def main():
                 masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
             
             if args.save:
-                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
+                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
 
             visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
