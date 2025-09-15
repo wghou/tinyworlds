@@ -41,7 +41,7 @@ class VQVAEConfig:
 
 
 @dataclass
-class LAMConfig:
+class LatentActionsConfig:
     # Training
     batch_size: int = 256
     n_updates: int = 1000
@@ -93,7 +93,7 @@ class DynamicsConfig:
     use_actions: bool = False
     # Paths
     video_tokenizer_path: Optional[str] = None
-    lam_path: Optional[str] = None
+    latent_actions_path: Optional[str] = None
     # Perf
     amp: bool = True
     tf32: bool = True
@@ -108,17 +108,17 @@ class DynamicsConfig:
 
 
 @dataclass
-class PipelineConfig:
+class TrainingConfig:
     use_wandb: bool = True
-    wandb_project: str = "nano-genie-pipeline"
+    wandb_project: str = "nano-genie"
     dataset: str = "ZELDA"
     # Config paths for stages
     video_tokenizer_config: str = "configs/video_tokenizer.yaml"
-    lam_config: str = "configs/lam.yaml"
+    latent_actions_config: str = "configs/latent_actions.yaml"
     dynamics_config: str = "configs/dynamics.yaml"
     # Which stages to run
     run_video_tokenizer: bool = False
-    run_lam: bool = True
+    run_latent_actions: bool = True
     run_dynamics: bool = True
 
 
@@ -132,7 +132,9 @@ def load_config(config_cls, default_config_path: Optional[str] = None):
     base = OmegaConf.structured(config_cls())
     cfg = base
 
-    if args.config is not None and os.path.isfile(args.config):
+    if args.config is not None:
+        if not os.path.isfile(args.config):
+            raise FileNotFoundError(f"Config file not found: {args.config} (cwd: {os.getcwd()})")
         file_cfg = OmegaConf.load(args.config)
         cfg = OmegaConf.merge(cfg, file_cfg)
 

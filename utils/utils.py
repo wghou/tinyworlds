@@ -9,45 +9,66 @@ def readable_timestamp():
     """Generate a sortable timestamp for filenames (no weekday)."""
     return time.strftime("%Y_%m_%d_%H_%M_%S")
 
-def find_latest_checkpoint(base_dir, model_name):
-    """Find latest checkpoint by newest run dir, then highest step within it.
-    Looks under a module-specific root when model_name is known.
+def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None, stage_name: str | None = None):
+    """Find latest checkpoint.
+    If run_root_dir (and optional stage_name) are provided, search only under
+    <run_root_dir>/<stage_name>/checkpoints (or <run_root_dir>/**/checkpoints if stage_name None).
+    Otherwise, fall back to project-wide module-based search.
+    Newest run dir first, then highest step within it.
     """
-    # Choose module/results root by model name
-    module_map = {
-        'videotokenizer': 'video_tokenizer',
-        'video_tokenizer': 'video_tokenizer',
-        'vqvae': 'video_tokenizer',
-        'lam': 'latent_action_model',
-        'dynamics': 'dynamics',
-    }
-    module = module_map.get(model_name, '**')
+    def collect_files_from_roots(roots, model_name):
+        files = []
+        for root in roots:
+            files.extend(glob.glob(os.path.join(root, f"{model_name}_step_*.*"), recursive=True))
+            files.extend(glob.glob(os.path.join(root, f"{model_name}_checkpoint_*.*"), recursive=True))
+        return [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
 
-    # Gather matching checkpoint files recursively
-    if module == '**':
-        roots = [os.path.join(base_dir, 'src/results', '**', 'checkpoints')]
+    if run_root_dir is not None:
+        if stage_name:
+            roots = [os.path.join(run_root_dir, stage_name, 'checkpoints')]
+        else:
+            roots = [os.path.join(run_root_dir, '**', 'checkpoints')]
+        files = collect_files_from_roots(roots, model_name)
+        if not files:
+            raise Exception(f"No checkpoint files found for {model_name} under {run_root_dir}")
+        # All files already belong to the same run root; group by stage dir
+        def run_dir_of(path: str) -> str:
+            checkpoints_dir = os.path.dirname(path)
+            return os.path.dirname(checkpoints_dir)
+        run_dir_to_files = {}
+        for p in files:
+            rd = run_dir_of(p)
+            run_dir_to_files.setdefault(rd, []).append(p)
+        newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
+        candidate_files = run_dir_to_files[newest_run_dir]
     else:
-        roots = [os.path.join(base_dir, 'src', module, 'results', '**', 'checkpoints')]
-
-    files = []
-    for root in roots:
-        files.extend(glob.glob(os.path.join(root, f"{model_name}_step_*.*"), recursive=True))
-        files.extend(glob.glob(os.path.join(root, f"{model_name}_checkpoint_*.*"), recursive=True))
-    files = [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
-    if not files:
-        raise Exception(f"No checkpoint files found for {model_name}")
-
-    def run_dir_of(path: str) -> str:
-        checkpoints_dir = os.path.dirname(path)
-        return os.path.dirname(checkpoints_dir)
-
-    run_dir_to_files = {}
-    for p in files:
-        rd = run_dir_of(p)
-        run_dir_to_files.setdefault(rd, []).append(p)
-
-    newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
-    candidate_files = run_dir_to_files[newest_run_dir]
+        # Fallback to module/results search in repository
+        # TODO: clean this up
+        module_map = {
+            'videotokenizer': 'video_tokenizer',
+            'video_tokenizer': 'video_tokenizer',
+            'vqvae': 'video_tokenizer',
+            'lam': 'latent_actions',
+            'latent_actions': 'latent_actions',
+            'dynamics': 'dynamics',
+        }
+        module = module_map.get(model_name, '**')
+        if module == '**':
+            roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
+        else:
+            roots = [os.path.join(base_dir, 'results', '**', module, 'checkpoints')]
+        files = collect_files_from_roots(roots, model_name)
+        if not files:
+            raise Exception(f"No checkpoint files found for {model_name}")
+        def run_dir_of(path: str) -> str:
+            checkpoints_dir = os.path.dirname(path)
+            return os.path.dirname(checkpoints_dir)
+        run_dir_to_files = {}
+        for p in files:
+            rd = run_dir_of(p)
+            run_dir_to_files.setdefault(rd, []).append(p)
+        newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
+        candidate_files = run_dir_to_files[newest_run_dir]
 
     def extract_step(path: str) -> int:
         fname = os.path.basename(path)
@@ -98,9 +119,9 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
 
 
 def load_videotokenizer_from_checkpoint(checkpoint_path, device):
-    """Instantiate Video_Tokenizer from a checkpoint's saved config and load weights."""
+    """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
     import torch
-    from src.video_tokenizer.models.video_tokenizer import Video_Tokenizer
+    from models.video_tokenizer import VideoTokenizer
     ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get('config', {}) or {}
     # Build kwargs from saved config with sensible fallbacks
@@ -115,15 +136,15 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device):
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
     }
-    model = Video_Tokenizer(**kwargs).to(device)
+    model = VideoTokenizer(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
 
 
-def load_lam_from_checkpoint(checkpoint_path, device):
-    """Instantiate LAM from a checkpoint's saved config and load weights."""
+def load_latent_actions_from_checkpoint(checkpoint_path, device):
+    """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
-    from src.latent_action_model.models.lam import LAM
+    from models.latent_actions import LatentActionModel
     ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
@@ -136,7 +157,7 @@ def load_lam_from_checkpoint(checkpoint_path, device):
         'hidden_dim': cfg.get('hidden_dim', 256),
         'num_blocks': cfg.get('num_blocks', 4),
     }
-    model = LAM(**kwargs).to(device)
+    model = LatentActionModel(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
 
@@ -144,7 +165,7 @@ def load_lam_from_checkpoint(checkpoint_path, device):
 def load_dynamics_from_checkpoint(checkpoint_path, device):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
-    from src.dynamics.models.dynamics import DynamicsModel
+    from models.dynamics import DynamicsModel
     ckpt = torch.load(checkpoint_path, map_location=device)
     cfg = ckpt.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
@@ -179,7 +200,7 @@ def prepare_run_dirs(module: str, filename: str | None, base_cwd: str | None = N
     Create an organized directory structure for a training run.
 
     Args:
-        module: submodule name under src (e.g., 'video_tokenizer', 'latent_action_model', 'dynamics')
+        module: submodule name under src (e.g., 'video_tokenizer', 'latent_actions', 'dynamics')
         filename: optional custom run name; if None, use a timestamp
         base_cwd: optional base working directory; defaults to current working directory
 
@@ -196,3 +217,33 @@ def prepare_run_dirs(module: str, filename: str | None, base_cwd: str | None = N
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(visualizations_dir, exist_ok=True)
     return run_dir, checkpoints_dir, visualizations_dir, run_name
+
+
+def prepare_pipeline_run_root(run_name: str | None = None, base_cwd: str | None = None):
+    """Create a top-level run root directory results/<timestamp_or_name>.
+
+    Returns (run_root_dir, run_name).
+    """
+    cwd = base_cwd or os.getcwd()
+    ts = readable_timestamp()
+    name = run_name or ts
+    run_root = os.path.join(cwd, 'results', name)
+    os.makedirs(run_root, exist_ok=True)
+    return run_root, name
+
+
+def prepare_stage_dirs(run_root_dir: str, stage_name: str):
+    """Create stage subdirectories under the given run root.
+
+    Structure:
+      <run_root_dir>/<stage_name>/checkpoints
+      <run_root_dir>/<stage_name>/visualizations
+
+    Returns (stage_dir, checkpoints_dir, visualizations_dir).
+    """
+    stage_dir = os.path.join(run_root_dir, stage_name)
+    checkpoints_dir = os.path.join(stage_dir, 'checkpoints')
+    visualizations_dir = os.path.join(stage_dir, 'visualizations')
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(visualizations_dir, exist_ok=True)
+    return stage_dir, checkpoints_dir, visualizations_dir

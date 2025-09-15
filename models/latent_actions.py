@@ -4,11 +4,12 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import math
 from einops import rearrange, repeat, reduce
-from src.video_tokenizer.models.video_tokenizer import STTransformer, PatchEmbedding, FiniteScalarQuantizer
+from models.st_transformer import STTransformer, PatchEmbedding
+from models.fsq import FiniteScalarQuantizer
 
-NUM_LAM_BINS = 2
+NUM_LATENT_ACTIONS_BINS = 2
 
-class Encoder(nn.Module):
+class LatentActionsEncoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent actions"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, action_dim=3):
@@ -45,7 +46,7 @@ class Encoder(nn.Module):
 
         return actions
 
-class Decoder(nn.Module):
+class LatentActionsDecoder(nn.Module):
     """ST-Transformer decoder that takes frames and actions to predict next frame"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3):
@@ -93,33 +94,33 @@ class Decoder(nn.Module):
         ) # [B, T-1, C, H, W]
         return pred_frames  # [B, T-1, C, H, W]
 
-class LAM(nn.Module):
+class LatentActionModel(nn.Module):
     """ST-Transformer based Latent Action Model"""
     def __init__(self, frame_size=(128, 128), n_actions=8, patch_size=8, embed_dim=128, 
                  num_heads=8, hidden_dim=256, num_blocks=4):
         super().__init__()
-        assert math.log(n_actions, NUM_LAM_BINS).is_integer(), f"n_actions must be a power of {NUM_LAM_BINS}"
-        self.action_dim=int(math.log(n_actions, NUM_LAM_BINS))
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim)
-        self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LAM_BINS)
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
+        assert math.log(n_actions, NUM_LATENT_ACTIONS_BINS).is_integer(), f"n_actions must be a power of {NUM_LATENT_ACTIONS_BINS}"
+        self.action_dim=int(math.log(n_actions, NUM_LATENT_ACTIONS_BINS))
+        self.encoder = LatentActionsEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, action_dim=self.action_dim)
+        self.quantizer = FiniteScalarQuantizer(latent_dim=self.action_dim, num_bins=NUM_LATENT_ACTIONS_BINS)
+        self.decoder = LatentActionsDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, conditioning_dim=self.action_dim)
         self.var_target = 0.01
         self.var_lambda = 100.0
 
     def forward(self, frames):
         # frames: [B, T, C, H, W]
-    
+
         # get quantized action latents
         action_latents = self.encoder(frames) # [B, T - 1, A]
         action_latents_quantized = self.quantizer(action_latents) # [B, T - 1, A]
 
         # decode to get predicted frames
         pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, T - 1, C, H, W]
-        
+
         # Compute reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [B, T - 1, C, H, W]
         recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
-        
+
         # Encourage non-collapsed encoder variance per-dimension
         z_var = action_latents.var(dim=0, unbiased=False).mean()
         var_penalty = F.relu(self.var_target - z_var)

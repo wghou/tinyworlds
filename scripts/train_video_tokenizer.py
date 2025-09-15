@@ -3,20 +3,21 @@ import torch
 import torch.optim as optim
 import sys
 import os
-from src.video_tokenizer.models.video_tokenizer import Video_Tokenizer
+from models.video_tokenizer import VideoTokenizer
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
-from src.utils.scheduler_utils import create_cosine_scheduler
+from utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
 import json
 import wandb
 import torch.nn.functional as F
-from src.utils.utils import readable_timestamp
-from src.utils.config import VQVAEConfig, load_config
-from src.utils.utils import save_training_state, prepare_run_dirs
-from src.utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
+from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
+from utils.config import VQVAEConfig, load_config
+from utils.utils import save_training_state
+from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
 from dataclasses import asdict
 
 def main():
+    print(f"Video Tokenizer Training")
     # Load config (YAML + dotlist overrides)
     args: VQVAEConfig = load_config(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
@@ -25,11 +26,13 @@ def main():
     # Always define a timestamp-like name
     timestamp = args.filename or readable_timestamp()
 
-    # Create organized save directory structure
+    # Create organized save directory structure under a shared run root
+    run_root = os.environ.get('NG_RUN_ROOT_DIR')
+    if not run_root:
+        run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     if args.save:
-        run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('video_tokenizer', args.filename, base_cwd=os.getcwd())
-        # Keep using variable name 'timestamp' below
-        timestamp = run_name
+        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
+        print(f'Results will be saved in {stage_dir}')
 
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
@@ -37,7 +40,7 @@ def main():
         num_frames=args.context_length
     )
 
-    model = Video_Tokenizer(
+    model = VideoTokenizer(
         frame_size=(args.frame_size, args.frame_size), 
         patch_size=args.patch_size,
         embed_dim=args.embed_dim,
@@ -176,7 +179,7 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}_{args.filename}.png')
                 visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
 
-            print('Update #', i, 'Recon Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
+        print('Update #', i, 'Recon Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
 
     # Finish W&B run
     if args.use_wandb:

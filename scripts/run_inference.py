@@ -9,7 +9,7 @@ import os
 import random
 import glob
 import re
-from src.utils.utils import load_videotokenizer_from_checkpoint, load_lam_from_checkpoint, load_dynamics_from_checkpoint
+from utils.utils import load_videotokenizer_from_checkpoint, load_lam_from_checkpoint, load_dynamics_from_checkpoint
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,17 +35,17 @@ def sample_action_with_diversity(previous_actions, n_actions, diversity_weight=0
     
     return sampled_action_index
 
-def load_models(video_tokenizer_path, lam_path, dynamics_path, device, use_actions=True):
-    # Load tokenizer and dynamics, and LAM if using actions
+def load_models(video_tokenizer_path, latent_actions_path, dynamics_path, device, use_actions=True):
+    # Load tokenizer and dynamics, and Latent Actions if using actions
     video_tokenizer, _vt_ckpt = load_videotokenizer_from_checkpoint(video_tokenizer_path, device)
     video_tokenizer.eval()
-    lam = None
+    latent_action_model = None
     if use_actions:
-        lam, _lam_ckpt = load_lam_from_checkpoint(lam_path, device)
-        lam.eval()
+        latent_action_model, _latent_action_ckpt = load_latent_actions_from_checkpoint(latent_actions_path, device)
+        latent_action_model.eval()
     dynamics_model, _dyn_ckpt = load_dynamics_from_checkpoint(dynamics_path, device)
     dynamics_model.eval()
-    return video_tokenizer, lam, dynamics_model
+    return video_tokenizer, latent_action_model, dynamics_model
     
 def sample_random_action(n_actions):
     random_action = torch.randint(0, n_actions, (1,))
@@ -166,7 +166,7 @@ def exp_schedule_torch(t, T, P, k=5.0, device=None):
 
 def main(args):
     # Move models to the specified device
-    video_tokenizer, lam, dynamics_model = load_models(args.video_tokenizer_path, args.lam_path, args.dynamics_path, args.device, use_actions=args.use_actions)
+    video_tokenizer, latent_action_model, dynamics_model = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, args.device, use_actions=args.use_actions)
 
     # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
     frames_to_load = args.context_window + args.generation_steps * args.prediction_horizon
@@ -187,7 +187,7 @@ def main(args):
 
     # Initialize action tracking
     if args.use_actions:
-        n_actions = lam.quantizer.codebook_size
+        n_actions = latent_action_model.quantizer.codebook_size
         print(f"n_actions: {n_actions}")
         inferred_actions = []
     else:
@@ -215,21 +215,21 @@ def main(args):
 
         # Sample action only if using actions
         if args.use_gt_actions:
-            # pass last 2 frames through lam to get action latent
-            gt_action_latents = lam.encode(context_frames) # [1, T - 1, A]
+            # pass last 2 frames through latent_action_model to get action latent
+            gt_action_latents = latent_action_model.encode(context_frames) # [1, T - 1, A]
             sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device) # [1, 1, A]
             inferred_actions.append(sampled_action_index)
-            sampled_action_latent = lam.quantizer.get_latents_from_indices(sampled_action_index).unsqueeze(1) # [1, 1, A]
+            sampled_action_latent = latent_action_model.quantizer.get_latents_from_indices(sampled_action_index).unsqueeze(1) # [1, 1, A]
             action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, T, A]
         elif args.use_actions:
             sampled_action_index = sample_action_with_diversity(inferred_actions, n_actions, device=args.device)
             inferred_actions.append(sampled_action_index)
             recent_inferred_actions = inferred_actions[-args.context_window:] if len(inferred_actions) > args.context_window else inferred_actions
-            action_latent = lam.quantizer.get_latents_from_indices(torch.tensor(recent_inferred_actions, device=args.device)).unsqueeze(0) # [1, seq_len, A]
+            action_latent = latent_action_model.quantizer.get_latents_from_indices(torch.tensor(recent_inferred_actions, device=args.device)).unsqueeze(0) # [1, seq_len, A]
             if len(recent_inferred_actions) < args.context_window:
                 # if we dont have enough inferred actions (in the beginning) add enough gt to fill the sequence
-                gt_pad_actions = lam.encode(context_frames[:, :args.context_window - len(recent_inferred_actions) + 1])  # [1, context_window - len(inferred_actions), A]
-                quantized_gt_pad_actions = lam.quantizer(gt_pad_actions) # [1, context_window - len(inferred_actions), A]
+                gt_pad_actions = latent_action_model.encode(context_frames[:, :args.context_window - len(recent_inferred_actions) + 1])  # [1, context_window - len(inferred_actions), A]
+                quantized_gt_pad_actions = latent_action_model.quantizer(gt_pad_actions) # [1, context_window - len(inferred_actions), A]
                 action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1) # [1, S, A]
         else:
             sampled_action_index = None
@@ -339,9 +339,9 @@ def main(args):
 # TODO: replace with yaml
 def parse_args():
     parser = argparse.ArgumentParser(description="Run inference with the trained video generation pipeline")
-    parser.add_argument("--video_tokenizer_path", type=str, default="/workspace/nano-genie/src/video_tokenizer/results/vqvae_Sat_Sep_13_11_30_58_2025/checkpoints/videotokenizer_step_47500_Sat_Sep_13_15_24_15_2025.pth")
-    parser.add_argument("--lam_path", type=str, default="/workspace/nano-genie/src/latent_action_model/results/latent_action_model_Sat_Sep_13_15_36_38_2025/checkpoints/lam_step_1900_Sat_Sep_13_15_48_55_2025.pth")
-    parser.add_argument("--dynamics_path", type=str, default="/workspace/nano-genie/src/dynamics/results/dynamics_Sat_Sep_13_15_49_33_2025/checkpoints/dynamics_step_42500_Sun_Sep_14_02_43_30_2025.pth")
+    parser.add_argument("--video_tokenizer_path", type=str, default="/workspace/nano-genie/video_tokenizer/results/vqvae_Sat_Sep_13_11_30_58_2025/checkpoints/videotokenizer_step_47500_Sat_Sep_13_15_24_15_2025.pth")
+    parser.add_argument("--latent_actions_path", type=str, default="/workspace/nano-genie/latent_actions/results/latent_actions_Sat_Sep_13_15_36_38_2025/checkpoints/latent_actions_step_1900_Sat_Sep_13_15_48_55_2025.pth")
+    parser.add_argument("--dynamics_path", type=str, default="/workspace/nano-genie/dynamics/results/dynamics_Sat_Sep_13_15_49_33_2025/checkpoints/dynamics_step_42500_Sun_Sep_14_02_43_30_2025.pth")
     parser.add_argument("--device", type=str, default=str(device), help="Device to use (cuda/cpu)")
     parser.add_argument("--generation_steps", type=int, default=4, help="Number of frames to generate")
     parser.add_argument("--context_window", type=int, default=3, help="Maximum sequence length for context window")
@@ -350,10 +350,10 @@ def parse_args():
     parser.add_argument("--use_actions", action="store_true", default=False, help="Whether to use action latents in the dynamics model (default: False)")
     parser.add_argument("--teacher_forced", action="store_true", default=False,
                         help="Run teacher-forced inference (always use ground-truth context).")
-    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, LAM, and dynamics checkpoints.")
+    parser.add_argument("--use_latest_checkpoints", action="store_true", default=False, help="If set, automatically find and use the latest video tokenizer, Latent Actions, and dynamics checkpoints.")
     parser.add_argument("--prediction_horizon", type=int, default=1, help="Number of frames to predict")
     parser.add_argument("--dataset", type=str, default="ZELDA", help="Dataset to use")
-    parser.add_argument("--use_gt_actions", action="store_true", default=False, help="Whether to use ground-truth (lam inferred) action latents")
+    parser.add_argument("--use_gt_actions", action="store_true", default=False, help="Whether to use ground-truth (latent_action_model inferred) action latents")
     return parser.parse_args()
 
 # TODO: use utils fun
@@ -396,7 +396,7 @@ def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
     print(f"Decoded sequence visualization saved to: {save_path}")
 
 def find_latest_checkpoint(base_dir, model_name):
-    pattern = os.path.join(base_dir, f"src/*/results/{model_name}_*/checkpoints/{model_name}_step_*.pth")
+    pattern = os.path.join(base_dir, f"results/{model_name}_*/checkpoints/{model_name}_step_*.pth")
     checkpoint_files = glob.glob(pattern)
     if not checkpoint_files:
         print(f"No checkpoint files found for {model_name}")
@@ -413,8 +413,8 @@ if __name__ == "__main__":
 
     if args.use_latest_checkpoints:
         base_dir = os.path.abspath(os.path.dirname(__file__))
-        vt_ckpt = find_latest_checkpoint(base_dir, "videotokenizer")
-        lam_ckpt = find_latest_checkpoint(base_dir, "lam")
+        vt_ckpt = find_latest_checkpoint(base_dir, "video_tokenizer")
+        lam_ckpt = find_latest_checkpoint(base_dir, "latent_actions")
         dyn_ckpt = find_latest_checkpoint(base_dir, "dynamics")
 
         if vt_ckpt:
@@ -424,10 +424,10 @@ if __name__ == "__main__":
             print("[WARN] No video tokenizer checkpoint found, using default.")
 
         if lam_ckpt:
-            print(f"[INFO] Using latest LAM checkpoint: {lam_ckpt}")
-            args.lam_path = lam_ckpt
+            print(f"[INFO] Using latest Latent Actions checkpoint: {latent_actions_ckpt}")
+            args.latent_actions_path = latent_actions_ckpt
         else:
-            print("[WARN] No LAM checkpoint found, using default.")
+            print("[WARN] No Latent Actions checkpoint found, using default.")
 
         if dyn_ckpt:
             print(f"[INFO] Using latest dynamics checkpoint: {dyn_ckpt}")

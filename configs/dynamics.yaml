@@ -20,12 +20,12 @@ use_actions: true
 
 # Paths
 video_tokenizer_path: null
-lam_path: null
+latent_actions_path: null
 
 # Performance
 amp: true
 tf32: true
-compile: true
+compile: false
 
 # W&B
 use_wandb: true

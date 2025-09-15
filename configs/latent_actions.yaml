@@ -18,7 +18,7 @@ num_blocks: 4
 # Performance
 amp: true
 tf32: true
-compile: true
+compile: false
 
 # W&B
 use_wandb: true

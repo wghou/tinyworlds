@@ -1,0 +1,18 @@
+# Pipeline switches
+use_wandb: true
+wandb_project: nano-genie-pipeline
+dataset: PICODOOM
+
+# Stage configs
+video_tokenizer_config: configs/video_tokenizer.yaml
+latent_actions_config: configs/latent_actions.yaml
+dynamics_config: configs/dynamics.yaml
+
+# Which stages to run
+run_video_tokenizer: true
+run_latent_actions: true
+run_dynamics: true 
+
+# TODO: allow params to be passed down to each stage (hydra?) 
+# at least dataset, compile, tf32, amp, and wandb should be passed down, 
+#and vt to dynamics params like latent dim and num bins

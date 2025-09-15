@@ -117,13 +117,11 @@ def log_video_sequence(frames: torch.Tensor, step: int, caption: str = "Generate
         "step": step
     })
 
-
 def log_codebook_usage(codebook_usage: float, step: int, model_name: str = "model"):
     wandb.log({
         f"{model_name}/codebook_usage": codebook_usage,
         "step": step
     })
-
 
 def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: int):
     # Convert to CPU and numpy
@@ -141,7 +139,6 @@ def log_action_distribution(action_indices: torch.Tensor, step: int, n_actions: 
         "step": step
     })
 
-
 def log_system_metrics(step: int):
     if torch.cuda.is_available():
         wandb.log({
@@ -150,13 +147,10 @@ def log_system_metrics(step: int):
             "step": step
         })
 
-
 def finish_wandb():
     """Finish the W&B run"""
     if wandb.run is not None:
         wandb.finish()
-        print("✅ W&B run finished")
-
 
 def create_wandb_config(args, model_config: Dict[str, Any]) -> Dict[str, Any]:
     config = {

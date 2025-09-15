@@ -27,7 +27,7 @@ export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
 
 export PYTHONPATH="/workspace/nano-genie:$PYTHONPATH"
 
-python train_full_pipeline.py --config configs/pipeline.yaml
+python scripts/full_train.py --config configs/training_config.yaml
 ```
 
 ## Architecture 

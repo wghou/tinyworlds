@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from src.video_tokenizer.models.st_transformer import STTransformer
-from src.video_tokenizer.models.fsq import FiniteScalarQuantizer
-from src.video_tokenizer.models.st_transformer import PatchEmbedding
-from src.video_tokenizer.models.positional_encoding import build_spatial_only_pe
+from models.st_transformer import STTransformer
+from models.fsq import FiniteScalarQuantizer
+from models.patch_embed import PatchEmbedding
+from models.positional_encoding import build_spatial_only_pe
 
-class Encoder(nn.Module):
+class VideoTokenizerEncoder(nn.Module):
     """ST-Transformer encoder that takes frames and outputs latent representations"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, latent_dim=5):
@@ -43,7 +43,7 @@ class PixelShuffleFrameHead(nn.Module):
         return x
 
 
-class Decoder(nn.Module):
+class VideoTokenizerDecoder(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, latent_dim=5):
@@ -79,12 +79,12 @@ class Decoder(nn.Module):
         return frames_out
 
 
-class Video_Tokenizer(nn.Module):
+class VideoTokenizer(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, latent_dim=3, num_bins=4):
         super().__init__()
-        self.encoder = Encoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
-        self.decoder = Decoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
+        self.encoder = VideoTokenizerEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
+        self.decoder = VideoTokenizerDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
         self.quantizer = FiniteScalarQuantizer(latent_dim, num_bins)
         self.codebook_size = num_bins**latent_dim
 

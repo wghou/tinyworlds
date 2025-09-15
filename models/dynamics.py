@@ -1,9 +1,11 @@
-from src.video_tokenizer.models.video_tokenizer import STTransformer
 import torch
 import torch.nn as nn
 import math
-from src.video_tokenizer.models.positional_encoding import build_spatial_only_pe
+from models.positional_encoding import build_spatial_only_pe
+from models.st_transformer import STTransformer
 
+# TODO: make create mask function here
+# TODO: make run inference
 class DynamicsModel(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,

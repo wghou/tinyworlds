@@ -3,27 +3,29 @@ import torch.optim as optim
 import sys
 import os
 import torch.nn.functional as F
-from models.lam import LAM
+from models.latent_actions import LatentActionModel
 from tqdm import tqdm
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
-from src.utils.utils import readable_timestamp
+from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 import json
 import wandb
-from src.utils.config import LAMConfig, load_config
-from src.utils.utils import save_training_state, prepare_run_dirs
-from src.utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb
+from utils.config import LatentActionsConfig, load_config
+from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb
 from dataclasses import asdict
 
 # Load config (YAML + dotlist overrides)
-args: LAMConfig = load_config(LAMConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'lam.yaml'))
+args: LatentActionsConfig = load_config(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Create organized save directory structure
+    # Create organized save directory structure under a shared run root
+    run_root = os.environ.get('NG_RUN_ROOT_DIR')
+    if not run_root:
+        run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     if args.save:
-        run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('latent_action_model', args.filename, base_cwd=os.getcwd())
-        print(f'Results will be saved in {run_dir}')
+        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
+        print(f'Results will be saved in {stage_dir}')
 
     # Load sequence data for training
     _, _, training_loader, validation_loader, _ = load_data_and_data_loaders(
@@ -33,7 +35,7 @@ def main():
     )
 
     # Initialize model
-    model = LAM(
+    model = LatentActionModel(
         frame_size=(args.frame_size, args.frame_size),
         n_actions=args.n_actions,
         patch_size=args.patch_size,
@@ -63,7 +65,7 @@ def main():
 
     # Initialize W&B if enabled and available
     if args.use_wandb:
-        run_name = args.wandb_run_name or f"lam_{readable_timestamp()}"
+        run_name = args.wandb_run_name or f"latent_actions_{readable_timestamp()}"
         init_wandb(args.wandb_project, asdict(args), run_name)
 
     # Training loop
@@ -119,17 +121,17 @@ def main():
                 # Log codebook and action statistics to W&B
                 if args.use_wandb:
                     wandb.log({
-                        "lam/codebook_usage": codebook_usage,
-                        "lam/encoder_variance": z_e_var,
-                        "lam/decoder_variance": pred_frames_var,
+                        "latent_actions/codebook_usage": codebook_usage,
+                        "latent_actions/encoder_variance": z_e_var,
+                        "latent_actions/decoder_variance": pred_frames_var,
                         "step": epoch
                     })
 
         # Save model and visualize results periodically
         if epoch % args.log_interval == 0 and args.save:
             hyperparameters = vars(args)
-            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='lam', step=epoch)
-            visualization_save_path = os.path.join(visualizations_dir, f'reconstructions_lam_epoch_{epoch}_{args.filename or "run"}.png')
+            checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=epoch)
+            visualization_save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_epoch_{epoch}_{args.filename or "run"}.png')
             visualize_reconstruction(frame_sequences, pred_frames, visualization_save_path)
 
     # Finish W&B run

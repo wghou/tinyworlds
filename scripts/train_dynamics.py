@@ -9,22 +9,26 @@ import json
 from tqdm import tqdm
 from einops import rearrange
 import torch.nn.functional as F
-from src.video_tokenizer.models.video_tokenizer import Video_Tokenizer
-from src.latent_action_model.models.lam import LAM
-from src.dynamics.models.dynamics import DynamicsModel
+from models.video_tokenizer import VideoTokenizer
+from models.latent_actions import LatentActionModel
+from models.dynamics import DynamicsModel
 from datasets.data_utils import visualize_reconstruction, load_data_and_data_loaders
 from tqdm import tqdm
 import json
 from einops import rearrange
-from src.utils.wandb_utils import (
+from utils.wandb_utils import (
     init_wandb, log_training_metrics, log_learning_rate, log_system_metrics, finish_wandb
 )
-from src.utils.scheduler_utils import create_cosine_scheduler
-from src.utils.utils import readable_timestamp
-from src.utils.utils import save_training_state, load_videotokenizer_from_checkpoint, load_lam_from_checkpoint
-from src.utils.utils import prepare_run_dirs
-
-from src.utils.config import DynamicsConfig, load_config
+from utils.scheduler_utils import create_cosine_scheduler
+from utils.utils import (
+    readable_timestamp,
+    save_training_state,
+    load_videotokenizer_from_checkpoint,
+    load_latent_actions_from_checkpoint,
+    prepare_pipeline_run_root,
+    prepare_stage_dirs,
+)
+from utils.config import DynamicsConfig, load_config
 import wandb
 from dataclasses import asdict
 
@@ -34,7 +38,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.save:
-        run_dir, checkpoints_dir, visualizations_dir, run_name = prepare_run_dirs('dynamics', args.filename, base_cwd=os.getcwd())
+        run_root = os.environ.get('NG_RUN_ROOT_DIR')
+        if not run_root:
+            run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
+        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'dynamics')
+        print(f"Results will be saved in {stage_dir}")
 
     if os.path.isfile(args.video_tokenizer_path):
         video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(args.video_tokenizer_path, device)
@@ -44,13 +52,13 @@ def main():
     else:
         raise FileNotFoundError(f"Video tokenizer checkpoint not found at {args.video_tokenizer_path}")
 
-    if os.path.isfile(args.lam_path):
-        lam, lam_ckpt = load_lam_from_checkpoint(args.lam_path, device)
-        lam.eval()
-        for p in lam.parameters():
+    if os.path.isfile(args.latent_actions_path):
+        latent_action_model, latent_action_ckpt = load_latent_actions_from_checkpoint(args.latent_actions_path, device)
+        latent_action_model.eval()
+        for p in latent_action_model.parameters():
             p.requires_grad = False
     else:
-        raise FileNotFoundError(f"LAM checkpoint not found at {args.lam_path}")
+        raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
 
     dynamics_model = DynamicsModel(
         frame_size=(args.frame_size, args.frame_size),
@@ -59,7 +67,7 @@ def main():
         num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
-        conditioning_dim=lam.action_dim,
+        conditioning_dim=latent_action_model.action_dim,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
@@ -120,18 +128,18 @@ def main():
         optimizer.zero_grad(set_to_none=True)
 
         # Get video tokenizer latents for current frames
-        quantized_video_latents = video_tokenizer.tokenize(x) # [B, S, P, L]
+        video_tokens = video_tokenizer.tokenize(x) # [B, S, P]
+        video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, S, P, L]
         if args.use_actions:
-            actions = lam.encoder(x)  # [B, S - 1, A]
-            quantized_actions = lam.quantizer(actions) # [B, S - 1, A]
+            quantized_actions = latent_action_model.encode(x)  # [B, S - 1, A]
         else:
             quantized_actions = None
 
-        target_next_tokens = video_tokenizer.quantizer.get_indices_from_latents(quantized_video_latents, dim=-1) # [B, S - 1, P]
+        target_next_tokens = video_tokens # [B, S, P]
 
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            predicted_next_logits, mask_positions = dynamics_model(quantized_video_latents, training=True, conditioning=quantized_actions)  # [B, S, P, L^D]
+            predicted_next_logits, mask_positions = dynamics_model(video_latents, training=True, conditioning=quantized_actions)  # [B, S, P, L^D]
 
         num_masked = mask_positions.sum().item() # Scalar
         total_positions = mask_positions.numel() # Scalar
@@ -158,9 +166,6 @@ def main():
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
-        predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
-        predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
-
         # Log to W&B if enabled
         if args.use_wandb:
             metrics = {
@@ -172,13 +177,15 @@ def main():
             log_learning_rate(optimizer, i)
 
         if i % args.log_interval == 0:
-            if args.save:
+                predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
+                predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
+
                 hyperparameters = args.__dict__
                 save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
 
-                # Decode predicted latents (predicted_next_latents: [B, S - 1, ...])
+                # Decode predicted latents
                 with torch.no_grad():
-                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S - 1, ...]
+                    predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S, C, H, A]
  
                 # Ground truth frames
                 target_frames_full = x[:, 1:]  # [B, S - 1, ...]
@@ -204,8 +211,10 @@ def main():
                                     pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
                     pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
                     masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
+                
+                if args.save:
+                    save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
 
-                save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}_{args.filename}.png')
                 visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
             print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
