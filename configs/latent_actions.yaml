@@ -1,6 +1,6 @@
 # Training
 batch_size: 256
-n_updates: 1
+n_updates: 2500
 learning_rate: 0.001
 log_interval: 100
 
