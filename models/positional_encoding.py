@@ -50,7 +50,6 @@ def sincos_time(T, D, device, dtype):
 
 
 def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype=torch.float32):
-    print(f"frame size: {frame_size}, patch size: {patch_size}, embed dim: {embed_dim}")
     """
     Build spatial-only positional encodings for a grid of patches.
     - First 2/3 (rounded) of embed_dim are spatial (split evenly into x/y with even dims)

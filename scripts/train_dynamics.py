@@ -72,6 +72,9 @@ def main():
         num_bins=args.num_bins,
     ).to(device)
 
+    if args.checkpoint:
+        model, ckpt = load_dynamics_from_checkpoint(args.checkpoint, device, model)
+
     # Print parameter count
     try:
         num_params = sum(p.numel() for p in dynamics_model.parameters())
@@ -111,7 +114,7 @@ def main():
 
     # Initialize W&B if enabled and available
     if args.use_wandb:
-        run_name = args.wandb_run_name or f"dynamics_{readable_timestamp()}"
+        run_name = f"dynamics_{readable_timestamp()}"
         init_wandb(args.wandb_project, asdict(args), run_name)
         wandb.watch(dynamics_model, log="all", log_freq=args.log_interval)
 

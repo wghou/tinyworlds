@@ -25,7 +25,6 @@ class VQVAEConfig:
     num_bins: int = 4
     # Save/IO
     save: bool = True
-    filename: Optional[str] = None
     checkpoint: Optional[str] = None
     # Perf
     amp: bool = True
@@ -34,7 +33,6 @@ class VQVAEConfig:
     # W&B
     use_wandb: bool = False
     wandb_project: str = "nano-genie"
-    wandb_run_name: Optional[str] = None
 
 
 @dataclass
@@ -61,10 +59,8 @@ class LatentActionsConfig:
     # W&B
     use_wandb: bool = True
     wandb_project: str = "nano-genie"
-    wandb_run_name: Optional[str] = None
     # Save
     save: bool = True
-    filename: Optional[str] = None
     checkpoint: Optional[str] = None
 
 
@@ -98,10 +94,8 @@ class DynamicsConfig:
     # W&B
     use_wandb: bool = False
     wandb_project: str = "nano-genie"
-    wandb_run_name: Optional[str] = None
     # Save
     save: bool = True
-    filename: Optional[str] = None
     checkpoint: Optional[str] = None
 
 
@@ -125,6 +119,13 @@ class TrainingConfig:
     latent_dim: int = 6 # for video tokenizer
     num_bins: int = 4 # for video tokenizer
     n_actions: int = 16
+    # Performance
+    amp: bool = True
+    tf32: bool = True
+    compile: bool = True
+    # W&B
+    use_wandb: bool = True
+    wandb_project: str = "nano-genie"
 
 
 def load_config(config_cls, default_config_path: Optional[str] = None):

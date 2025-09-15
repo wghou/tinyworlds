@@ -25,7 +25,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Always define a timestamp-like name
-    timestamp = args.filename or readable_timestamp()
+    timestamp = readable_timestamp()
 
     # Create organized save directory structure under a shared run root
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
@@ -51,6 +51,9 @@ def main():
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
+
+    if args.checkpoint:
+        model, ckpt = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
 
     # Print parameter count
     try:
@@ -98,32 +101,11 @@ def main():
         'perplexities': [],
     }
 
-    if args.checkpoint:
-        # TODO: use util for loading checkpoint and optimizer/scheduler state dicts
-        if os.path.isfile(args.checkpoint):
-            print(f"Loading checkpoint from {args.checkpoint}")
-            checkpoint = torch.load(args.checkpoint)
-            model.load_state_dict(checkpoint['model'])
-            results = checkpoint['results']
-            # Load hyperparameters but don't override current args
-            saved_hyperparameters = checkpoint['hyperparameters']
-            print(f"Resuming from update {results['n_updates']}")
-
-            # Restore optimizer state if available
-            if 'optimizer_state_dict' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-            # Restore scheduler state if available
-            if 'scheduler_state_dict' in checkpoint:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        else:
-            print(f"No checkpoint found at {args.checkpoint}")
-
     # Initialize W&B if enabled and available
     if args.use_wandb:
         cfg = asdict(args)
         cfg.update({'timestamp': timestamp})
-        run_name = args.wandb_run_name or f"video_tokenizer_{timestamp}"
+        run_name = f"video_tokenizer_{timestamp}"
         init_wandb(args.wandb_project, cfg, run_name)
         wandb.watch(model, log="all", log_freq=args.log_interval)
 

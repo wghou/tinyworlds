@@ -13,7 +13,7 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
     """Find latest checkpoint.
     If run_root_dir (and optional stage_name) are provided, search only under
     <run_root_dir>/<stage_name>/checkpoints (or <run_root_dir>/**/checkpoints if stage_name None).
-    Otherwise, fall back to project-wide module-based search.
+    Otherwise, fall back to project-wide model type-based search.
     Newest run dir first, then highest step within it.
     """
     def collect_files_from_roots(roots, model_name):
@@ -42,9 +42,9 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
         newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
         candidate_files = run_dir_to_files[newest_run_dir]
     else:
-        # Fallback to module/results search in repository
+        # Fallback to model_type/results search in repository
         # TODO: clean this up
-        module_map = {
+        model_type_map = {
             'videotokenizer': 'video_tokenizer',
             'video_tokenizer': 'video_tokenizer',
             'vqvae': 'video_tokenizer',
@@ -52,11 +52,11 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
             'latent_actions': 'latent_actions',
             'dynamics': 'dynamics',
         }
-        module = module_map.get(model_name, '**')
-        if module == '**':
+        model_type = model_type_map.get(model_name, '**')
+        if model_type == '**':
             roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
         else:
-            roots = [os.path.join(base_dir, 'results', '**', module, 'checkpoints')]
+            roots = [os.path.join(base_dir, 'results', '**', model_type, 'checkpoints')]
         files = collect_files_from_roots(roots, model_name)
         if not files:
             raise Exception(f"No checkpoint files found for {model_name}")
@@ -118,7 +118,7 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
     return ckpt_path
 
 
-def load_videotokenizer_from_checkpoint(checkpoint_path, device):
+def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
     import torch
     from models.video_tokenizer import VideoTokenizer
@@ -136,12 +136,13 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device):
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
     }
-    model = VideoTokenizer(**kwargs).to(device)
+    if model is None:
+        model = VideoTokenizer(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
 
 
-def load_latent_actions_from_checkpoint(checkpoint_path, device):
+def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
     from models.latent_actions import LatentActionModel
@@ -157,12 +158,13 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device):
         'hidden_dim': cfg.get('hidden_dim', 256),
         'num_blocks': cfg.get('num_blocks', 4),
     }
-    model = LatentActionModel(**kwargs).to(device)
+    if model is None:
+        model = LatentActionModel(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
 
 
-def load_dynamics_from_checkpoint(checkpoint_path, device):
+def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
     from models.dynamics import DynamicsModel
@@ -190,40 +192,13 @@ def load_dynamics_from_checkpoint(checkpoint_path, device):
         'latent_dim': cfg.get('latent_dim', 6),
         'num_bins': cfg.get('num_bins', 4),
     }
-    model = DynamicsModel(**kwargs).to(device)
+    if model is None:
+        model = DynamicsModel(**kwargs).to(device)
     model.load_state_dict(ckpt['model'], strict=True)
     return model, ckpt
 
-
-def prepare_run_dirs(module: str, filename: str | None, base_cwd: str | None = None):
-    """
-    Create an organized directory structure for a training run.
-
-    Args:
-        module: submodule name under src (e.g., 'video_tokenizer', 'latent_actions', 'dynamics')
-        filename: optional custom run name; if None, use a timestamp
-        base_cwd: optional base working directory; defaults to current working directory
-
-    Returns:
-        run_dir, checkpoints_dir, visualizations_dir, run_name
-    """
-    cwd = base_cwd or os.getcwd()
-    ts = readable_timestamp()
-    run_name = filename or ts
-    run_dir = os.path.join(cwd, 'src', module, 'results', f"{module.split('/')[-1]}_{run_name}")
-    os.makedirs(run_dir, exist_ok=True)
-    checkpoints_dir = os.path.join(run_dir, 'checkpoints')
-    visualizations_dir = os.path.join(run_dir, 'visualizations')
-    os.makedirs(checkpoints_dir, exist_ok=True)
-    os.makedirs(visualizations_dir, exist_ok=True)
-    return run_dir, checkpoints_dir, visualizations_dir, run_name
-
-
 def prepare_pipeline_run_root(run_name: str | None = None, base_cwd: str | None = None):
-    """Create a top-level run root directory results/<timestamp_or_name>.
-
-    Returns (run_root_dir, run_name).
-    """
+    """Create a top-level run root directory results/<timestamp_or_name>"""
     cwd = base_cwd or os.getcwd()
     ts = readable_timestamp()
     name = run_name or ts

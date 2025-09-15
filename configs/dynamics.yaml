@@ -18,4 +18,4 @@ latent_actions_path: null
 
 # Save
 save: true
-filename: null 
+checkpoint: null

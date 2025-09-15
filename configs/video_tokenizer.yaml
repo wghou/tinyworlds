@@ -13,6 +13,4 @@ num_blocks: 4
 
 # Save/IO
 save: true
-filename: null
 checkpoint: null
-start_iteration: 0

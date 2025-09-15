@@ -46,6 +46,9 @@ def main():
         num_blocks=args.num_blocks,
     ).to(device)
 
+    if args.checkpoint:
+        model, ckpt = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
+
     # Print parameter count
     try:
         num_params = sum(p.numel() for p in model.parameters())
@@ -73,7 +76,7 @@ def main():
 
     # Initialize W&B if enabled and available
     if args.use_wandb:
-        run_name = args.wandb_run_name or f"latent_actions_{readable_timestamp()}"
+        run_name = f"latent_actions_{readable_timestamp()}"
         init_wandb(args.wandb_project, asdict(args), run_name)
 
     # Training loop
