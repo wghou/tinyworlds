@@ -42,18 +42,18 @@ Latent Action Model: This infers the discrete action between two frames. Similar
 
 Dynamics Model: Given latent action and past frame tokens, predict latent next frame of video tokens. This is the core of our world model that captures the dynamics of the video we give.
 
-For all 3, I used STTransformer, which we will go over first. For the Tokenizer and LAM, I used FSQVAE.
+For all 3, I used STTransformer, and for the Tokenizer and LAM, I used FSQVAE.
 
 ## Space-Time Transformer (STT)
 papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
 
 The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
 
-In the spatial layer, each token attends to all other tokens within its timestep. Attention operates over a given timestep with P tokens, where P = Hp x Wp, Hp = Pixel height / patch size (# patches along the H dimension), and Wp = Pixel width / patch size (# patches along the width dimension). 
+In the spatial layer, each token attends to all other tokens in the same frame (within its timestep). Attention operates over a given timestep with P tokens, where P = Hp x Wp, Hp = Pixel height / patch size (# patches along the H dimension), and Wp = Pixel width / patch size (# patches along the width dimension). 
 
 In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps. Attention operates causally over slices of T x 1 across T timesteps for the same token.
 
-In the feedforward Layer, we could use a basic FFL: Wx + b -> ReLU -> Wx + b -> LayerNorm. However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
+In the Feedforward Layer, we could use a basic FFL: Wx + b -> ReLU -> Wx + b -> LayerNorm. However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
 SwiGLU comes from Swish, which is x * sigmoid(x). SwiGLU adds a Gated Linear Unit (GLU), so we first compute x_t = Swish(W_1x + b) to W_2x + b, and then we have a final wx_t + b.
 
 Both attentions and the feedforward have norms afterward (postnorm), either unconditioned (for Video Tokenizer and LAM Encoder) or conditioned on actions (for LAM decoder and the dynamics model). 
@@ -195,27 +195,26 @@ I found SwiCLU better than ReLU and SiLU (TODO: full ablation run/loss compariso
 
 # Shape Annotation Key
 
-B: batch size
-T: time/sequence dimension (number of frames)
-P: number of patches
-E: embedding dim
-L: Video Tokenizer latent dim
-A: LAM latent dim (action dim)
-D: number of bins for each video tokenizer dim
-L^D: Size of the video tokenizer codebook
-C: image channels
-H: pixel height
-W: pixel width
-Hp: patch height
-Wp: patch width
+B: batch size \
+T: time/sequence dimension (number of frames) \
+P: number of patches \
+E: embedding dim \
+L: Video Tokenizer latent dim \
+A: LAM latent dim (action dim) \
+D: number of bins for each video tokenizer dim \
+L^D: Size of the video tokenizer codebook \
+C: image channels \
+H: pixel height \
+W: pixel width \
+Hp: patch height \
+Wp: patch width \
 S: patch size
 
 
 # Next Steps
 
 - [ ] Implement MoE in the Feedforward layer
-- [ ] Scale! Train on more GPUs with DDP
-- [ ] Scale Further! Add FSDP Support
-- [ ] Add Datasets (Terraria, Street Fighter) your favorite retro videogame 
+- [ ] Scale! Train on more GPUs and scale to multibillions of params by adding FSDP Support
+- [ ] Add more datasets (Terraria, Street Fighter, your favorite retro videogame!) 
 - [ ] Try Different Optimizers (Muon, SOAP)
 - [ ] Try RoPE/AliBi Pos/Temporal Embeddings

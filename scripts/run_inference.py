@@ -257,6 +257,7 @@ def main():
         video_indices = video_tokenizer.tokenize(context_frames)
         video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_indices)
 
+        # TODO: add option for user inputted actions
         # Sample action only if using actions
         if args.use_gt_actions:
             # pass last 2 frames through latent_action_model to get action latent
