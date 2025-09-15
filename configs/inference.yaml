@@ -1,14 +1,14 @@
-video_tokenizer_path: /workspace/nano-genie/results/2025_09_15_07_13_54/video_tokenizer/checkpoints/video_tokenizer_step_0_2025_09_15_07_15_32.pth
-latent_actions_path: /workspace/nano-genie/results/2025_09_15_07_13_54/latent_actions/checkpoints/latent_actions_step_0_2025_09_15_07_17_27.pth
-dynamics_path: /workspace/nano-genie/results/2025_09_15_07_58_44/dynamics/checkpoints/dynamics_step_0_2025_09_15_08_00_10.pth
+video_tokenizer_path:
+latent_actions_path:
+dynamics_path:
 device: cuda
 generation_steps: 4
 context_window: 3
 fps: 2
 temperature: 0.0
-use_actions: true
+use_actions: false
 teacher_forced: false
-use_latest_checkpoints: false
+use_latest_checkpoints: true
 prediction_horizon: 1
 dataset: PICODOOM
-use_gt_actions: false
+use_gt_actions: true

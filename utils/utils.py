@@ -15,7 +15,9 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
     <run_root_dir>/<stage_name>/checkpoints (or <run_root_dir>/**/checkpoints if stage_name None).
     Otherwise, fall back to project-wide model type-based search.
     Newest run dir first, then highest step within it.
+    If the newest run root has none for this model, keep searching older runs.
     """
+    # TODO: if no checkpoint for model_bane in newest datetime dir, keep searching older until you find one of this model name
     def collect_files_from_roots(roots, model_name):
         files = []
         for root in roots:
@@ -23,27 +25,12 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
             files.extend(glob.glob(os.path.join(root, f"{model_name}_checkpoint_*.*"), recursive=True))
         return [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
 
-    if run_root_dir is not None:
-        if stage_name:
-            roots = [os.path.join(run_root_dir, stage_name, 'checkpoints')]
-        else:
-            roots = [os.path.join(run_root_dir, '**', 'checkpoints')]
-        files = collect_files_from_roots(roots, model_name)
-        if not files:
-            raise Exception(f"No checkpoint files found for {model_name} under {run_root_dir}")
-        # All files already belong to the same run root; group by stage dir
-        def run_dir_of(path: str) -> str:
-            checkpoints_dir = os.path.dirname(path)
-            return os.path.dirname(checkpoints_dir)
-        run_dir_to_files = {}
-        for p in files:
-            rd = run_dir_of(p)
-            run_dir_to_files.setdefault(rd, []).append(p)
-        newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
-        candidate_files = run_dir_to_files[newest_run_dir]
-    else:
+    def run_dir_of(path: str) -> str:
+        checkpoints_dir = os.path.dirname(path)
+        return os.path.dirname(checkpoints_dir)
+
+    def project_wide_search():
         # Fallback to model_type/results search in repository
-        # TODO: clean this up
         model_type_map = {
             'videotokenizer': 'video_tokenizer',
             'video_tokenizer': 'video_tokenizer',
@@ -60,15 +47,33 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
         files = collect_files_from_roots(roots, model_name)
         if not files:
             raise Exception(f"No checkpoint files found for {model_name}")
-        def run_dir_of(path: str) -> str:
-            checkpoints_dir = os.path.dirname(path)
-            return os.path.dirname(checkpoints_dir)
         run_dir_to_files = {}
         for p in files:
             rd = run_dir_of(p)
             run_dir_to_files.setdefault(rd, []).append(p)
         newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
         candidate_files = run_dir_to_files[newest_run_dir]
+        return candidate_files
+
+    if run_root_dir is not None:
+        if stage_name:
+            roots = [os.path.join(run_root_dir, stage_name, 'checkpoints')]
+        else:
+            roots = [os.path.join(run_root_dir, '**', 'checkpoints')]
+        files = collect_files_from_roots(roots, model_name)
+        if not files:
+            # Fallback: search project-wide older runs until found
+            candidate_files = project_wide_search()
+        else:
+            # Group by run dir within the provided root and choose newest run dir
+            run_dir_to_files = {}
+            for p in files:
+                rd = run_dir_of(p)
+                run_dir_to_files.setdefault(rd, []).append(p)
+            newest_run_dir = max(run_dir_to_files.keys(), key=lambda d: os.path.getctime(d))
+            candidate_files = run_dir_to_files[newest_run_dir]
+    else:
+        candidate_files = project_wide_search()
 
     def extract_step(path: str) -> int:
         fname = os.path.basename(path)

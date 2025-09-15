@@ -8,7 +8,7 @@ import os
 import random
 import glob
 import re
-from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions_from_checkpoint, load_dynamics_from_checkpoint
+from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions_from_checkpoint, load_dynamics_from_checkpoint, find_latest_checkpoint
 from utils.config import InferenceConfig, load_config
 from einops import repeat
 
@@ -179,35 +179,38 @@ def main():
     def missing(path: str | None) -> bool:
         return (path is None) or (not os.path.isfile(path))
 
-    if args.use_latest_checkpoints or missing(args.video_tokenizer_path) or (args.use_actions and missing(args.latent_actions_path)) or missing(args.dynamics_path):
+    if args.use_latest_checkpoints or missing(args.video_tokenizer_path) or ((args.use_actions or args.use_gt_actions) and missing(args.latent_actions_path)) or missing(args.dynamics_path):
         base_dir = os.getcwd()
         try:
             vt_ckpt = find_latest_checkpoint(base_dir, "video_tokenizer")
             args.video_tokenizer_path = vt_ckpt
+            print(f"Using video_tokenizer checkpoint: {vt_ckpt}")
         except Exception as e:
             pass
-        if args.use_actions:
+        if args.use_actions or args.use_gt_actions:
             try:
                 lam_ckpt = find_latest_checkpoint(base_dir, "latent_actions")
                 args.latent_actions_path = lam_ckpt
+                print(f"Using latent_actions checkpoint: {lam_ckpt}")
             except Exception as e:
                 pass
         try:
             dyn_ckpt = find_latest_checkpoint(base_dir, "dynamics")
             args.dynamics_path = dyn_ckpt
+            print(f"Using dynamics checkpoint: {dyn_ckpt}")
         except Exception as e:
             pass
 
     # Validate required paths
     if missing(args.video_tokenizer_path):
         raise FileNotFoundError("video_tokenizer_path is not set or not a file. Set it in configs/inference.yaml or enable use_latest_checkpoints with available runs.")
-    if args.use_actions and missing(args.latent_actions_path):
+    if (args.use_actions or args.use_gt_actions) and missing(args.latent_actions_path):
         raise FileNotFoundError("latent_actions_path is not set or not a file while use_actions is True. Set it in configs/inference.yaml or enable use_latest_checkpoints.")
     if missing(args.dynamics_path):
         raise FileNotFoundError("dynamics_path is not set or not a file. Set it in configs/inference.yaml or enable use_latest_checkpoints.")
  
     # Move models to the specified device
-    video_tokenizer, latent_action_model, dynamics_model = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, args.device, use_actions=args.use_actions)
+    video_tokenizer, latent_action_model, dynamics_model = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, args.device, use_actions=args.use_actions or args.use_gt_actions)
 
     # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
     frames_to_load = args.context_window + args.generation_steps * args.prediction_horizon
@@ -227,7 +230,7 @@ def main():
     generated_frames = context_frames.clone()
 
     # Initialize action tracking
-    if args.use_actions:
+    if args.use_actions or args.use_gt_actions:
         n_actions = latent_action_model.quantizer.codebook_size
         print(f"n_actions: {n_actions}")
         inferred_actions = []
@@ -298,12 +301,12 @@ def main():
 
         generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
 
-        if args.use_actions:
+        if args.use_actions or args.use_gt_actions:
             print(f"Step {i+1}: Generated frame with action {sampled_action_index.item()}, sequence length: {context_frames.shape[1]}")
 
     pred_len = min(effective_steps, generated_frames.shape[1] - args.context_window)
 
-    visualize_inference(generated_frames, ground_truth_frames, inferred_actions, args.fps, use_actions=args.use_actions)
+    visualize_inference(generated_frames, ground_truth_frames, inferred_actions, args.fps, use_actions=args.use_actions or args.use_gt_actions)
 
 
 # TODO: use utils fun
@@ -344,15 +347,6 @@ def visualize_decoded_frames(predicted_frames, ground_truth_frames, step=0):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Decoded sequence visualization saved to: {save_path}")
-
-
-def find_latest_checkpoint(base_dir, model_name):
-    pattern = os.path.join(base_dir, f"results/{model_name}_*/checkpoints/{model_name}_step_*.pth")
-    checkpoint_files = glob.glob(pattern)
-    if not checkpoint_files:
-        print(f"No checkpoint files found for {model_name}")
-        return None
-    return max(checkpoint_files, key=os.path.getctime)
 
 
 if __name__ == "__main__":
