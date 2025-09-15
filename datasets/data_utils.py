@@ -2,6 +2,8 @@ import torch
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
 import time
 import os
 import numpy as np
@@ -92,11 +94,18 @@ def load_zelda(num_frames=4):
     )
 
 
-def data_loaders(train_data, val_data, batch_size):
+def data_loaders(train_data, val_data, batch_size, distributed=False, rank=0, world_size=1):
+    train_sampler = None
+    val_sampler = None
+    if distributed:
+        train_sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
+        val_sampler = DistributedSampler(val_data, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True)
+
     train_loader = DataLoader(
         train_data,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False if train_sampler is not None else True,
+        sampler=train_sampler,
         num_workers=DEFAULT_NUM_WORKERS,
         pin_memory=DEFAULT_PIN_MEMORY,
         persistent_workers=DEFAULT_PERSISTENT_WORKERS,
@@ -107,7 +116,8 @@ def data_loaders(train_data, val_data, batch_size):
     val_loader = DataLoader(
         val_data,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False if val_sampler is not None else True,
+        sampler=val_sampler,
         num_workers=DEFAULT_NUM_WORKERS,
         pin_memory=DEFAULT_PIN_MEMORY,
         persistent_workers=DEFAULT_PERSISTENT_WORKERS,
@@ -117,7 +127,7 @@ def data_loaders(train_data, val_data, batch_size):
     return train_loader, val_loader
 
 
-def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
+def load_data_and_data_loaders(dataset, batch_size, num_frames=1, distributed=False, rank=0, world_size=1):
     if dataset == 'PONG':
         training_data, validation_data = load_pong(num_frames=num_frames)
     elif dataset == 'SONIC':
@@ -131,7 +141,10 @@ def load_data_and_data_loaders(dataset, batch_size, num_frames=1):
     else:
         raise ValueError('Invalid dataset')
 
-    training_loader, validation_loader = data_loaders(training_data, validation_data, batch_size)
+    training_loader, validation_loader = data_loaders(
+        training_data, validation_data, batch_size,
+        distributed=distributed, rank=rank, world_size=world_size
+    )
     x_train_var = np.var(training_data.data)
 
     return training_data, validation_data, training_loader, validation_loader, x_train_var

@@ -235,90 +235,17 @@ def main(args):
             sampled_action_index = None
             action_latent = None
 
-        # MaskGit-style iterative decoding
-        # for timestep m in range M: 
-        # 1. run inference with all tokens masked
-        # 2. get argmax tokens and their corresponding probabilities
-        # 3. choose top n tokens with highest probabilities and unmask them
+        # Use model's iterative inference helper
+        def idx_to_latents(idx):
+            return video_tokenizer.quantizer.get_latents_from_indices(idx, dim=-1)
 
-        # scheduling: n = e^(t/M) * P, where M is num steps and P is num patches
-        M = 10  # Number of decoding steps
-        P = video_latents.shape[2]  # Number of patches
-
-        # Start with all tokens masked
-        current_latents = video_latents.clone() # [1, T, P, L]
-
-        # append mask frame
-        mask_token_value = dynamics_model.mask_token.data  # Extract the actual tensor value
-        # Expand mask token to match the required shape: [1, 1, P, L]
-        mask_latents = mask_token_value.expand(1, args.prediction_horizon, P, -1).to(args.device)  # [1, T, P, L]
-
-        input_latents = torch.cat([current_latents, mask_latents], dim=1) # [1, T, P, L]
-
-        mask = torch.full((1, args.prediction_horizon, P, 1), True, dtype=torch.bool, device=args.device)  # [1, T, P, 1]
-
-        n_tokens = 0
-
-        for m in range(M):
-            prev_n_tokens = n_tokens
-            n_tokens_raw = exp_schedule_torch(m, M, P, device=args.device)
-            n_tokens = int(n_tokens_raw)
-            tokens_to_unmask = n_tokens - prev_n_tokens
-            print(f"DEBUG: m={m}, n_tokens_raw={n_tokens_raw:.2f}, n_tokens={n_tokens}, tokens_to_unmask={tokens_to_unmask}")
-
-            # Run dynamics model to get predictions
-            with torch.no_grad():
-                if args.use_actions:
-                    predicted_logits, _ = dynamics_model(input_latents, training=False, conditioning=action_latent)  # [B, T, P, L^D]
-                else:
-                    predicted_logits, _ = dynamics_model(input_latents, training=False)  # [B, T, P, L^D]
-
-            # Get probabilities and top predictions
-            probs = torch.softmax(predicted_logits, dim=-1)  # [B, T, P, L^D]
-
-            max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, T, P]
-
-            # among only the currently masked latents (check the mask tensor), 
-            # 1. get the top n_tokens with highest probabilities
-            # 2. unmask them in the mask tensor
-            # 3. add them to the "input_latents" tensor instead of the mask embeddings in those positions        
-            masked_probs = max_probs[:, -1, :]  # [B, P] - only last timestep
-            masked_mask = mask[:, -1, :, 0]  # [B, P] - only last timestep
-
-            # Ensure we unmask at least 1 token if there are still masked tokens
-            if masked_mask.sum() > 0 and tokens_to_unmask == 0:
-                tokens_to_unmask = 1
-
-            if masked_mask.sum() > 0:
-                # Get indices of masked positions
-                masked_indices = torch.where(masked_mask[0])[0]  # [num_masked]
-                masked_pos_probs = masked_probs[0, masked_indices]  # [num_masked]
-
-                # Select top tokens_to_unmask tokens with highest probabilities
-                if len(masked_pos_probs) > tokens_to_unmask:
-                    top_indices = torch.topk(masked_pos_probs, tokens_to_unmask, largest=True).indices
-                    tokens_to_unmask_indices = masked_indices[top_indices]
-                else:
-                    # Unmask all remaining tokens
-                    tokens_to_unmask_indices = masked_indices
-
-                # 1. Unmask selected positions in the mask tensor
-                mask[0, -1, tokens_to_unmask_indices, 0] = False
-
-                for idx in tokens_to_unmask_indices:
-                    predicted_latent = video_tokenizer.quantizer.get_latents_from_indices(
-                        predicted_indices[0:1, -1:, idx:idx+1], dim=-1
-                    ).to(args.device)  # [1, 1, 1, L]
-
-                    # Update input_latents at the last timestep, this position
-                    input_latents[0, -1, idx] = predicted_latent[0, 0, 0]
-
-                print(f"Step {m+1}/{M}: Unmasked {len(tokens_to_unmask_indices)} tokens (target: {tokens_to_unmask}, remaining: {masked_mask.sum().item()})")
-            else:
-                print(f"Step {m+1}/{M}: No masked tokens remaining")
-
-        # Final result: input_latents contains the decoded sequence (last timestep)
-        next_video_latents = input_latents
+        next_video_latents = dynamics_model.forward_inference(
+            context_latents=video_latents,
+            prediction_horizon=args.prediction_horizon,
+            num_steps=10,
+            index_to_latents_fn=idx_to_latents,
+            conditioning=action_latent
+        )
 
         # decode next video tokens to frames
         next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, T, C, H, W]

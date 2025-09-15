@@ -93,7 +93,8 @@ class VideoTokenizer(nn.Module):
         embeddings = self.encoder(frames)  # [B, T, P, L]
         quantized_z = self.quantizer(embeddings)
         x_hat = self.decoder(quantized_z)  # [B, T, C, H, W]
-        return x_hat
+        recon_loss = F.smooth_l1_loss(x_hat, frames)
+        return recon_loss, x_hat
 
     def tokenize(self, frames):
         # encode frames to latent representations, quantize, and return indices

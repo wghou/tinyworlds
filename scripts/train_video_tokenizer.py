@@ -15,6 +15,7 @@ from utils.config import VQVAEConfig, load_stage_config_merged
 from utils.utils import save_training_state
 from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
 from dataclasses import asdict
+from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
 
 
 def main():
@@ -22,7 +23,9 @@ def main():
     # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: VQVAEConfig = load_stage_config_merged(VQVAEConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Minimal DDP setup
+    ddp = init_distributed_from_env()
+    device = ddp['device']
 
     # Always define a timestamp-like name
     timestamp = readable_timestamp()
@@ -31,14 +34,16 @@ def main():
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
-    if args.save:
+    is_main = ddp['is_main']
+    if args.save and is_main:
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
-        num_frames=args.context_length
+        num_frames=args.context_length,
+        **get_dataloader_distributed_kwargs(ddp)
     )
 
     model = VideoTokenizer(
@@ -55,21 +60,19 @@ def main():
     if args.checkpoint:
         model, ckpt = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
 
-    # Print parameter count
-    try:
-        num_params = sum(p.numel() for p in model.parameters())
-        print(f"VideoTokenizer parameters: {num_params/1e6:.2f}M ({num_params})")
-    except Exception:
-        pass
+    print_param_count_if_main(model, "VideoTokenizer", is_main)
 
     # Optionally compile the model
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
 
+    # Wrap with DDP
+    model = wrap_ddp_if_needed(model, ddp['is_distributed'], ddp['local_rank'])
+
     # Create parameter groups to avoid weight decay on biases and norm layers
     decay = []
     no_decay = []
-    for name, param in model.named_parameters():
+    for name, param in unwrap_model(model).named_parameters():
         if param.requires_grad:
             if len(param.shape) == 1 or name.endswith(".bias") or "norm" in name:
                 no_decay.append(param)
@@ -102,14 +105,14 @@ def main():
     }
 
     # Initialize W&B if enabled and available
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         cfg = asdict(args)
         cfg.update({'timestamp': timestamp})
         run_name = f"video_tokenizer_{timestamp}"
         init_wandb(args.wandb_project, cfg, run_name)
-        wandb.watch(model, log="all", log_freq=args.log_interval)
+        wandb.watch(unwrap_model(model), log="all", log_freq=args.log_interval)
 
-    model.train()
+    unwrap_model(model).train()
 
     train_iter = iter(training_loader)
     for i in tqdm(range(args.n_updates)):
@@ -124,54 +127,55 @@ def main():
 
         # Forward + loss under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            x_hat = model(x)
-            recon_loss = F.smooth_l1_loss(x_hat, x)
+            loss, x_hat = unwrap_model(model)(x)
 
         # Backward with scaler
-        scaler.scale(recon_loss).backward()
+        scaler.scale(loss).backward()
 
         # Clip gradients before stepping
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()  # Step the learning rate scheduler
 
-        results["recon_errors"].append(recon_loss.cpu().detach())
-        results["loss_vals"].append(recon_loss.cpu().detach())
+        results["recon_errors"].append(loss.cpu().detach())
+        results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
         # Log to W&B if enabled and available
-        if args.use_wandb:
+        if args.use_wandb and is_main:
             metrics = {
-                'loss': recon_loss.item(),
+                'loss': loss.item(),
                 'learning_rate': scheduler.get_last_lr()[0],
             }
             log_training_metrics(i, metrics, prefix='train')
 
             if i % args.log_interval == 0:
                 with torch.no_grad():
-                    indices = model.tokenize(x)
+                    indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()
                     wandb.log({'train/codebook_usage': unique_codes / model.codebook_size, 'step': i})
 
             log_system_metrics(i)
 
         if i % args.log_interval == 0:
-            if args.save:
+            if args.save and is_main:
                 hyperparameters = args.__dict__
-                save_training_state(model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
+                save_training_state(unwrap_model(model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
                 # Visualizations
                 x_hat_vis = x_hat.detach().cpu()
                 x_vis = x.detach().cpu()
                 save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
                 visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
 
-        print('Update #', i, 'Recon Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
+            if is_main:
+                print('Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
 
     # Finish W&B run
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         finish_wandb()
+    cleanup_distributed(ddp['is_distributed'])
 
 if __name__ == "__main__":
     main()

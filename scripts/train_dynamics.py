@@ -31,13 +31,17 @@ from utils.utils import (
 from utils.config import DynamicsConfig, load_stage_config_merged
 import wandb
 from dataclasses import asdict
+from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
 
 
 def main():
     args: DynamicsConfig = load_stage_config_merged(DynamicsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'dynamics.yaml'))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Minimal DDP setup
+    ddp = init_distributed_from_env()
+    device = ddp['device']
 
-    if args.save:
+    is_main = ddp['is_main']
+    if args.save and is_main:
         run_root = os.environ.get('NG_RUN_ROOT_DIR')
         if not run_root:
             run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
@@ -75,15 +79,12 @@ def main():
     if args.checkpoint:
         model, ckpt = load_dynamics_from_checkpoint(args.checkpoint, device, model)
 
-    # Print parameter count
-    try:
-        num_params = sum(p.numel() for p in dynamics_model.parameters())
-        print(f"DynamicsModel parameters: {num_params/1e6:.2f}M ({num_params})")
-    except Exception:
-        pass
+    print_param_count_if_main(dynamics_model, "DynamicsModel", is_main)
 
     if args.compile:
         dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+
+    dynamics_model = wrap_ddp_if_needed(dynamics_model, ddp['is_distributed'], ddp['local_rank'])
 
     # Create parameter groups to avoid weight decay on biases and norm layers
     decay = []
@@ -113,17 +114,18 @@ def main():
     }
 
     # Initialize W&B if enabled and available
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         run_name = f"dynamics_{readable_timestamp()}"
         init_wandb(args.wandb_project, asdict(args), run_name)
-        wandb.watch(dynamics_model, log="all", log_freq=args.log_interval)
+        wandb.watch(unwrap_model(dynamics_model), log="all", log_freq=args.log_interval)
 
-    dynamics_model.train()
+    unwrap_model(dynamics_model).train()
 
     _, _, training_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
-        num_frames=args.context_length
+        num_frames=args.context_length,
+        **get_dataloader_distributed_kwargs(ddp)
     )
     train_iter = iter(training_loader)
 
@@ -149,26 +151,14 @@ def main():
 
         # Predict next frame latents using dynamics model under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            predicted_next_logits, mask_positions = dynamics_model(video_latents, training=True, conditioning=quantized_actions)  # [B, S, P, L^D]
-
-        num_masked = mask_positions.sum().item() # Scalar
-        total_positions = mask_positions.numel() # Scalar
-        masking_rate = num_masked / total_positions # Scalar
-
-        # Compute loss only on masked tokens (MaskGit-style)
-        mask_for_loss = mask_positions
-        masked_logits = predicted_next_logits.reshape(-1, predicted_next_logits.shape[-1])  # [P, L^D]
-        masked_targets = target_next_tokens.reshape(-1)  # [P]
-        masked_mask = mask_for_loss.reshape(-1)  # [P]
-
-        masked_logits = masked_logits[masked_mask]  # [num_masked, L^D]
-        masked_targets = masked_targets[masked_mask]  # [num_masked]
-        loss = F.cross_entropy(masked_logits, masked_targets)
+            predicted_next_logits, mask_positions, loss = unwrap_model(dynamics_model)(
+                video_latents, training=True, conditioning=quantized_actions, targets=target_next_tokens
+            )  # logits, mask, loss
 
         # Backward + clip with scaler
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(dynamics_model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(unwrap_model(dynamics_model).parameters(), max_norm=1.0)
         optimizer.step()
         scaler.update()
         scheduler.step()  # Step the learning rate scheduler
@@ -177,28 +167,27 @@ def main():
         results["n_updates"] = i
 
         # Log to W&B if enabled
-        if args.use_wandb:
+        if args.use_wandb and is_main:
             metrics = {
                 'loss': loss.item(),
-                'masking_rate': masking_rate if mask_positions is not None else 0.0,
             }
             log_training_metrics(i, metrics, prefix="train")
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
 
-        if i % args.log_interval == 0:
-            predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1) # [B, S - 1, P]
-            predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1) # [B, S - 1, P, L]
+        if i % args.log_interval == 0 and is_main:
+            predicted_next_indices = torch.argmax(predicted_next_logits, dim=-1)
+            predicted_next_latents = video_tokenizer.quantizer.get_latents_from_indices(predicted_next_indices, dim=-1)
 
             hyperparameters = args.__dict__
-            save_training_state(dynamics_model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
+            save_training_state(unwrap_model(dynamics_model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
 
             # Decode predicted latents
             with torch.no_grad():
-                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16])  # [B, S, C, H, A]
+                predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16]) # [B, S, C, H, W]
 
             # Ground truth frames
-            target_frames_full = x[:, 1:]  # [B, S - 1, ...]
+            target_frames_full = x[:, 1:] # [B, S - 1, C, H, W]
 
             # Display the masked patches in the ground truth frames as black
             masked_target_frames_full = target_frames_full.clone()
@@ -221,7 +210,7 @@ def main():
                                 pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
                 pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
                 masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
-            
+
             if args.save:
                 save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
 
@@ -230,8 +219,9 @@ def main():
             print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
     # Finish W&B run
-    if args.use_wandb:
+    if args.use_wandb and is_main:
         finish_wandb()
+    cleanup_distributed(ddp['is_distributed'])
 
 if __name__ == "__main__":
     main()
