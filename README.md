@@ -2,7 +2,7 @@
 
 nanogenie is inspired by Karpathy's [NanoGPT ](https://github.com/karpathy/nanoGPT), and Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
 
-The greatest challenge in training world models as opposed to video models is the requirement of action annotations at each timestep. When we require actions, we can no longer train on the entire internet's video data and get amazing results like Google's VEO3 (or, hint, Genie 3). 
+The greatest challenge in training world models over video models is the necessity of action annotations for each timestep. When we require actions, we can no longer train on the entire internet's video data and get as world-realistic, consistent results as Google's VEO3 (or, hint, Genie 3). 
 
 Genie solves this problem by inferring the actions between frames, and labelling them in an unsupervised manner. This is the critical unlock to achieving scale with world models.
 
@@ -36,11 +36,11 @@ This world model is autoregressive over discrete tokens, similar to LLMs. We can
 
 Our world model consists of three modules:
 
-Video Tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the most information contained in the base video.
+Video Tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the maximum amount of information contained in the video.
 
-Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on a discrete bottleneck of actions, and our uncompressed previous frame.
+Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on both the previous frame and a discrete bottleneck (our action) that encodes the maximum amount of information from the transition between previous and next frame.
 
-Dynamics Model: Given latent action and past frame tokens, predict latent next frame of video tokens. This is the core of our world model that captures the dynamics of the video we give.
+Dynamics Model: Given latent action and past frame tokens, predict next frame tokens. In practice during training, given latent action and partially-masked frame tokens, predict those masked frame tokens. This is the core of our world model that captures the dynamics of the video we give.
 
 For all 3, I used STTransformer, and for the Tokenizer and LAM, I used FSQVAE.
 
@@ -191,7 +191,7 @@ The greatest challenge was avoiding latent action model collapse, which was solv
 
 I found RMSNorm better than layernorm in ablations (TODO: do full ablation run and loss comparison)
 
-I found SwiCLU better than ReLU and SiLU (TODO: full ablation run/loss comparison)
+I found SwiGLU better than ReLU and SiLU (TODO: full ablation run/loss comparison)
 
 # Shape Annotation Key
 
@@ -214,7 +214,7 @@ S: patch size
 # Next Steps
 
 - [ ] Implement MoE in the Feedforward layer
+- [ ] Try RoPE/AliBi Spatial/Temporal Position Embeddings
 - [ ] Scale! Train on more GPUs and scale to multibillions of params by adding FSDP Support
 - [ ] Add more datasets (Terraria, Street Fighter, your favorite retro videogame!) 
 - [ ] Try Different Optimizers (Muon, SOAP)
-- [ ] Try RoPE/AliBi Pos/Temporal Embeddings

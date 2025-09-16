@@ -65,7 +65,8 @@ class DynamicsModel(nn.Module):
 
         # compute masked cross-entropy loss with static shapes
         loss = None
-        if targets is not None:
+        if training and self.training:
+            assert targets is not None, "target indices are needed for training"
             K = predicted_logits.shape[-1]
             logits_flat = predicted_logits.reshape(-1, K)              # [(B*T*P), K]
             targets_flat = targets.reshape(-1)                          # [(B*T*P)]

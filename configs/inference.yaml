@@ -1,11 +1,12 @@
 # paths (need if not get latest)
-video_tokenizer_path:
+video_tokenizer_path: /workspace/nano-genie/results/2025_09_15_10_39_40/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_15_12_33_10.pth
 latent_actions_path:
-dynamics_path:
-use_latest_checkpoints: true
+dynamics_path: /workspace/nano-genie/results/2025_09_16_00_20_47/dynamics/checkpoints/dynamics_step_5000_2025_09_16_01_13_04.pth
+use_latest_checkpoints: false
 
 # inference params
 dataset: PICODOOM
+preload_ratio: 0.1
 device: cuda
 generation_steps: 4
 context_window: 3
@@ -15,11 +16,11 @@ teacher_forced: false # for testing/dev
 prediction_horizon: 1 # how many masked frames to append and decode at a time
 
 # use random actions or use lam-inferred actions
-use_actions: true
-use_gt_actions: true
+use_actions: false
+use_gt_actions: false
 
 # user-inputted actions on the fly
-interactive_mode: false
+use_interactive_mode: false
 
 # TODO: add torch compile/amp/tf32
 # Performance options

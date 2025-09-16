@@ -83,7 +83,10 @@ def main():
     print_param_count_if_main(dynamics_model, "DynamicsModel", is_main)
 
     if args.compile:
+        video_tokenizer = torch.compile(video_tokenizer, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        latent_action_model = torch.compile(latent_action_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
         dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
+        print("Compiled all models for training.")
 
     dynamics_model = wrap_ddp_if_needed(dynamics_model, ddp['is_distributed'], ddp['local_rank'])
 

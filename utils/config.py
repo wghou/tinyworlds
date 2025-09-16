@@ -161,6 +161,9 @@ class InferenceConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# Interactive mode (user enters action ids)
+	use_interactive_mode: bool
+	preload_ratio: Optional[float] = None
 
 
 def load_config(config_cls, default_config_path: Optional[str] = None):
