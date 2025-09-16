@@ -19,7 +19,6 @@ from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unw
 
 
 def main():
-    print(f"Latent Actions Training")
     # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: LatentActionsConfig = load_stage_config_merged(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
@@ -36,6 +35,7 @@ def main():
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = ddp['is_main']
     if is_main:
+        print(f"Latent Actions Training")
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
         print(f'Results will be saved in {stage_dir}')
 
@@ -113,7 +113,7 @@ def main():
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
-    for i in tqdm(range(args.n_updates)):
+    for i in tqdm(range(args.n_updates), disable=not is_main):
         try:
             (x, _) = next(train_iter)
         except StopIteration:

@@ -19,7 +19,6 @@ from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unw
 
 
 def main():
-    print(f"Video Tokenizer Training")
     # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: VideoTokenizerConfig = load_stage_config_merged(VideoTokenizerConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
@@ -36,6 +35,7 @@ def main():
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = ddp['is_main']
     if is_main:
+        print(f"Video Tokenizer Training")
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
@@ -123,7 +123,7 @@ def main():
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
-    for i in tqdm(range(args.n_updates)):
+    for i in tqdm(range(args.n_updates), disable=not is_main):
         try:
             (x, _) = next(train_iter)
         except StopIteration:
@@ -165,7 +165,7 @@ def main():
                 with torch.no_grad():
                     indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()
-                    wandb.log({'train/codebook_usage': unique_codes / model.codebook_size}, step=i)
+                    wandb.log({'train/codebook_usage': unique_codes / unwrap_model(model).codebook_size}, step=i)
 
             hyperparameters = args.__dict__
             save_training_state(unwrap_model(model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)

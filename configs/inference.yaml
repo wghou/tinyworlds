@@ -5,8 +5,8 @@ dynamics_path: /workspace/nano-genie/results/2025_09_16_06_10_08/dynamics/checkp
 use_latest_checkpoints: true
 
 # inference params
-dataset: PICODOOM
-preload_ratio: 0.1
+dataset: SONIC
+preload_ratio: 0.5
 device: cuda
 generation_steps: 10
 context_window: 2

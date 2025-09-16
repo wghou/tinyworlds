@@ -3,8 +3,8 @@ use_wandb: true
 wandb_project: nano-genie-pipeline
 
 # dataset
-dataset: PICODOOM
-preload_ratio: 0.1
+dataset: SONIC
+preload_ratio: 0.5
 
 # shared model params
 patch_size: 4
@@ -25,6 +25,11 @@ amp: true
 tf32: true
 compile: true
 
+# distributed launch (torchrun)
+distributed: true
+nproc_per_node: 6
+standalone: true
+
 # stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
 latent_actions_config: configs/latent_actions.yaml
@@ -32,5 +37,5 @@ dynamics_config: configs/dynamics.yaml
 
 # which stages to run
 run_video_tokenizer: true
-run_latent_actions: false
+run_latent_actions: true
 run_dynamics: true

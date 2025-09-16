@@ -18,13 +18,24 @@ def main():
 
     train_config: TrainingConfig = load_config(TrainingConfig, default_config_path=training_cfg_path)
 
+    # Decide launch prefix: torchrun if distributed, else python
+    if train_config.distributed:
+        launcher = [
+            "torchrun",
+            "--nproc_per_node", str(train_config.nproc_per_node),
+        ]
+        if train_config.standalone:
+            launcher += ["--standalone"]
+    else:
+        launcher = [sys.executable]
+
     # create top-level run root and export so child processes can use it
     run_root, run_name = prepare_pipeline_run_root(base_cwd=os.getcwd())
     os.environ['NG_RUN_ROOT_DIR'] = run_root
 
     if train_config.run_video_tokenizer:
-        v_cmd = [
-            sys.executable, "scripts/train_video_tokenizer.py",
+        v_cmd = launcher + [
+            "scripts/train_video_tokenizer.py",
             "--config", train_config.video_tokenizer_config,
             "--training_config", training_cfg_path,
         ]
@@ -32,8 +43,8 @@ def main():
             return
 
     if train_config.run_latent_actions:
-        latent_actions_cmd = [
-            sys.executable, "scripts/train_latent_actions.py",
+        latent_actions_cmd = launcher + [
+            "scripts/train_latent_actions.py",
             "--config", train_config.latent_actions_config,
             "--training_config", training_cfg_path,
         ]
@@ -44,8 +55,8 @@ def main():
     latent_actions_checkpoint = find_latest_checkpoint(".", "latent_actions")
 
     if train_config.run_dynamics:
-        dyn_cmd = [
-            sys.executable, "scripts/train_dynamics.py",
+        dyn_cmd = launcher + [
+            "scripts/train_dynamics.py",
             "--config", train_config.dynamics_config,
             "--training_config", training_cfg_path,
             f"video_tokenizer_path={video_tokenizer_checkpoint}",

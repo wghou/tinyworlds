@@ -217,4 +217,6 @@ S: patch size
 - [ ] Try RoPE/AliBi Spatial/Temporal Position Embeddings
 - [ ] Scale! Train on more GPUs and scale to multibillions of params by adding FSDP Support
 - [ ] Add more datasets (Terraria, Street Fighter, your favorite retro videogame!) 
-- [ ] Try Different Optimizers (Muon, SOAP)
+- [ ] Accelerate dynamics training by producing, saving, and loading pre-processed tokens instead of full frames 
+- [ ] Try different optimizers (Muon, SOAP)
+

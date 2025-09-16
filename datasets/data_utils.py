@@ -176,8 +176,6 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     # Move tensors to CPU and convert to float32 for matplotlib compatibility
     original = original.detach().to('cpu', dtype=torch.float32)
     reconstruction = reconstruction.detach().to('cpu', dtype=torch.float32)
-    print(f"original shape: {original.shape}")
-    print(f"reconstruction shape: {reconstruction.shape}")
 
     # Handle single frames by expanding to sequences
     if original.dim() == 4:  # (B, C, H, W)
@@ -188,7 +186,6 @@ def visualize_reconstruction(original, reconstruction, save_path=None):
     # Take first 4 sequences, each of length 4 (or available length)
     num_sequences = min(4, original.shape[0])
     seq_length = min(4, original.shape[1])
-    print(f"seq_length: {seq_length}")
 
     original = original[:num_sequences, :seq_length]  # (B, S, C, H, W)
     reconstruction = reconstruction[:num_sequences, :seq_length]  # (B, S, C, H, W)

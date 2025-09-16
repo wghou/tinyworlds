@@ -43,6 +43,7 @@ def main():
 
     is_main = ddp['is_main']
     if is_main:
+        print(f"Dynamics Training")
         run_root = os.environ.get('NG_RUN_ROOT_DIR')
         if not run_root:
             run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
@@ -59,8 +60,8 @@ def main():
 
     if os.path.isfile(args.latent_actions_path):
         latent_action_model, latent_action_ckpt = load_latent_actions_from_checkpoint(args.latent_actions_path, device)
-        latent_action_model.eval()
-        for p in latent_action_model.parameters():
+        unwrap_model(latent_action_model).eval()
+        for p in unwrap_model(latent_action_model).parameters():
             p.requires_grad = False
     else:
         raise FileNotFoundError(f"Latent Action Model checkpoint not found at {args.latent_actions_path}")
@@ -72,7 +73,7 @@ def main():
         num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
-        conditioning_dim=latent_action_model.action_dim,
+        conditioning_dim=unwrap_model(latent_action_model).action_dim,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
@@ -141,7 +142,7 @@ def main():
     )
     train_iter = iter(training_loader)
 
-    for i in tqdm(range(0, args.n_updates)):
+    for i in tqdm(range(0, args.n_updates), disable=not is_main):
         try:
             x, _ = next(train_iter)
         except StopIteration:
@@ -155,7 +156,7 @@ def main():
         video_tokens = video_tokenizer.tokenize(x) # [B, S, P]
         video_latents = video_tokenizer.quantizer.get_latents_from_indices(video_tokens, dim=-1) # [B, S, P, L]
         if args.use_actions:
-            quantized_actions = latent_action_model.encode(x)  # [B, S - 1, A]
+            quantized_actions = unwrap_model(latent_action_model).encode(x)  # [B, S - 1, A]
         else:
             quantized_actions = None
 
@@ -183,7 +184,7 @@ def main():
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
             if args.use_actions:
-                action_indices = latent_action_model.quantizer.get_indices_from_latents(quantized_actions)
+                action_indices = unwrap_model(latent_action_model).quantizer.get_indices_from_latents(quantized_actions)
                 log_action_distribution(action_indices, i, args.n_actions)
 
         if i % args.log_interval == 0 and is_main:
@@ -194,35 +195,26 @@ def main():
             with torch.no_grad():
                 predicted_frames = video_tokenizer.decoder(predicted_next_latents[:16]) # [B, S, C, H, W]
 
-            # Ground truth frames
-            target_frames_full = x[:, 1:] # [B, S - 1, C, H, W]
-
-            # Display the masked patches in the ground truth frames as black
-            masked_target_frames_full = target_frames_full.clone()
-
             # Convert mask_positions to patch-level mask for visualization
-            if mask_positions is not None:
-                B, S, N = mask_positions.shape
-                patch_size = args.patch_size
-                H, W = args.frame_size, args.frame_size
-                mask_for_viz = mask_positions[:, 1:]
-                B_viz, S_viz, N_viz = mask_for_viz.shape
-                pixel_mask = torch.zeros(B_viz, S_viz, H, W, device=mask_positions.device)
-                for b in range(B_viz):
-                    for s in range(S_viz):
-                        patch_mask = mask_for_viz[b, s]
-                        for patch_idx in range(N_viz):
-                            if patch_mask[patch_idx]:
-                                patch_row = (patch_idx // (W // patch_size)) * patch_size
-                                patch_col = (patch_idx % (W // patch_size)) * patch_size
-                                pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1
-                pixel_mask_expanded = pixel_mask.unsqueeze(2).expand(-1, -1, 3, -1, -1)
-                masked_target_frames_full = masked_target_frames_full * (1 - pixel_mask_expanded)
+            B, S, P = mask_positions.shape
+            patch_size = args.patch_size
+            H, W = args.frame_size, args.frame_size
+            pixel_mask = torch.zeros(B, S, H, W, device=mask_positions.device)
+            # for each pixel patch, mask if equivalent token is masked
+            for b in range(B):
+                for s in range(S):
+                    for p in range(P):
+                        if mask_positions[b, s, p]:
+                            patch_row = (p // (W // patch_size)) * patch_size
+                            patch_col = (p % (W // patch_size)) * patch_size
+                            pixel_mask[b, s, patch_row:patch_row+patch_size, patch_col:patch_col+patch_size] = 1 # assigning 1 to the patch in the mask of dim [1, 1, Hp, Wp]
+            pixel_mask_expanded = rearrange(pixel_mask, 'b s h w -> b s 1 h w')
+            masked_frames = x * (1 - pixel_mask_expanded)
 
             hyperparameters = args.__dict__
             save_training_state(unwrap_model(dynamics_model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='dynamics', step=i)
             save_path = os.path.join(visualizations_dir, f'dynamics_prediction_step_{i}.png')
-            visualize_reconstruction(masked_target_frames_full[:16].cpu(), predicted_frames[:16].cpu(), save_path)
+            visualize_reconstruction(masked_frames[:16].cpu(), predicted_frames[:16].cpu(), save_path)
 
             print('Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 

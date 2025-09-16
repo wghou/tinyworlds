@@ -104,10 +104,10 @@ class DynamicsConfig:
 
 @dataclass
 class TrainingConfig:
-    # WandB
+	# WandB
 	use_wandb: bool
 	wandb_project: str
-    # Dataset
+	# Dataset
 	dataset: str
 	# Config paths for stages
 	video_tokenizer_config: str
@@ -128,6 +128,10 @@ class TrainingConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# Distributed launch options
+	distributed: bool
+	nproc_per_node: int
+	standalone: bool
 	# These can vary per model
 	embed_dim: Optional[int] = None
 	num_heads: Optional[int] = None
