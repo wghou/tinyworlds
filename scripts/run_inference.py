@@ -175,6 +175,11 @@ def exp_schedule_torch(t, T, P, k=5.0, device=None):
 def main():
     args: InferenceConfig = load_config(InferenceConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'inference.yaml'))
 
+    # Precision/backends options
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     # Auto-resolve latest checkpoints if requested or any path missing
     def missing(path: str | None) -> bool:
         return (path is None) or (not os.path.isfile(path))
@@ -211,6 +216,10 @@ def main():
  
     # Move models to the specified device
     video_tokenizer, latent_action_model, dynamics_model = load_models(args.video_tokenizer_path, args.latent_actions_path, args.dynamics_path, args.device, use_actions=args.use_actions or args.use_gt_actions)
+
+    # Optionally compile the dynamics model (most compute heavy)
+    if args.compile:
+        dynamics_model = torch.compile(dynamics_model, mode="reduce-overhead", fullgraph=False, dynamic=True)
 
     # Determine how many ground-truth frames we need: context + generation steps + prediction horizon
     frames_to_load = args.context_window + args.generation_steps * args.prediction_horizon
@@ -289,13 +298,17 @@ def main():
         def idx_to_latents(idx):
             return video_tokenizer.quantizer.get_latents_from_indices(idx, dim=-1)
 
-        next_video_latents = dynamics_model.forward_inference(
-            context_latents=video_latents,
-            prediction_horizon=args.prediction_horizon,
-            num_steps=10,
-            index_to_latents_fn=idx_to_latents,
-            conditioning=action_latent
-        )
+        # Autocast for inference if amp enabled (bfloat16 on CUDA by default)
+        autocast_dtype = torch.bfloat16 if args.amp else None
+        with torch.amp.autocast('cuda', enabled=args.amp, dtype=autocast_dtype):
+            next_video_latents = dynamics_model.forward_inference(
+                context_latents=video_latents,
+                prediction_horizon=args.prediction_horizon,
+                num_steps=10,
+                index_to_latents_fn=idx_to_latents,
+                conditioning=action_latent,
+                temperature=float(args.temperature) if hasattr(args, 'temperature') else 0.0,
+            )
 
         # decode next video tokens to frames
         next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, T, C, H, W]

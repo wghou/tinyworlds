@@ -18,5 +18,11 @@ prediction_horizon: 1 # how many masked frames to append and decode at a time
 use_actions: true
 use_gt_actions: true
 
-# TODO: add user-inputted actions
+# user-inputted actions on the fly
+interactive_mode: false
+
 # TODO: add torch compile/amp/tf32
+# Performance options
+amp: true
+tf32: true
+compile: false

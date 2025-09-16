@@ -35,6 +35,7 @@ class VideoTokenizerConfig:
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
 
+
 @dataclass
 class LatentActionsConfig:
 	# Training
@@ -63,6 +64,7 @@ class LatentActionsConfig:
 	checkpoint: Optional[str]
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+
 
 @dataclass
 class DynamicsConfig:
@@ -98,6 +100,7 @@ class DynamicsConfig:
 	checkpoint: Optional[str]
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+
 
 @dataclass
 class TrainingConfig:
@@ -154,6 +157,10 @@ class InferenceConfig:
 	prediction_horizon: int
 	dataset: str
 	use_gt_actions: bool
+	# Inference performance options
+	amp: bool
+	tf32: bool
+	compile: bool
 
 
 def load_config(config_cls, default_config_path: Optional[str] = None):

@@ -76,8 +76,10 @@ class DynamicsModel(nn.Module):
 
         return predicted_logits, mask_positions, loss  # logits, mask, optional loss
 
+    # TODO: make a util
     @torch.no_grad()
-    def forward_inference(self, context_latents, prediction_horizon, num_steps, index_to_latents_fn, conditioning=None, schedule_k=5.0):
+    def forward_inference(self, context_latents, prediction_horizon, num_steps, index_to_latents_fn, conditioning=None, schedule_k=5.0, temperature: float = 0.0):
+        # TODO: review and clean
         # MaskGit-style iterative decoding
         # for timestep m in range M: 
         # 1. run inference with all tokens masked
@@ -113,8 +115,22 @@ class DynamicsModel(nn.Module):
 
             # Predict logits for current input
             logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)
-            probs = torch.softmax(logits, dim=-1)  # [B, T, P, K]
-            max_probs, predicted_indices = torch.max(probs, dim=-1)  # [B, T, P]
+            # Temperature scaling
+            if temperature and temperature > 0:
+                scaled_logits = logits / float(temperature)
+            else:
+                scaled_logits = logits
+            probs = torch.softmax(scaled_logits, dim=-1)  # [B, T, P, K]
+            # Confidence for unmask selection always from max probability
+            max_probs, _ = torch.max(probs, dim=-1)  # [B, T, P]
+            # Choose indices either via argmax (temperature==0) or sampling
+            if temperature and temperature > 0:
+                # Sample per position from categorical distribution
+                Bc, Tc, Pc, K = probs.shape
+                sampled = torch.distributions.Categorical(probs=probs.reshape(-1, K)).sample()
+                predicted_indices = sampled.view(Bc, Tc, Pc)  # [B, T, P]
+            else:
+                _, predicted_indices = torch.max(probs, dim=-1)  # [B, T, P]
 
             # Only operate on last timestep
             masked_probs = max_probs[:, -1, :]  # [B, P]

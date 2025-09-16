@@ -22,7 +22,7 @@ num_blocks: 4
 # performance
 amp: true
 tf32: true
-compile: false
+compile: true
 
 # stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
