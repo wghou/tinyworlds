@@ -86,6 +86,25 @@ def main():
     context_frames = ground_truth_frames[:, :args.context_window, :, :, :]
     generated_frames = context_frames.clone()
 
+    # # DEBUG: visualize what a pure mask-latent decode looks like
+    # with torch.no_grad():
+    #     video_indices_dbg = video_tokenizer.tokenize(context_frames[:, -1:])
+    #     video_latents_dbg = video_tokenizer.quantizer.get_latents_from_indices(video_indices_dbg)
+    #     B_dbg, T_dbg, P_dbg, L_dbg = video_latents_dbg.shape
+    #     mask_latents_dbg = dynamics_model.mask_token.to(video_latents_dbg.device, video_latents_dbg.dtype).expand(B_dbg, 1, P_dbg, -1)
+    #     mask_frames = video_tokenizer.detokenize(mask_latents_dbg)  # [B,1,C,H,W]
+    #     img = (mask_frames[0, 0].cpu() + 1) / 2
+    #     img = torch.clamp(img, 0, 1).permute(1, 2, 0).numpy()
+    #     os.makedirs('inference_results', exist_ok=True)
+    #     plt.figure(figsize=(4, 4))
+    #     plt.imshow(img)
+    #     plt.axis('off')
+    #     save_path = os.path.join('inference_results', 'mask_token_decode.png')
+    #     plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    #     plt.close()
+    #     print(f"Saved mask-only decode to: {save_path}")
+    # return
+
     # Initialize action tracking
     n_actions = None
     inferred_actions = []
@@ -99,6 +118,7 @@ def main():
     effective_steps = args.generation_steps if not args.teacher_forced else min(args.generation_steps, max_possible_steps)
 
     for i in range(effective_steps):
+        print(f"Inferring frame {i+1}/{effective_steps}")
         # Select context depending on teacher-forced flag
         if args.teacher_forced:
             context_start = i  # shift window along ground truth
@@ -120,19 +140,28 @@ def main():
         # Autocast for inference if amp enabled (bfloat16 on CUDA by default)
         autocast_dtype = torch.bfloat16 if args.amp else None
         with torch.amp.autocast('cuda', enabled=args.amp, dtype=autocast_dtype):
+            # Verification override: ensure full replacement of masked tokens on a single step
+            if os.environ.get('NG_VERIFY_MASK') == '1':
+                verification_horizon = 1
+                verification_steps = max(16, 10)
+                verification_temp = 0.0
+            else:
+                verification_horizon = args.prediction_horizon
+                verification_steps = 10
+                verification_temp = float(args.temperature) if hasattr(args, 'temperature') else 0.0
             next_video_latents = dynamics_model.forward_inference(
                 context_latents=video_latents,
-                prediction_horizon=args.prediction_horizon,
-                num_steps=10,
+                prediction_horizon=verification_horizon,
+                num_steps=verification_steps,
                 index_to_latents_fn=idx_to_latents,
                 conditioning=action_latent,
-                temperature=float(args.temperature) if hasattr(args, 'temperature') else 0.0,
+                temperature=verification_temp,
             )
 
         # decode next video tokens to frames
         next_frames = video_tokenizer.detokenize(next_video_latents)  # [1, T, C, H, W]
 
-        generated_frames = torch.cat([generated_frames, next_frames[:, -args.prediction_horizon:, :, :]], dim=1)
+        generated_frames = torch.cat([generated_frames, next_frames[:, -verification_horizon:, :, :]], dim=1)
         # TODO: if using interactive mode, visualize next_frames[:, -1] (recently inferred frame) every time, probably with matplotlib is easiest
         # point is for user to be able to interact with it in real time
 

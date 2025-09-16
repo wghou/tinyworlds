@@ -1,19 +1,19 @@
 # paths (need if not get latest)
-video_tokenizer_path: /workspace/nano-genie/results/2025_09_15_10_39_40/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_15_12_33_10.pth
+video_tokenizer_path: /workspace/nano-genie/results/2025_09_16_06_10_08/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_16_08_08_08.pth
 latent_actions_path:
-dynamics_path: /workspace/nano-genie/results/2025_09_16_00_20_47/dynamics/checkpoints/dynamics_step_5000_2025_09_16_01_13_04.pth
-use_latest_checkpoints: false
+dynamics_path: /workspace/nano-genie/results/2025_09_16_06_10_08/dynamics/checkpoints/dynamics_step_17500_2025_09_16_12_23_44.pth
+use_latest_checkpoints: true
 
 # inference params
 dataset: PICODOOM
 preload_ratio: 0.1
 device: cuda
-generation_steps: 4
-context_window: 3
+generation_steps: 10
+context_window: 2
 fps: 2
 temperature: 0.0 # 0 is argmax
 teacher_forced: false # for testing/dev
-prediction_horizon: 1 # how many masked frames to append and decode at a time
+prediction_horizon: 2 # how many masked frames to append and decode at a time
 
 # use random actions or use lam-inferred actions
 use_actions: false
