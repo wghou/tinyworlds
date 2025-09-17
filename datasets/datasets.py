@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing import Optional, Tuple, Union
 
-
+# TODO: Try pre-caching video tokens and have dataloader load video tokens instead of frames
 class VideoHDF5Dataset(Dataset):
     def __init__(
         self,
@@ -138,7 +138,7 @@ class VideoHDF5Dataset(Dataset):
         if hasattr(self, 'h5_file'):
             self.h5_file.close() 
 
-
+# TODO: add more datasets
 class PongDataset(VideoHDF5Dataset):
     def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=1, resolution=(64, 64), fps=30, preload_ratio=1):
         super().__init__(

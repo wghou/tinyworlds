@@ -31,11 +31,11 @@ class LatentActionsEncoder(nn.Module):
         embeddings = self.patch_embed(frames)  # [B, T, P, E]
         transformed = self.transformer(embeddings)
 
-        # TODO: find better method for outputting actions
-        # global average pooling over patches
+        # TODO: try attention pooling + mean instead of mean + concat
+        # mean pool over patches (since one action per frame)
         pooled = transformed.mean(dim=2)  # [B, T, E]
 
-        # predict actions between consecutive frames
+        # combine features from current and next frame
         actions = []
         for t in range(seq_len - 1):
             # concat current and next frame features
@@ -86,10 +86,10 @@ class LatentActionsDecoder(nn.Module):
             )
 
         transformed = self.transformer(video_embeddings, conditioning=actions)  # [B, T-1, P, E]
-        patches = self.frame_head(transformed)  # [B, T-1, P, 3 * patch_size * patch_size]
+        patches = self.frame_head(transformed)  # [B, T-1, P, 3 * S * S]
         patches = rearrange(
             patches, 'b t p (c p1 p2) -> b t c p p1 p2', c=3, p1=self.patch_size, p2=self.patch_size
-        ) # [B, T-1, C, P, patch_size, patch_size]
+        ) # [B, T-1, C, P, S, S]
         pred_frames = rearrange(
             patches, 'b t c (h w) p1 p2 -> b t c (h p1) (w p2)', h=H//self.patch_size, w=W//self.patch_size
         ) # [B, T-1, C, H, W]

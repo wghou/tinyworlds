@@ -40,9 +40,9 @@ Our world model consists of three modules:
 
 Video Tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the maximum amount of information contained in the video.
 
-Latent Action Model: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on both the previous frame and a discrete bottleneck (our action) that encodes the maximum amount of information from the transition between previous and next frame.
+Action Tokenizer: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on both the previous frame and a discrete bottleneck (our action) that encodes the maximum amount of information from the transition between previous and next frame.
 
-Dynamics Model: Given latent action and past frame tokens, predict next frame tokens. In practice during training, given latent action and partially-masked frame tokens, predict those masked frame tokens. This is the core of our world model that captures the dynamics of the video we give.
+Dynamics Model: Given action and past frame tokens, predict next frame tokens. In practice during training, given action tokens and partially-masked frame tokens, predict those masked frame tokens. This is the core of our world model that captures the dynamics of the video we give.
 
 For all 3, I used STTransformer, and for the Tokenizer and LAM, I used FSQVAE.
 
@@ -89,13 +89,11 @@ Discrete latents are appealing since "powerful autoregressive models" (ex: GPTs)
 Paper: [Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
 
 VAEs consist of:
-1. Encoder network to parameterize posterior distribution $q(z | x)$ of discrete latent random variables z fiven input data x
-2. Prior distribution $p(z)$
-3. Decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z
+1. Encoder network to parameterize posterior distribution $q(z | x)$ of latent random variables z given input data x (probability image is a cat given a frame of a cat)
+2. Unknown prior distribution $p(z)$ (probability any random thing is a cat)
+3. Decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z (frame of cat given idea of cat)
 
-Notes:
-1. Posteriors and priors assumed to be normal distribution and diagonal covariance matrix (each dimension is independent): enables gaussian reparametrization trick
-2. Extensions: autoregressive prior/posterior models, normalising flows, inverse autoregressive posteriors
+We cannot learn these quantities directly, but we can instead learn to maximize the likelihoods of z | x and x | z by ascending the reconstruction objective p(x | z | x), where z will learn semantically meaningful information because we constrain its dimensionality be low (it is forced to choose only the most important information from an image).
 
 ## Finite Scalar Quantization
 
@@ -111,13 +109,6 @@ Input $x$ passed through encoder to produce $z_e(x)$, and discrete latent $z$ is
 4. transforming back to [-1,1]
 
 the resulting discrete latent vector $e_k$ is used as input to decoder network.
- 
--------- TODO: CLARIFY THIS SECTION --------
-
-VQVAE is a VAE where we can bound $log p(x)$ with ELBO
-Proposal distribution $q(z = k | x)$ is deterministic and with uniform prior over $z$, so $\sum_z q(z | x) \log \frac{q(z | x)}{p(z)} = \log \frac{1}{1 / K}$ since all other zs have 0 probability besides the deterministic z mapped to by the encoder, and p is uniform over K (so each $p(z)$ is 1/K), and the entropy of q is 0, thus we have KL divergence constant and equal to $0 - \log (1 / K) = \log K$
-
---------------------------------
 
 ## FSQVAE Training
 
@@ -128,27 +119,27 @@ We thus need no extra loss terms unlike in VQVAE, which makes this method sigini
 stopgrad is the stopgradient operator (in pytorch, .detach()) that is identity at forward computation time and has zero partial derivatives, and thus constrains the operand to be non-updated constant.
 
 
-## Latent Action Model (LAM)
+## Action Tokenizer
 
-The Latent Action Model allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
+The Action Tokenizer allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
 
-The LAM Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous latent actions between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
+The LAM Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous action latent vectors between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
 
-The LAM Decoder takes in all previous frames $(x_1...x_t)$ and latent actions $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
+To create the discrete action codebook, we again use an FSQ objective to bound and bin the continuous action latent vectors outtputed by the encoder into one of |codebook size| cubes which represent our codebook.
 
-To create the discrete bottleneck that becomes our action vocabulary, we again use an FSQ objective to limit number of predicted actions to small discrete set of codes that is the number of actions we want to be able to take. 
+The LAM Decoder takes in all previous frames $(x_1...x_t)$ and quantized action latent vectors $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
 
-Since the decoder only has access to frame history and the latent action, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
+Since the decoder only has access to frame history and the action token, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
 
-Decoder gives training signal but is abandoned at inference time and replaced with user action
+At inference time, we only use the learned cubes (latents) which correspond to action indices that the user can output. These actions should each end up corresponding to a semantically meaningful condition for next frame prediction.
 
 # Dynamics Model
 
-At a high level, we want that at timestep $t \in [1, T]$, the dynamics model takes in tokenized video and latent action sequences from t=0 (defined as context-length frames old) up to $t - 1$ and predict next frame tokens $z_t$.
+At a high level, we want that at timestep $t \in [1, T]$, the dynamics model takes in tokenized video and action sequences from t=0 (defined as context-length frames old) up to $t - 1$ and predict next frame tokens $z_t$.
 
-To get the action conditioning sequences, we run inference with the latent action model.
+To get the action conditioning sequences, we run inference with the action tokenizer.
 
-We condition on latent action sequences with Feature-wise Linear Modulation: conditioning is projected to gamma and beta, then we replace layernorm/RMSNorm in the transformer with layernorm(x) * gamma + (1 + beta)
+We condition on action token sequences with Feature-wise Linear Modulation: the action latent vectors are projected to gamma and beta, then we replace layernorm/RMSNorm in the transformer with layernorm(x) * gamma + (1 + beta)
 
 We base the image prediction on MaskGIT. We randomly mask input tokens at train time according to bernoulli distribution with masking rate sampled uniformly from 0.5 to 1, and our goal is to predict the masked tokens.
 
@@ -163,13 +154,14 @@ for k, we choose the cosine schedule such that the number of tokens sampled at e
 
 Uses maskGIT inference
 
-Player prompts model with initial frame, we tokenize the image with our video tokenizer, then the player specifies one of the n_actions discrete latent actions to take by choosing integer value in $[0, |A|]$, we use that index to access the corresponding latent, and then condition the dynamics model with context window c on the video tokens t-c...t and latent actions t-c..t using the maskgit inference process. 
+Player prompts model with initial frame, we tokenize the image with our video tokenizer, then the player specifies one of the n_actions action tokens to use by choosing integer value in $[0, |A|]$, we use that index to access the corresponding latent, and then condition the dynamics model with context window c on the video tokens t-c...t and action tokens t-c..t using the maskgit inference process. 
 
 We repeat process autoregressively over the time dimension as actions are passed to model and tokens are predicted by the dynamics model and detokenized into frames to display to the user.
 
 # Data
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I used from huggingface:
+The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I used from huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
+
 1. PicoDoom (`picodoom_frames.h5`)
 2. Pong (`pong_frames.h5`)
 3. Zelda Ocarina of Tima (`zelda_frames.h5`)
@@ -179,15 +171,40 @@ The data is processed and downsampled from mp4s into hdf5 files. You can downloa
 To retrieve data, run `python scripts/download_assets.py --asset org/tinyworlds:assets/<H5_NAME>`
 Any data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py)
 
+The data is processed and downsampled from mp4s into hdf5 files. You can download the datasets I used from Hugging Face: see `AlmondGod/tinyworlds`.
+
+- Dataset hub: [AlmondGod/tinyworlds](https://huggingface.co/datasets/AlmondGod/tinyworlds)
+- Models hub: [AlmondGod/tineyworlds-models](https://huggingface.co/AlmondGod/tineyworlds-models)
+
+Download datasets into repo_root/data:
+
+```bash
+python scripts/download_assets.py datasets
+# or customize patterns
+python scripts/download_assets.py datasets --pattern "*.h5"
+```
+
+Download model checkpoints into `results/<timestamp>_<suite>/<type>/checkpoints`:
+
+```bash
+# example: pull dynamics checkpoints into results/20250101_120000_sonic_models/dynamics/checkpoints
+python scripts/download_assets.py models --type dynamics --suite-name sonic_models
+
+# video and action tokenizer
+python scripts/download_assets.py models --type video_tokenizer --suite-name sonic_models
+python scripts/download_assets.py models --type action_tokenizer --suite-name sonic_models
+```
+
+
 # Development Process and Decisions
 
-I originally used VQVAE for both the video tokenizer and the latent action model as genie 1 originally used. VQVAE is sometimes unwieldy, for it has 2 auxiliary losses which require careful tuning, and often doesn't result in codebook usage higher than 20% if even.
+I originally used VQVAE for both the video tokenizer and the action tokenizer as genie 1 originally used. VQVAE is sometimes unwieldy, for it has 2 auxiliary losses which require careful tuning, and often doesn't result in codebook usage higher than 20% if even.
 
 FSQ came forward as a cleaner alternative to VQVAE.
 
 Conditioning in genie 1 has the action embeddings added to the video embeddings. I found that using film from the action latents both allowed for independent variance of video and action latent space dimensions, and allowed for stronger care for action latents.
 
-The greatest challenge was avoiding latent action model collapse, which was solved by
+The greatest challenge was avoiding action tokenizer collapse, which was solved by
 1. Switching VQVAE (tended to collapse to 1/8 codes quickly) to FSQVAE
 2. Using only the first frame and masking all others
 3. Adding low-weight encoder variance loss (across the batch dim)
@@ -195,6 +212,8 @@ The greatest challenge was avoiding latent action model collapse, which was solv
 I found RMSNorm better than layernorm in ablations (TODO: do full ablation run and loss comparison)
 
 I found SwiGLU better than ReLU and SiLU (TODO: full ablation run/loss comparison)
+
+The default model uses 4 transformer blocks, with d_model 128, 8 heads, 256 FFN hidden dim, and 4-frame sequences which make for around 1.3M parameter tokenizers and dynamics model.
 
 # Shape Annotation Key
 
@@ -228,6 +247,8 @@ I added support for:
 - [ ] Try RoPE/AliBi Spatial/Temporal Position Embeddings
 - [ ] Scale! Train on more GPUs and scale to multibillions of params by adding FSDP Support
 - [ ] Add more datasets (Terraria, Street Fighter, your favorite retro videogame!) 
+- [ ] Replace the mean pool + concat in the action tokenizer with attention pooling (t to t + 1 then mean pool)
 - [ ] Accelerate dynamics training by producing, saving, and loading pre-processed tokens instead of full frames 
 - [ ] Try different optimizers (Muon, SOAP)
 
+**Please make a PR! There are many small things to try which could offer massive performance gains, and the codebase is meant to be built upon**

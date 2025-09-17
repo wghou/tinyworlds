@@ -1,26 +1,26 @@
 # paths (need if not get latest)
-video_tokenizer_path: /workspace/nano-genie/results/2025_09_16_06_10_08/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_16_08_08_08.pth
-latent_actions_path:
-dynamics_path: /workspace/nano-genie/results/2025_09_16_06_10_08/dynamics/checkpoints/dynamics_step_17500_2025_09_16_12_23_44.pth
-use_latest_checkpoints: true
+video_tokenizer_path: /workspace/nano-genie/results/2025_09_17_03_33_24/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_17_06_20_26.pth
+latent_actions_path: /workspace/nano-genie/results/2025_09_17_03_33_24/latent_actions/checkpoints/latent_actions_step_2500_2025_09_17_06_50_59.pth
+dynamics_path: /workspace/nano-genie/results/2025_09_17_07_22_08/dynamics/checkpoints/dynamics_step_97500_2025_09_17_21_04_50.pth
+use_latest_checkpoints: false
 
 # inference params
 dataset: SONIC
 preload_ratio: 1.0
 device: cuda
 generation_steps: 10
-context_window: 1
+context_window: 3
 fps: 2
 temperature: 0.0 # 0 is argmax
-teacher_forced: false # for testing/dev
-prediction_horizon: 3 # how many masked frames to append and decode at a time
+teacher_forced: true # for testing/dev
+prediction_horizon: 1 # how many masked frames to append and decode at a time
 
 # use random actions or use lam-inferred actions
 use_actions: false
 use_gt_actions: false
 
 # user-inputted actions on the fly
-use_interactive_mode: false
+use_interactive_mode: true
 
 # Performance options
 amp: true

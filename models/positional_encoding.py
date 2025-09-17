@@ -1,7 +1,7 @@
 import torch
 from einops import rearrange, repeat
 
-
+# TODO: Try RoPE / AliBi
 def sincos_1d(L, D, device, dtype):
     # 1d sinusoidal position encoding where element j of ith patch embedding is encoded as:
     # PE[i, 2j]   = sin(i / 10000^(2j/D))  # even indices

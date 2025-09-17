@@ -128,6 +128,7 @@ def sample_random_action(n_actions):
 def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_action_model, step):
     # Select action mode
     if args.use_interactive_mode:
+        print("using interactive mode")
         user_input = input(f"Enter action id [0..{n_actions-1}] for step {step+1}: ").strip()
 
         assert user_input.isdigit() and 0 <= int(user_input) < n_actions, f"Invalid input. Please enter an integer in [0,{n_actions-1}]"
@@ -143,6 +144,7 @@ def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_
             quantized_gt_pad_actions = latent_action_model.quantizer(gt_pad_actions)
             action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1)
     elif args.use_gt_actions:
+        print("using gt actions")
         gt_action_latents = latent_action_model.encode(context_frames) # [1, T - 1, A]
         sampled_action_index = sample_random_action(n_actions) # [1]
         inferred_actions.append(sampled_action_index) # [i]
@@ -150,6 +152,7 @@ def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_
         sampled_action_latent = latent_action_model.quantizer.get_latents_from_indices(sampled_action_index_tensor) # [1, i, A]
         action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, T, A]
     elif args.use_actions:
+        print(f"using random actions")
         sampled_action_index = sample_random_action(n_actions) # [1]
         inferred_actions.append(sampled_action_index) # [i]
         recent_inferred_actions = inferred_actions[-args.context_window:] if len(inferred_actions) > args.context_window else inferred_actions # [i or T_ctx]

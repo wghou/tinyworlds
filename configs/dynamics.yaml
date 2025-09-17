@@ -11,4 +11,4 @@ video_tokenizer_path: /workspace/nano-genie/results/2025_09_17_03_33_24/video_to
 latent_actions_path: /workspace/nano-genie/results/2025_09_17_03_33_24/latent_actions/checkpoints/latent_actions_step_2500_2025_09_17_06_50_59.pth
 
 # resume from checkpoint
-checkpoint:
+checkpoint: /workspace/nano-genie/results/2025_09_17_07_22_08/dynamics/checkpoints/dynamics_step_97500_2025_09_17_21_04_50.pth
