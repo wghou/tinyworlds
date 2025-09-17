@@ -1,18 +1,20 @@
-# nanogenie
+![image](assets/tinyworlds.png)
 
-nanogenie is inspired by Karpathy's [NanoGPT ](https://github.com/karpathy/nanoGPT), and Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
+TinyWorlds is inspired by Karpathy's [NanoGPT ](https://github.com/karpathy/nanoGPT), and Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
 
-The greatest challenge in training world models over video models is the necessity of action annotations for each timestep. When we require actions, we can no longer train on the entire internet's video data and get as world-realistic, consistent results as Google's VEO3 (or, hint, Genie 3). 
-
-Genie solves this problem by inferring the actions between frames, and labelling them in an unsupervised manner. This is the critical unlock to achieving scale with world models.
-
-This codebase is meant to help people understand world modeling and a common architecture for doing so (likely semi-similar to Genie 3).
 
 The core purpose of a world model is to predict the next state of some environment given the current state and some conditioning from an external entity(s). In predicting this next state, we encode the laws of how our environment changes from moment to moment.
 
-We now want to learn a neural network which can map some image to some other image, conditioned on actions.
+In practice, we train a neural network which, given an image and some action, predicts the most likely next image.
 
-This can be used for training robotics models, for explicitly giving models understanding of the physical world, and for simulating new worlds (eventually full universes) we want to experience.
+World models can be used for training robotics models, for baking in understanding of the physical world to multimodal models, and for simulating new worlds or universes we want to experience.
+
+The greatest challenge in training world models is the necessity of action annotations for each timestep. When we require actions, we can no longer train on the entire internet's video data and get as world-realistic, consistent results as Google's VEO3 (or, hint, Genie 3). 
+
+Genie solves this problem by inferring the actions between frames, and labelling them in an unsupervised manner. This is the critical unlock to achieving scale with world models.
+
+This minimal codebase, TinyWorlds, is meant to help people understand world modeling and a common architecture for doing so (likely semi-similar to Genie 3).
+
 
 ## Installation
 
@@ -32,7 +34,7 @@ python scripts/full_train.py --config configs/training_config.yaml
 
 ## Architecture 
 
-This world model is autoregressive over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the few (usually ~1024-4096) tokens in our vocabulary.
+TINYWORLDS uses an autoregressive world model over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the few (usually ~1024-4096) tokens in our vocabulary.
 
 Our world model consists of three modules:
 
@@ -167,13 +169,15 @@ We repeat process autoregressively over the time dimension as actions are passed
 
 # Data
 
-The data is processed and downsampled into numpy npzs from youtube videos converted to mp4s. Currently we have:
-1. PicoDoom
-2. Pong
-3. Zelda Ocarina of Tima
-4. Pole Position
-5. Sonic
-TODO: add links to dss
+The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I used from huggingface:
+1. PicoDoom (`picodoom_frames.h5`)
+2. Pong (`pong_frames.h5`)
+3. Zelda Ocarina of Tima (`zelda_frames.h5`)
+4. Pole Position (`pole_position_frames.h5`)
+5. Sonic (`sonic_frames.h5`)
+
+To retrieve data, run `python scripts/download_assets.py --asset org/tinyworlds:assets/<H5_NAME>`
+Any data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py)
 
 # Development Process and Decisions
 
@@ -186,8 +190,7 @@ Conditioning in genie 1 has the action embeddings added to the video embeddings.
 The greatest challenge was avoiding latent action model collapse, which was solved by
 1. Switching VQVAE (tended to collapse to 1/8 codes quickly) to FSQVAE
 2. Using only the first frame and masking all others
-3. Perhaps using no context, only the most recent frame
-4. Adding explicit cross-batch encoder variance
+3. Adding low-weight encoder variance loss (across the batch dim)
 
 I found RMSNorm better than layernorm in ablations (TODO: do full ablation run and loss comparison)
 
@@ -210,6 +213,14 @@ Hp: patch height \
 Wp: patch width \
 S: patch size
 
+# Training and Inference Options
+
+I added support for:
+1. torch compile which allows us to use faster kernels for certain pre-optimized operations
+2. distributed data parallel (DDP) which allows us to train using multiple gpus by using different data per-gpu
+3. automatic mixed precision (AMP) which dynamically switches between FP32 and BF16 based on the current nodes used floating point range
+4. FP32 training which lets us use nvidia floating point 32 for extremely precise floating point operations 
+(all of the above were made much easier by torch, thank you torch team)
 
 # Next Steps
 
