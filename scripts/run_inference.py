@@ -1,5 +1,3 @@
-# python run_inference.py --config configs/inference.yaml
-
 import torch
 from datasets.data_utils import load_data_and_data_loaders
 import matplotlib.pyplot as plt

@@ -4,7 +4,6 @@ from einops import rearrange
 from models.positional_encoding import build_spatial_only_pe
 
 class PatchEmbedding(nn.Module):
-    """Convert frames to patch embeddings for ST-Transformer"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128):
         super().__init__()
         H, W = frame_size
@@ -21,7 +20,7 @@ class PatchEmbedding(nn.Module):
         self.spatial_y_dim = remaining_dim - self.spatial_x_dim
         self.temporal_dim = base_split
 
-        # TODO: simpler assertions
+        # ensure the embed dim is split wholy into thirds and each third is even
         assert (self.spatial_x_dim + self.spatial_y_dim + self.temporal_dim) == embed_dim, \
             f"Dimension mismatch: {self.spatial_x_dim} + {self.spatial_y_dim} + {self.temporal_dim} != {embed_dim}"
         assert self.spatial_x_dim % 2 == 0 and self.spatial_y_dim % 2 == 0 and self.temporal_dim % 2 == 0, \
@@ -30,15 +29,16 @@ class PatchEmbedding(nn.Module):
         pe_spatial = build_spatial_only_pe(self.frame_size, self.patch_size, self.embed_dim, device='cpu', dtype=torch.float32)  # [1,P,E]
         self.register_buffer("pos_spatial", pe_spatial, persistent=False)
 
-        # conv projection for patches
+        # pixel patches to embeddings
         self.proj = nn.Conv2d(3 * self.patch_size * self.patch_size, self.embed_dim, 1)
 
 
     def forward(self, frames):
         B, T, C, H, W = frames.shape
         # go from frames to patches
-        x = rearrange(frames, 'b t c (h p1) (w p2) -> (b t) (c p1 p2) h w', p1=self.patch_size, p2=self.patch_size) # [(B*T), 3*p*p, Hp, Wp]
+        x = rearrange(frames, 'b t c (hp p1) (wp p2) -> (b t) (c p1 p2) hp wp', p1=self.patch_size, p2=self.patch_size) # [(B*T), 3*p*p, Hp, Wp]
         x = self.proj(x) # [(B*T), E, Hp, Wp]
         x = rearrange(x, '(b t) e hp wp -> b t (hp wp) e', b=B, t=T) # [B, T, P, E]
+        # add 2d spatial pos encoding (first 2/3 of embed dim)
         x = x + self.pos_spatial.to(dtype=x.dtype, device=x.device) # [B, T, P, E]
         return x

@@ -6,14 +6,14 @@ use_latest_checkpoints: true
 
 # inference params
 dataset: SONIC
-preload_ratio: 0.5
+preload_ratio: 1.0
 device: cuda
 generation_steps: 10
-context_window: 2
+context_window: 1
 fps: 2
 temperature: 0.0 # 0 is argmax
 teacher_forced: false # for testing/dev
-prediction_horizon: 2 # how many masked frames to append and decode at a time
+prediction_horizon: 3 # how many masked frames to append and decode at a time
 
 # use random actions or use lam-inferred actions
 use_actions: false
@@ -22,7 +22,6 @@ use_gt_actions: false
 # user-inputted actions on the fly
 use_interactive_mode: false
 
-# TODO: add torch compile/amp/tf32
 # Performance options
 amp: true
 tf32: true

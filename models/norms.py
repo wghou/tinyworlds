@@ -9,9 +9,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(embed_dim))  # learned scale for rmsnorm (gamma)
 
     def forward(self, x):
-        # RMSNorm(x) = x / sqrt(mean(x^2) + eps)
+        # root mean squared norm of x = x / sqrt(mean(x^2) + eps)
         mean_squared = torch.mean(x**2, dim=-1, keepdim=True)
-        # rsqrt is reciprocal sqrt (faster and numerically stable vs dividing by sqrt)
+        # torch.rsqrt is 1 / sqrt (faster and numerically stable vs manual 1 / sqrt)
         rms_normed = x * torch.rsqrt(mean_squared + self.eps)
         return rms_normed * self.weight
 
@@ -21,12 +21,12 @@ class SimpleLayerNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        # Only center at 0 and make stddev 1 (for film)
+        # only center at 0 and make stddev 1 (for film)
         mean = x.mean(dim=-1, keepdim=True)
         var  = x.var(dim=-1, unbiased=False, keepdim=True)
         return (x - mean) * torch.rsqrt(var + self.eps)
 
-# TODO: move basic building blocks into a models.py or something better named
+
 class AdaptiveNormalizer(nn.Module):
     # Conditioned Feature-wise Linear Modulation, optionally unconditioned simple RMSNorm
     def __init__(self, embed_dim, conditioning_dim=None):
@@ -35,7 +35,7 @@ class AdaptiveNormalizer(nn.Module):
         self.rms = None
         self.to_gamma_beta = None
         if conditioning_dim is None:
-            # Prefer RMSNorm when unconditioned
+            # RMSNorm when unconditioned (can do ln but this is better)
             self.rms = RMSNorm(embed_dim)
         else:
             self.ln = SimpleLayerNorm(embed_dim)

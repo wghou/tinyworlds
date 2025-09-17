@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys
 import os
 from utils.utils import run_command, find_latest_checkpoint, prepare_pipeline_run_root
@@ -7,7 +6,6 @@ from utils.config import TrainingConfig, load_config
 DEFAULT_TRAINING_CONFIG = os.path.join(os.getcwd(), 'configs', 'training.yaml')
 
 def main():
-    # Determine training config path from CLI if provided, else default
     argv = sys.argv
     try:
         idx = argv.index('--config')
@@ -18,7 +16,7 @@ def main():
 
     train_config: TrainingConfig = load_config(TrainingConfig, default_config_path=training_cfg_path)
 
-    # Decide launch prefix: torchrun if distributed, else python
+    # torchrun if distributed, else python
     if train_config.distributed:
         launcher = [
             "torchrun",
@@ -29,7 +27,7 @@ def main():
     else:
         launcher = [sys.executable]
 
-    # create top-level run root and export so child processes can use it
+    # top-level run root and export child processes can use
     run_root, run_name = prepare_pipeline_run_root(base_cwd=os.getcwd())
     os.environ['NG_RUN_ROOT_DIR'] = run_root
 
@@ -51,6 +49,7 @@ def main():
         if not run_command(latent_actions_cmd, "Latent Actions Training"):
             return
 
+    # need to get above checkpoints and pass in to dynamics
     video_tokenizer_checkpoint = find_latest_checkpoint(".", "video_tokenizer")
     latent_actions_checkpoint = find_latest_checkpoint(".", "latent_actions")
 

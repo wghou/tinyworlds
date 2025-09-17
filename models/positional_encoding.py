@@ -3,23 +3,21 @@ from einops import rearrange, repeat
 
 
 def sincos_1d(L, D, device, dtype):
-    # 1d sinusoidal position encoding where position i is encoded as:
+    # 1d sinusoidal position encoding where element j of ith patch embedding is encoded as:
     # PE[i, 2j]   = sin(i / 10000^(2j/D))  # even indices
     # PE[i, 2j+1] = cos(i / 10000^(2j/D))  # odd indices
-    
+
     assert D % 2 == 0, "Encoding dimension must be even"
-    
-    # generate position indices [L, 1] and dimension indices [1, D/2]
+
+    # position indices [L, 1] and dimension indices [1, D/2]
     pos = rearrange(torch.arange(L, device=device, dtype=dtype), 'l -> l 1')     # [L,1]
     i   = rearrange(torch.arange(D // 2, device=device, dtype=dtype), 'd -> 1 d')# [1,D/2]
 
-    # compute angular frequencies: 1/10000^(2i/D) for each dimension
+    # angular frequencies: 1/10000^(2i/D) for each dimension
     div = torch.pow(torch.tensor(10000.0, device=device, dtype=dtype), (2*i)/D)
-    
-    # compute angles: pos * freq for each position-dimension pair
-    angles = pos / div  # [L, D/2] = [L,1] * [1,D/2] (broadcasting)
-    
-    # Fill alternating sin/cos into output
+
+    # angles: pos * freq for each position-dimension pair
+    angles = pos / div  # [L, D/2] (broadcasted together)
     pe = torch.zeros(L, D, device=device, dtype=dtype)
     pe[:, 0::2] = torch.sin(angles)  # even indices
     pe[:, 1::2] = torch.cos(angles)  # odd indices
@@ -31,22 +29,17 @@ def sincos_time(T, D, device, dtype):
 
 
 def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype=torch.float32):
-    """
-    Build spatial-only positional encodings for a grid of patches.
-    - First 2/3 (rounded) of embed_dim are spatial (split evenly into x/y with even dims)
-    - Last 1/3 (rounded to even) is temporal and zero-filled here
+    # spatial positional encodings for a grid of patches in first 2/3 of embed dim (evenly into x and y axes)
+    # Last 1/3 temporal filled with 0s
 
-    Returns:
-        pos_spatial: [1, P, E] tensor suitable for broadcasting over [B, S, P, E]
-    """
     H, W = frame_size
     Hp, Wp = H // patch_size, W // patch_size
 
-    # Split dimensions, ensuring temporal is even
+    # split dimensions (ensure temporal even)
     temporal_dim = (embed_dim // 3) & ~1
     spatial_dims = embed_dim - temporal_dim
 
-    # Split spatial dims between x and y (even)
+    # split spatial dims between x and y (ensure both even)
     spatial_x_dim = (spatial_dims // 2) & ~1
     spatial_y_dim = spatial_dims - spatial_x_dim
 
@@ -55,8 +48,8 @@ def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype
     pe_x = sincos_1d(Wp, spatial_x_dim, device, dtype)  # [Wp, Dx]
     pe_y = sincos_1d(Hp, spatial_y_dim, device, dtype)  # [Hp, Dy]
 
-    pe_x = repeat(pe_x, 'wp dx -> hp wp dx', hp=Hp)     # [Hp, Wp, Dx]
-    pe_y = repeat(pe_y, 'hp dy -> hp wp dy', wp=Wp)     # [Hp, Wp, Dy]
+    pe_x = repeat(pe_x, 'wp dx -> hp wp dx', hp=Hp) # [Hp, Wp, Dx]
+    pe_y = repeat(pe_y, 'hp dy -> hp wp dy', wp=Wp) # [Hp, Wp, Dy]
 
     pe_spatial = torch.cat([
         pe_x,
@@ -65,4 +58,4 @@ def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype
     ], dim=-1)  # [Hp, Wp, E]
 
     pe_spatial = rearrange(pe_spatial, 'hp wp e -> 1 (hp wp) e')  # [1, P, E]
-    return pe_spatial 
+    return pe_spatial  # [1, P, E]

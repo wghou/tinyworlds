@@ -17,7 +17,6 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
     Newest run dir first, then highest step within it.
     If the newest run root has none for this model, keep searching older runs.
     """
-    # TODO: if no checkpoint for model_bane in newest datetime dir, keep searching older until you find one of this model name
     def collect_files_from_roots(roots, model_name):
         files = []
         for root in roots:
@@ -84,14 +83,12 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None
     return candidate_files[-1]
 
 def run_command(cmd, description):
-    # Recommend environment tweaks for DataLoader throughput TODO: test
+    # empirical max dataLoader throughput settings (I used 1-6 H100s)
     env = os.environ.copy()
     env.setdefault("NG_NUM_WORKERS", str(max(2, (os.cpu_count() or 4) - 2)))
     env.setdefault("NG_PREFETCH_FACTOR", "4")
     env.setdefault("NG_PIN_MEMORY", "1")
-    # Disable persistent workers in subprocess to ensure clean exit
     env["NG_PERSISTENT_WORKERS"] = "0"
-    # Prefer TF32 globally
     env.setdefault("TORCH_CUDNN_V8_API_ENABLED", "1")
 
     try:

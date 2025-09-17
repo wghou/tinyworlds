@@ -1,7 +1,3 @@
-"""
-Weights & Biases utilities for experiment tracking
-"""
-
 import wandb
 import torch
 import os

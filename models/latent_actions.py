@@ -10,12 +10,13 @@ from models.fsq import FiniteScalarQuantizer
 NUM_LATENT_ACTIONS_BINS = 2
 
 class LatentActionsEncoder(nn.Module):
-    """ST-Transformer encoder that takes frames and outputs latent actions"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, action_dim=3):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
+        
+        # embeddings to discrete latent bottleneck actions
         self.action_head = nn.Sequential(
             nn.LayerNorm(embed_dim * 2),
             nn.Linear(embed_dim * 2, 4 * action_dim),
@@ -47,14 +48,13 @@ class LatentActionsEncoder(nn.Module):
         return actions
 
 class LatentActionsDecoder(nn.Module):
-    """ST-Transformer decoder that takes frames and actions to predict next frame"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, conditioning_dim=3):
         super().__init__()
         self.patch_embed = PatchEmbedding(frame_size, patch_size, embed_dim)
         self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=conditioning_dim)
 
-        # Frame prediction head
+        # embeddings to mixed frame output patches
         self.frame_head = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, 3 * patch_size * patch_size),
@@ -74,7 +74,8 @@ class LatentActionsDecoder(nn.Module):
         video_embeddings = self.patch_embed(frames)  # [B, T-1, P, E]
         _, _, P, E = video_embeddings.shape
 
-        # Apply random masking during training
+        # mask certain tokens from all frames except first frame
+        # this strongly forces actions to contain most useful info (I recommend to keep based on experiments)
         if training and self.training:
             keep_rate = 0.0
             keep = (torch.rand(B, T-1, P, 1, device=frames.device) < keep_rate)
@@ -95,7 +96,6 @@ class LatentActionsDecoder(nn.Module):
         return pred_frames  # [B, T-1, C, H, W]
 
 class LatentActionModel(nn.Module):
-    """ST-Transformer based Latent Action Model"""
     def __init__(self, frame_size=(128, 128), n_actions=8, patch_size=8, embed_dim=128, 
                  num_heads=8, hidden_dim=256, num_blocks=4):
         super().__init__()

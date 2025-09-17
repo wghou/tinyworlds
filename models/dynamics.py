@@ -3,8 +3,8 @@ import torch.nn as nn
 import math
 from models.positional_encoding import build_spatial_only_pe
 from models.st_transformer import STTransformer
+from einops import repeat
 
-# TODO: make create mask function here
 class DynamicsModel(nn.Module):
     """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(128, 128), patch_size=4, embed_dim=128, num_heads=8,
@@ -25,7 +25,7 @@ class DynamicsModel(nn.Module):
         self.output_mlp = nn.Linear(embed_dim, codebook_size)
 
         # Learned mask token embedding
-        self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # Small initialization
+        self.mask_token = nn.Parameter(torch.randn(1, 1, 1, latent_dim) * 0.02)  # [1, 1, 1, L]
 
     def forward(self, discrete_latents, training=True, conditioning=None, targets=None):
         # discrete_latents: [B, T, P, L]
@@ -47,8 +47,8 @@ class DynamicsModel(nn.Module):
             anchor_idx = torch.randint(0, T, (B, P), device=discrete_latents.device)  # [B, P]
             mask_positions[torch.arange(B)[:, None], anchor_idx, torch.arange(P)[None, :]] = False # [B, T, P]
 
-            # TODO: replace with repeat einops
-            mask_token = self.mask_token.to(discrete_latents.device, discrete_latents.dtype).expand(B, T, P, -1) # [B, T, P, L]
+            # replace selected latents with mask tokens
+            mask_token = repeat(self.mask_token.to(discrete_latents.device, discrete_latents.dtype), '1 1 1 L -> B T P L', B=B, T=T, P=P) # [B, T, P, L]
             discrete_latents = torch.where(mask_positions.unsqueeze(-1), mask_token, discrete_latents) # [B, T, P, L]
         else:
             mask_positions = None
@@ -84,8 +84,6 @@ class DynamicsModel(nn.Module):
         # context_latents: [B, T_ctx, P, L]
         # H = prediction_horizon
         # T_ctx=context timesteps, H=horizon timesteps, K=codebook size
-
-
         device = context_latents.device
         dtype = context_latents.dtype
         B, T_ctx, P, L = context_latents.shape  # B, T_ctx, P, L

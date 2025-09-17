@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,27 +7,25 @@ import argparse
 from datasets.data_utils import load_data_and_data_loaders
 
 def visualize_batch(frames, save_path=None, title="Video Sequences Batch", max_batch_size=8, max_seq_length=8):
-    # Move to CPU and get dimensions
+    # move to CPU and get dimensions
     frames = frames.detach().cpu()
     batch_size, seq_len, C, H, W = frames.shape
     batch_size = min(batch_size, max_batch_size)
     seq_len = min(seq_len, max_seq_length)
     frames = frames[:batch_size, :seq_len]
 
-    # Denormalize from [-1, 1] to [0, 1]
+    # denormalize from [-1, 1] to [0, 1]
     frames = (frames + 1) / 2
     frames = torch.clamp(frames, 0, 1)
-
-    # Create figure
     fig, axes = plt.subplots(batch_size, seq_len, figsize=(2 * seq_len, 2 * batch_size))
 
-    # Handle single row/column case
+    # single row/column case
     if batch_size == 1:
         axes = axes.reshape(1, -1)
     if seq_len == 1:
         axes = axes.reshape(-1, 1)
 
-    # Plot each frame
+    # plot frames
     for i in range(batch_size):
         for j in range(seq_len):
             frame = frames[i, j].permute(1, 2, 0).numpy()  # [H, W, C]
@@ -37,7 +34,7 @@ def visualize_batch(frames, save_path=None, title="Video Sequences Batch", max_b
             axes[i, j].set_title(f'B{i}, T{j}', fontsize=10)
             axes[i, j].axis('off')
 
-    # Add row and column labels
+    # row and column labels
     for i in range(batch_size):
         axes[i, 0].set_ylabel(f'Batch {i}', fontsize=12, fontweight='bold')
     for j in range(seq_len):

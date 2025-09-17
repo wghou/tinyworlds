@@ -4,7 +4,7 @@ wandb_project: nano-genie-pipeline
 
 # dataset
 dataset: SONIC
-preload_ratio: 0.5
+preload_ratio: 1.0
 
 # shared model params
 patch_size: 4
@@ -36,6 +36,6 @@ latent_actions_config: configs/latent_actions.yaml
 dynamics_config: configs/dynamics.yaml
 
 # which stages to run
-run_video_tokenizer: true
-run_latent_actions: true
+run_video_tokenizer: false
+run_latent_actions: false
 run_dynamics: true
