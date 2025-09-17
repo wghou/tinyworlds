@@ -1,6 +1,6 @@
 *results*/
 *pycache*/
 data/
-*.png
+batch_visualizations/*
 wandb/*
 setup.sh
