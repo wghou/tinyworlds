@@ -1,19 +1,16 @@
 ![image](assets/tinyworlds.png)
 
-TinyWorlds is inspired by Karpathy's [NanoGPT ](https://github.com/karpathy/nanoGPT), and Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
+TinyWorlds is a minimal autoregressive World Model built from Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
 
+World models, over video models, need action data in addition to raw video data. 
 
-The core purpose of a world model is to predict the next state of some environment given the current state and some conditioning from an external entity(s). In predicting this next state, we encode the laws of how our environment changes from moment to moment.
+This constraint means we can no longer train on the entire internet's video data to get consistent world states like in Google's [VEO3](https://deepmind.google/models/veo/). 
 
-In practice, we train a neural network which, given an image and some action, predicts the most likely next image.
+Genie solves this problem by inferring the actions between frames, with **no labels**.
 
-World models can be used for training robotics models, for baking in understanding of the physical world to multimodal models, and for simulating new worlds or universes we want to experience.
+This unsupervised action generation is likely the critical unlock to achieving scale with world models like in [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/).
 
-The greatest challenge in training world models is the necessity of action annotations for each timestep. When we require actions, we can no longer train on the entire internet's video data and get as world-realistic, consistent results as Google's VEO3 (or, hint, Genie 3). 
-
-Genie solves this problem by inferring the actions between frames, and labelling them in an unsupervised manner. This is the critical unlock to achieving scale with world models.
-
-This minimal codebase, TinyWorlds, is meant to help people understand world modeling and a common architecture for doing so (likely semi-similar to Genie 3).
+This minimal codebase, TinyWorlds, is meant to help people understand world modeling and the clever autoregressive, unsupervised method Genie used to achieve **scalable world models**.
 
 
 ## Installation
@@ -34,15 +31,19 @@ python scripts/full_train.py --config configs/training_config.yaml
 
 ## Architecture 
 
-TINYWORLDS uses an autoregressive world model over discrete tokens, similar to LLMs. We can thus use many of the innovations from LLMs to improve our world model. Discretization makes our dynamics prediction problem much easier, because instead of prediction in an infinite continuous space, the dynamics model knows its outputting one of the few (usually ~1024-4096) tokens in our vocabulary.
+TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
+
+Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~4096 tokens in our vocabulary.
 
 Our world model consists of three modules:
 
-Video Tokenizer: This creates our vocabulary. In LLMs we can use the Byte-pair Encoding algorithm which merges symbols to maximize compression since language is inherently discrete, but continuous domains like audio and video require more clever tokenization. We tokenize by training a model to reconstruct a sequence of video, and place a small discrete bottleneck in the middle of the model which should learn to capture the maximum amount of information contained in the video.
+# TODO: insert architecture diagram
 
-Action Tokenizer: This infers the discrete action between two frames. Similarly to our video tokenizer, we do so by reconstructing the next frame conditioned on both the previous frame and a discrete bottleneck (our action) that encodes the maximum amount of information from the transition between previous and next frame.
+**Video Tokenizer:** Continuous domains like audio and video require more clever tokenization than inherently discrete language. We tokenize using a VAE: we train a model to reconstruct a sequence of video, placing a small discrete bottleneck (our video tokens) in model's center which should capture the important information in the video.
 
-Dynamics Model: Given action and past frame tokens, predict next frame tokens. In practice during training, given action tokens and partially-masked frame tokens, predict those masked frame tokens. This is the core of our world model that captures the dynamics of the video we give.
+**Action Tokenizer:** This infers the discrete action token between two frames. We again use a VAE to reconstruct the next frame conditioned on the previous frame and a discrete bottleneck (our action token) that encodes information of the transition between previous and next frame.
+
+**Dynamics Model:** Given action and past frame tokens, this predicts our next frame tokens. This is the core of our world model that captures the structure and emergent phenomena of our tiny video game worlds.
 
 For all 3, I used STTransformer, and for the Tokenizer and LAM, I used FSQVAE.
 
@@ -131,36 +132,37 @@ The LAM Decoder takes in all previous frames $(x_1...x_t)$ and quantized action 
 
 Since the decoder only has access to frame history and the action token, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
 
+In practice, the decoder tends to try to ignore actions as much as possible. To counteract this, we mask most frames except the first, so the decoder must learn to use the string of actions as signal. We also add auxiliary variance regularization batch-wise to the encoder.
+
 At inference time, we only use the learned cubes (latents) which correspond to action indices that the user can output. These actions should each end up corresponding to a semantically meaningful condition for next frame prediction.
 
 # Dynamics Model
+Additional paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
 
 At a high level, we want that at timestep $t \in [1, T]$, the dynamics model takes in tokenized video and action sequences from t=0 (defined as context-length frames old) up to $t - 1$ and predict next frame tokens $z_t$.
 
-To get the action conditioning sequences, we run inference with the action tokenizer.
+In practice, we use a method similar to MaskGIT and BERT: we mask a subset of tokens, and train our model to predict the masked tokens conditioned on all current and previous frame tokens. The prediction is conditioned on action tokens inferred at train time by the action tokenizer.
 
-We condition on action token sequences with Feature-wise Linear Modulation: the action latent vectors are projected to gamma and beta, then we replace layernorm/RMSNorm in the transformer with layernorm(x) * gamma + (1 + beta)
-
-We base the image prediction on MaskGIT. We randomly mask input tokens at train time according to bernoulli distribution with masking rate sampled uniformly from 0.5 to 1, and our goal is to predict the masked tokens.
-
-# Inference Time
-Paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
-
-At inference time, we append a fully masked frame, and have our model iteratively predict next frame tokens using MaskGIT Inference, which operates as follows:
+For inference, at each step, we append a fully masked frame to our context sequence, then our model iteratively predicts next frame tokens using MaskGIT Inference as follows:
 For T steps:
-1. Predict logits at each masked position and retrive token probabilities
-2. Take the k most likely tokens of the unmasked positions and sample them, unmasking their positions
-for k, we choose the cosine schedule such that the number of tokens sampled at each step increases exponentially.
+1. Predict logits at each masked position and compute token probabilities
+2. Take the k most likely tokens out of the still unmasked positions and sample them, unmasking their positions
+We choose k using the exponential schedule (first step would sample ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
 
-Uses maskGIT inference
 
-Player prompts model with initial frame, we tokenize the image with our video tokenizer, then the player specifies one of the n_actions action tokens to use by choosing integer value in $[0, |A|]$, we use that index to access the corresponding latent, and then condition the dynamics model with context window c on the video tokens t-c...t and action tokens t-c..t using the maskgit inference process. 
+# Full TinyWorlds Inference
+
+We first give the model an initial frame from the training distribution and tokenize the image with our video tokenizer
+We then run the following loop:
+3. The player specifies one of the n_actions action tokens to use by choosing integer value in $[0, |A|]$
+4. Condition the dynamics model with context window c on the video tokens t-c...t and action tokens t-c..t and run dynamics inference 
+5. Detokenize the predicted video tokens into a new video frame for the user
 
 We repeat process autoregressively over the time dimension as actions are passed to model and tokens are predicted by the dynamics model and detokenized into frames to display to the user.
 
 # Data
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I used from huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
+The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
 
 1. PicoDoom (`picodoom_frames.h5`)
 2. Pong (`pong_frames.h5`)
@@ -168,33 +170,15 @@ The data is processed and downsampled from mp4s into hdf5 files. You can downloa
 4. Pole Position (`pole_position_frames.h5`)
 5. Sonic (`sonic_frames.h5`)
 
-To retrieve data, run `python scripts/download_assets.py --asset org/tinyworlds:assets/<H5_NAME>`
 Any data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py)
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the datasets I used from Hugging Face: see `AlmondGod/tinyworlds`.
-
-- Dataset hub: [AlmondGod/tinyworlds](https://huggingface.co/datasets/AlmondGod/tinyworlds)
-- Models hub: [AlmondGod/tineyworlds-models](https://huggingface.co/AlmondGod/tineyworlds-models)
-
-Download datasets into repo_root/data:
-
 ```bash
-python scripts/download_assets.py datasets
-# or customize patterns
-python scripts/download_assets.py datasets --pattern "*.h5"
-```
+# retrieve data and downlaod into data/
+python scripts/download_assets.py datasets --pattern "sonic_frames.h5"
 
-Download model checkpoints into `results/<timestamp>_<suite>/<type>/checkpoints`:
-
-```bash
-# example: pull dynamics checkpoints into results/20250101_120000_sonic_models/dynamics/checkpoints
+# puls sonic dynamics checkpoint into results/<TIMESTAMP>_sonic_models/dynamics/checkpoints
 python scripts/download_assets.py models --type dynamics --suite-name sonic_models
-
-# video and action tokenizer
-python scripts/download_assets.py models --type video_tokenizer --suite-name sonic_models
-python scripts/download_assets.py models --type action_tokenizer --suite-name sonic_models
 ```
-
 
 # Development Process and Decisions
 
@@ -202,7 +186,7 @@ I originally used VQVAE for both the video tokenizer and the action tokenizer as
 
 FSQ came forward as a cleaner alternative to VQVAE.
 
-Conditioning in genie 1 has the action embeddings added to the video embeddings. I found that using film from the action latents both allowed for independent variance of video and action latent space dimensions, and allowed for stronger care for action latents.
+Conditioning in genie 1 has the action embeddings added to the video embeddings. I found that using FiLM from the action latents both allowed for independent variance of video and action latent space dimensions, and allowed for stronger care for action latents.
 
 The greatest challenge was avoiding action tokenizer collapse, which was solved by
 1. Switching VQVAE (tended to collapse to 1/8 codes quickly) to FSQVAE
@@ -240,6 +224,16 @@ I added support for:
 3. automatic mixed precision (AMP) which dynamically switches between FP32 and BF16 based on the current nodes used floating point range
 4. FP32 training which lets us use nvidia floating point 32 for extremely precise floating point operations 
 (all of the above were made much easier by torch, thank you torch team)
+
+# An Appreciation of World Models
+A world model predicts the next state of an environment given current state and some conditioning. 
+
+To predict the next world state, we encode the structure and emergent phenomena of the universe itself.
+
+We train a deep network which, given an image and action, predicts the most likely next image.
+
+World models can both act as cortexes to give physical world understanding to models and as simulators for models and humans to experience new structures of reality.
+
 
 # Next Steps
 
