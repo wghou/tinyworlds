@@ -1,14 +1,12 @@
 ![image](assets/tinyworlds.png)
 
-TinyWorlds is a minimal autoregressive world model built on Google's [Genie 1 Paper](https://arxiv.org/pdf/2402.15391).
+TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
-World models need action data in addition to raw video data. 
+Because world models need video data **with action data**, we can't naively train on action-less internet video and scale like in Google's [VEO3](https://deepmind.google/models/veo/).
 
-This constraint means we can no longer train on the entire internet's video data to get scaled models like in Google's [VEO3](https://deepmind.google/models/veo/) because video data has no action annotations.
+Google's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no action data**.
 
-Genie solves this problem by inferring the actions between frames with **no prior action data**. This is likely the most critical unlock to achieving scale with world models like in [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/).
-
-TinyWorlds is meant to help people understand world modeling and the clever autoregressive, unsupervised method Genie used to achieve **scalable world models**.
+TinyWorlds is meant to help people understand world modeling and the clever autoregressive, unsupervised method Deepmind used to achieve **scalable world models**.
 
 ## Table of Contents
 
@@ -55,13 +53,13 @@ python scripts/run_inference.py --config configs/inference.yaml
 
 # Architecture Overview 
 
+![architecture](/assets/tinyworldarchitecture.png)
+
 TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
 Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~4096 tokens in our vocabulary.
 
 Our world model consists of three modules:
-
-# TODO: insert architecture diagram
 
 **Video Tokenizer:** Continuous domains like audio and video require more clever tokenization than inherently discrete language. We tokenize using a VAE: we train a model to reconstruct a sequence of video, placing a small discrete bottleneck (our video tokens) in model's center which should capture the important information in the video.
 
@@ -177,6 +175,8 @@ We repeat process autoregressively over the time dimension as actions are passed
 
 The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
 
+![datasets](/assets/datasets_stylized.png)
+
 1. PicoDoom (`picodoom_frames.h5`)
 2. Pong (`pong_frames.h5`)
 3. Zelda Ocarina of Tima (`zelda_frames.h5`)
@@ -210,22 +210,30 @@ When looking through the codebase, I shape-annotate all tensors and use einops t
 ![shape annotations key](assets/shapeannotationkeydark.png)
 
 
-## Development Process and Decisions
+## Filling in the Gaps (and Differing) from Genie
 
-I originally used VQVAE for both the video tokenizer and the action tokenizer as genie 1 originally used. VQVAE is sometimes unwieldy, due to its 2 auxiliary losses which require careful tuning, and often doesn't result in codebook usage higher than 20% if even.
+### FSQ vs VQVAE
+In Genie 1, VQVAE is used for both the video tokenizer and the action tokenizer. 
 
-FSQ came forward as a cleaner alternative to VQVAE.
+VQVAE is notoriously difficult to train: it has 2 auxiliary losses that demand careful tuning, and often ends in codebook usage lower than 10%.
 
-Conditioning in genie 1 has the action embeddings added to the video embeddings. I found that using FiLM from the action latents both allowed for independent variance of video and action latent space dimensions, and allowed for stronger care for action latents.
+I searched for alternatives and settled on the most recommended, FSQ, which worked as a drop-in fix and led to 100% codebook usage out of the box. FSQ is a genius algorithm.
 
-The greatest challenge was avoiding action tokenizer collapse, which was solved by
-1. Switching VQVAE (tended to collapse to 1/8 codes quickly) to FSQVAE
+### Additive Action Embeddings vs FiLM
+Genie 1 conditions frame genration on actions by adding the action embeddings to the video embeddings. 
+
+I tried additive and then FiLM, and found FiLM led the action tokenizer decoder to pay more attention to action tokens.
+
+### Countering action tokenizer collapse
+By far the greatest challenge was avoiding action tokenizer collapse, which I solved by:
+1. Switching VQVAE to FSQVAE
 2. Using only the first frame and masking all others
-3. Adding low-weight encoder variance loss (across the batch dim)
+3. Adding low-weight variance loss to the pre-quantization encoder outputs across the batch dimension
 
-I found RMSNorm better than layernorm, and found SwiGLU better than ReLU.
+### Low-level architecture decisions
+I found RMSNorm better than layernorm, and found SwiGLU better than ReLU. L1 loss led to sharper reconstructions than L2, which encouraged muted tones.
 
-The default model uses 4 transformer blocks, with d_model 128, 8 heads, 256 FFN hidden dim, and 4-frame sequences which make for around 1.3M parameter tokenizers and dynamics model.
+The default model uses 4 transformer blocks, with d_model 128, 8 heads, 512 FFN hidden dim (SwiGLU takes 2/3 of this for each W matrix), and 4-frame sequences which make for around ~2M parameter tokenizers and dynamics model.
 
 ## An Appreciation of World Models
 A world model predicts the next state of an environment given current state and some conditioning. 
