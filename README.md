@@ -53,7 +53,7 @@ python scripts/run_inference.py --config configs/inference.yaml
 
 # Architecture Overview 
 
-<img src="/assets/tinyworldarchitecture.png" alt="arch" width="200"/>
+<img src="/assets/tinyworldarchitecture.png" alt="arch" width="60%"/>
 
 TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
@@ -73,6 +73,8 @@ STTransformer is used in all 3 models, and FSQVAE is used in both tokenizers. Th
 
 ## Space-Time Transformer (STT)
 papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
+
+<img src="/assets/spacetimetransformer.png" alt="arch" width="60%"/>
 
 The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
 
