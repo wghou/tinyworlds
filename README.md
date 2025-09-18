@@ -53,7 +53,7 @@ python scripts/run_inference.py --config configs/inference.yaml
 
 # Architecture Overview 
 
-![architecture](/assets/tinyworldarchitecture.png)
+<img src="/assets/tinyworldarchitecture.png" alt="arch" width="200"/>
 
 TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
