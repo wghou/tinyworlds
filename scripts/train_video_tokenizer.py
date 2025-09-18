@@ -159,6 +159,7 @@ def main():
             }
             log_training_metrics(i, metrics, prefix='train')
             log_system_metrics(i)
+            log_learning_rate(optimizer, i)
 
         if i % args.log_interval == 0 and is_main:
             if args.use_wandb:
@@ -174,7 +175,7 @@ def main():
             save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
             visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
             
-            print('Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
+            print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
 
     # Finish W&B run
     if args.use_wandb and is_main:

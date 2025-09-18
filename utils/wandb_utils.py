@@ -32,23 +32,6 @@ def log_training_metrics(step: int, metrics: Dict[str, float], prefix: str = "tr
     wandb.log(prefixed_metrics, step=step)
 
 
-def log_model_gradients(model: torch.nn.Module, step: int):
-    # Log gradients for each parameter
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            wandb.log({
-                f"gradients/{name}": wandb.Histogram(param.grad.detach().cpu().numpy()),
-            }, step=step)
-
-
-def log_model_parameters(model: torch.nn.Module, step: int):
-    # Log parameters for each layer
-    for name, param in model.named_parameters():
-        wandb.log({
-            f"parameters/{name}": wandb.Histogram(param.detach().cpu().numpy()),
-        }, step=step)
-
-
 def log_learning_rate(optimizer: torch.optim.Optimizer, step: int):
     for i, param_group in enumerate(optimizer.param_groups):
         wandb.log({
