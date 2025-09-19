@@ -1,4 +1,4 @@
-![image](assets/tinyworlds.png)
+![image](assets/tinyworldsbannerv3.png)
 
 TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
@@ -53,7 +53,7 @@ python scripts/run_inference.py --config configs/inference.yaml
 
 # Architecture Overview 
 
-![tinyworldsarch](/assets/tinyworldsarch.png)
+![tinyworldsarch](/assets/tinyworldsarchv3.png)
 
 TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
