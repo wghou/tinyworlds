@@ -8,7 +8,6 @@ from models.patch_embed import PatchEmbedding
 from models.positional_encoding import build_spatial_only_pe
 
 class VideoTokenizerEncoder(nn.Module):
-    """ST-Transformer encoder that takes frames and outputs latent representations"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8, 
                  hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
@@ -29,6 +28,7 @@ class VideoTokenizerEncoder(nn.Module):
 
 
 class PixelShuffleFrameHead(nn.Module):
+    # conv2D embeddings to pixels head
     def __init__(self, embed_dim, patch_size=8, channels=3, H=128, W=128):
         super().__init__()
         self.patch_size = patch_size
@@ -44,7 +44,6 @@ class PixelShuffleFrameHead(nn.Module):
 
 
 class VideoTokenizerDecoder(nn.Module):
-    """ST-Transformer decoder that reconstructs frames from latents"""
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, latent_dim=5):
         super().__init__()
@@ -52,28 +51,25 @@ class VideoTokenizerDecoder(nn.Module):
         self.patch_size = patch_size
         self.Hp, self.Wp = H // patch_size, W // patch_size
         self.num_patches = self.Hp * self.Wp
-
-        # Transformer and embeddings
-        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
+        
         self.latent_embed = nn.Linear(latent_dim, embed_dim)
+        self.transformer = STTransformer(embed_dim, num_heads, hidden_dim, num_blocks, causal=True)
+        self.frame_head = PixelShuffleFrameHead(embed_dim, patch_size=patch_size, channels=3, H=H, W=W)
 
-        # Shared spatial-only PE (zeros in temporal tail)
+        # first 2/3 spatial PE (temporal is last 1/3)
         pe_spatial_dec = build_spatial_only_pe((H, W), self.patch_size, embed_dim, device='cpu', dtype=torch.float32)  # [1,P,E]
         self.register_buffer("pos_spatial_dec", pe_spatial_dec, persistent=False)
 
-        # Efficient patch-wise frame reconstruction head
-        self.frame_head = PixelShuffleFrameHead(embed_dim, patch_size=patch_size, channels=3, H=H, W=W)
-
     def forward(self, latents):
         # latents: [B, T, P, L]
-        # Embed latents and add spatial PE
+        # embed latents and add spatial PE
         embedding = self.latent_embed(latents)  # [B, T, P, E]
         embedding = embedding + self.pos_spatial_dec.to(dtype=embedding.dtype, device=embedding.device)
 
-        # Apply transformer (temporal PE added inside)
+        # apply transformer (temporal PE added inside)
         embedding = self.transformer(embedding)  # [B, T, P, E]
 
-        # Reconstruct frames using patch-wise head
+        # reconstruct frames using patch-wise head
         frames_out = self.frame_head(embedding)  # [B, T, C, H, W]
 
         return frames_out
@@ -89,7 +85,7 @@ class VideoTokenizer(nn.Module):
         self.codebook_size = num_bins**latent_dim
 
     def forward(self, frames):
-        # Encode frames to latent representations, quantize, and decode back to frames
+        # encode frames to latent representations, quantize, and decode back to frames
         embeddings = self.encoder(frames)  # [B, T, P, L]
         quantized_z = self.quantizer(embeddings)
         x_hat = self.decoder(quantized_z)  # [B, T, C, H, W]

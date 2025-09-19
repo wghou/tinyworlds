@@ -88,22 +88,22 @@ def main():
 
     print(f"Loading {args.dataset} dataset...")
 
-    # Load data
+    # load data
     _, _, validation_loader, _, _ = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
         num_frames=args.context_length
     )
-    # Visualize batches
+    # visualize batches
     for batch_idx, (frames, _) in enumerate(validation_loader):
         if batch_idx >= args.num_batches:
             break
 
-        # Calculate statistics
+        # calculate statistics
         frames_cpu = frames.detach().cpu()
         batch_size, seq_len, C, H, W = frames_cpu.shape
 
-        # Create visualization
+        # visualize batch
         os.makedirs(args.save_dir, exist_ok=True)
         save_path = os.path.join(args.save_dir, f"{args.dataset}_batch_{batch_idx + 1}.png")
         visualize_batch(

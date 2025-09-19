@@ -13,23 +13,21 @@ import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 from utils.config import VideoTokenizerConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_videotokenizer_from_checkpoint
-from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, finish_wandb
+from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, log_learning_rate, finish_wandb
 from dataclasses import asdict
 from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
 
 
 def main():
-    # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
+    # vidtokenizer config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: VideoTokenizerConfig = load_stage_config_merged(VideoTokenizerConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'video_tokenizer.yaml'))
 
-    # Minimal DDP setup
+    # DDP setup
     ddp = init_distributed_from_env()
     device = ddp['device']
 
-    # Always define a timestamp-like name
+    # run save dir if it doesn't exist (running not from full train)
     timestamp = readable_timestamp()
-
-    # Create organized save directory structure under a shared run root
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
@@ -39,13 +37,12 @@ def main():
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
-    # Build optional loader overrides
+    # dataloader
     data_overrides = {}
     if hasattr(args, 'fps') and args.fps is not None:
         data_overrides['fps'] = args.fps
     if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
         data_overrides['preload_ratio'] = args.preload_ratio
-
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
         batch_size=args.batch_size, 
@@ -54,6 +51,7 @@ def main():
         **data_overrides,
     )
 
+    # init model and optional ckpt load
     model = VideoTokenizer(
         frame_size=(args.frame_size, args.frame_size), 
         patch_size=args.patch_size,
@@ -64,20 +62,19 @@ def main():
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
     ).to(device)
-
     if args.checkpoint:
         model, _ = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
 
+    # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "VideoTokenizer", is_main)
-
-    # Optionally compile the model
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-
-    # Wrap with DDP
     model = wrap_ddp_if_needed(model, ddp['is_distributed'], ddp['local_rank'])
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
-    # Create parameter groups to avoid weight decay on biases and norm layers
+    # param groups to avoid weight decay on biases and norm layers
     decay = []
     no_decay = []
     for name, param in unwrap_model(model).named_parameters():
@@ -87,32 +84,22 @@ def main():
             else:
                 decay.append(param)
 
-    # Try to enable fused AdamW for better throughput
-    try:
-        optimizer = optim.AdamW([
-            {'params': decay, 'weight_decay': 0.01},
-            {'params': no_decay, 'weight_decay': 0}
-        ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
-    except TypeError:
-        optimizer = optim.AdamW([
-            {'params': decay, 'weight_decay': 0.01},
-            {'params': no_decay, 'weight_decay': 0}
-        ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
-
-    # Create cosine scheduler with warmup
+    # fused AdamW
+    optimizer = optim.AdamW([
+        {'params': decay, 'weight_decay': 0.01},
+        {'params': no_decay, 'weight_decay': 0}
+    ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
+    
+    # cosine scheduler for lr warmup and AMP grad scaler
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-
-    # AMP scaler
     scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
     results = {
         'n_updates': 0,
-        'recon_errors': [],
         'loss_vals': [],
-        'perplexities': [],
     }
 
-    # Initialize W&B if enabled and available
+    # init wandb
     if args.use_wandb and is_main:
         cfg = asdict(args)
         cfg.update({'timestamp': timestamp})
@@ -127,31 +114,30 @@ def main():
         try:
             (x, _) = next(train_iter)
         except StopIteration:
-            train_iter = iter(training_loader)  # Reset iterator when epoch ends
+            train_iter = iter(training_loader)  # reset iterator when epoch ends
             (x, _) = next(train_iter)
 
         x = x.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
 
-        # Forward + loss under autocast
+        # forward + loss under autocast
         with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
             loss, x_hat = unwrap_model(model)(x)
 
-        # Backward with scaler
+        # backward with amp scaler
         scaler.scale(loss).backward()
 
-        # Clip gradients before stepping
+        # clip grads, optimizerstep, update scheduler and grad scaler
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()  # Step the learning rate scheduler
+        scheduler.step()
 
-        results["recon_errors"].append(loss.cpu().detach())
         results["loss_vals"].append(loss.cpu().detach())
         results["n_updates"] = i
 
-        # Log to W&B if enabled and available
+        # wandb logging
         if args.use_wandb and is_main:
             metrics = {
                 'loss': loss.item(),
@@ -161,6 +147,7 @@ def main():
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
 
+        # save model and visualize results
         if i % args.log_interval == 0 and is_main:
             if args.use_wandb:
                 with torch.no_grad():
@@ -175,9 +162,9 @@ def main():
             save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
             visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
             
-            print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["recon_errors"][-args.log_interval:])).item())
+            print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
-    # Finish W&B run
+    # finish wandb
     if args.use_wandb and is_main:
         finish_wandb()
     cleanup_distributed(ddp['is_distributed'])

@@ -8,7 +8,6 @@ import math
 import torch.nn.functional as F
 
 class SpatialAttention(nn.Module):
-    """Spatial attention over patches within each frame"""
     def __init__(self, embed_dim, num_heads, conditioning_dim=None):
         super().__init__()
         self.embed_dim = embed_dim
@@ -26,7 +25,8 @@ class SpatialAttention(nn.Module):
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
 
-        # Project to Q, K, V and reshape: [B, T, P, E] -> [(B*T), H, P, E/H] to work with torch compile attention
+        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*T), H, P, E/H] 
+        # (4 dims to work with torch compile attention)
         q = rearrange(self.q_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         k = rearrange(self.k_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
         v = rearrange(self.v_proj(x), 'B T P (H D) -> (B T) H P D', H=self.num_heads)
@@ -48,7 +48,6 @@ class SpatialAttention(nn.Module):
         return out # [B, T, P, E]
 
 class TemporalAttention(nn.Module):
-    """Temporal attention over time steps (optionally causally) for the same patch)"""
     def __init__(self, embed_dim, num_heads, causal=True, conditioning_dim=None):
         super().__init__()
         self.embed_dim = embed_dim
@@ -67,15 +66,16 @@ class TemporalAttention(nn.Module):
     def forward(self, x, conditioning=None):
         B, T, P, E = x.shape
         
-        # Project to Q, K, V and reshape: [B, T, P, E] -> [(B*P), H, T, D] to work with torch compile attention
+        # project to Q, K, V and split into heads: [B, T, P, E] -> [(B*P), H, T, D] 
+        # (4 dims to work with torch compile attention)
         q = rearrange(self.q_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         k = rearrange(self.k_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads)
         v = rearrange(self.v_proj(x), 'b t p (h d) -> (b p) h t d', h=self.num_heads) # [B, P, H, T, D]
 
         k_t = k.transpose(-2, -1) # [(B*P), H, T, D, T]
 
-        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v: [(B*P), H, T, D] -> [(B*P), H, T, T]
-        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim)
+        # attention(q, k, v) = softmax(qk^T / sqrt(d)) v
+        scores = torch.matmul(q, k_t) / math.sqrt(self.head_dim) # [(B*P), H, T, T]
 
         # causal mask for each token t in seq, mask out all tokens to the right of t (after t)
         if self.causal:
@@ -95,6 +95,7 @@ class TemporalAttention(nn.Module):
         return out # [B, T, P, E]
 
 class SwiGLUFFN(nn.Module):
+    # swiglu(x) = W3(sigmoid(W1(x) + b1) * (W2(x) + b2)) + b3
     def __init__(self, embed_dim, hidden_dim, conditioning_dim=None):
         super().__init__()
         # TODO: add MoE
@@ -111,7 +112,6 @@ class SwiGLUFFN(nn.Module):
         return self.norm(x + out, conditioning) # [B, T, P, E]
 
 class STTransformerBlock(nn.Module):
-    """ST-Transformer block with spatial attention, temporal attention, and feed-forward"""
     def __init__(self, embed_dim, num_heads, hidden_dim, causal=True, conditioning_dim=None):
         super().__init__()
         self.spatial_attn = SpatialAttention(embed_dim, num_heads, conditioning_dim)
@@ -127,12 +127,11 @@ class STTransformerBlock(nn.Module):
         return x
 
 class STTransformer(nn.Module):
-    """ST-Transformer with multiple blocks and temporal position encoding"""
     def __init__(self, embed_dim, num_heads, hidden_dim, num_blocks, causal=True, conditioning_dim=None):
         super().__init__()
-        # Split dimensions, ensuring temporal is even
-        self.temporal_dim = (embed_dim // 3) & ~1  # Round down to even number
-        self.spatial_dims = embed_dim - self.temporal_dim  # Rest goes to spatial
+        # calculate temporal PE dim
+        self.temporal_dim = (embed_dim // 3) & ~1  # round down to even number
+        self.spatial_dims = embed_dim - self.temporal_dim  # rest goes to spatial
         
         self.blocks = nn.ModuleList([
             STTransformerBlock(embed_dim, num_heads, hidden_dim, causal, conditioning_dim)
@@ -140,7 +139,8 @@ class STTransformer(nn.Module):
         ])
         
     def forward(self, x, conditioning=None):
-        # x: [batch_size, seq_len, num_patches, embed_dim]
+        # x: [B, T, P, E]
+        # conditioning: [B, T, E]
         B, T, P, E = x.shape
         tpe = sincos_time(T, self.temporal_dim, x.device, x.dtype)  # [T, E/3]
 

@@ -53,7 +53,7 @@ python scripts/run_inference.py --config configs/inference.yaml
 
 # Architecture Overview 
 
-<img src="/assets/tinyworldarchmountains.png" alt="arch" width="60%"/>
+![tinyworldsarch](/assets/tinyworldsarch.png)
 
 TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
@@ -74,7 +74,7 @@ STTransformer is used in all 3 models, and FSQVAE is used in both tokenizers. Th
 ## Space-Time Transformer (STT)
 papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
 
-<img src="/assets/spacetimesunset.png" alt="arch" width="60%"/>
+![stt](/assets/space-timetransformer.png)
 
 The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
 
@@ -85,12 +85,11 @@ In the temporal layer, each token in a given position attends causally to other 
 In the Feedforward Layer, we could use a basic FFL: Wx + b -> ReLU -> Wx + b -> LayerNorm. However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
 SwiGLU comes from Swish, which is x * sigmoid(x). SwiGLU adds a Gated Linear Unit (GLU), so we first compute x_t = Swish(W_1x + b) to W_2x + b, and then we have a final wx_t + b.
 
-Both attentions and the feedforward have norms afterward (postnorm), either unconditioned (for Video Tokenizer and LAM Encoder) or conditioned on actions (for LAM decoder and the dynamics model). 
+Both attentions and the feedforward have norms afterward (postnorm), either unconditioned (for Video Tokenizer and Action Tokenizer Encoder) or conditioned on actions (for action tokenizer decoder and the dynamics model). 
 
-For unconditioned STTransformer, we use RMSNorm, which computes norm as sqrt(eps + x / sum of x^2)
+For unconditioned STTransformer, we use RMSNorm, which computes norm as sqrt(eps + x / sum over x^2)
 
 For conditioned STTransformer, we use Feature-wise Linear Modulation (FiLM). FiLM takes in the conditioning, in this case, actions for each timestep. It then uses a FeedForward Layer to transform each action latent into one beta vector and one gamma vector, both of embedding dim length. we then compute the norm as layernorm(x) * gamma + (1 + beta)
-
 
 ### VAEs
 Paper: [Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
@@ -103,6 +102,8 @@ VAEs consist of:
 We cannot learn these quantities directly, but we can instead learn to maximize the likelihoods of z | x and x | z by ascending the reconstruction objective p(x | z | x), where z will learn semantically meaningful information because we constrain its dimensionality be low (it is forced to choose only the most important information from an image).
 
 ### Finite Scalar Quantization
+
+![fsq](/assets/finitescalarquantizer.png)
 
 Posterior and prior distributions are categorical, and samples drawn from these fall into a specific region of a hypercube, which are used as discrete inputs to decoder network.
 
@@ -129,19 +130,23 @@ stopgrad is the stopgradient operator (in pytorch, .detach()) that is identity a
 
 ## Video Tokenizer
 
+![videotokenizer](/assets/videotokenizer.png)
+
 The video tokenizer compresses videos into discrete tokens to reduce dimensionality and have higher quality video generation.
 It does so as an FSQVAE implemented with an STTransformer that attends to tokens full-spatially and temporal-causally. 
 Thus, each token contains information about its frame in relation to itself and to previous frames. 
 
 ## Action Tokenizer
 
+![actiontokenizer](/assets/actiontokenizer.png)
+
 The Action Tokenizer allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
 
-The LAM Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous action latent vectors between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
+The Action Tokenizer Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous action latent vectors between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
 
 To create the discrete action codebook, we again use an FSQ objective to bound and bin the continuous action latent vectors outtputed by the encoder into one of |codebook size| cubes which represent our codebook.
 
-The LAM Decoder takes in all previous frames $(x_1...x_t)$ and quantized action latent vectors $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
+The Action Tokenizer Decoder takes in all previous frames $(x_1...x_t)$ and quantized action latent vectors $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
 
 Since the decoder only has access to frame history and the action token, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
 
@@ -151,6 +156,8 @@ At inference time, we only use the learned cubes (latents) which correspond to a
 
 ## Dynamics Model
 Additional paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
+
+![dynamicsmodel](/assets/dynamicsmodel.png)
 
 At a high level, we want that at timestep $t \in [1, T]$, the dynamics model takes in tokenized video and action sequences from t=0 (defined as context-length frames old) up to $t - 1$ and predict next frame tokens $z_t$.
 
@@ -175,9 +182,9 @@ We repeat process autoregressively over the time dimension as actions are passed
 
 ## Data
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
-
 ![datasets](/assets/datasets_stylized.png)
+
+The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
 
 1. PicoDoom (`picodoom_frames.h5`)
 2. Pong (`pong_frames.h5`)
@@ -214,26 +221,26 @@ When looking through the codebase, I shape-annotate all tensors and use einops t
 
 ## Filling in the Gaps (and Differing) from Genie
 
-### FSQ vs VQVAE
+### 1. FSQ vs VQVAE
 In Genie 1, VQVAE is used for both the video tokenizer and the action tokenizer. 
 
 VQVAE is notoriously difficult to train: it has 2 auxiliary losses that demand careful tuning, and often ends in codebook usage lower than 10%.
 
 I searched for alternatives and settled on the most recommended, FSQ, which worked as a drop-in fix and led to 100% codebook usage out of the box. FSQ is a genius algorithm.
 
-### Additive Action Embeddings vs FiLM
+### 2. Additive Action Embeddings vs FiLM
 Genie 1 conditions frame genration on actions by adding the action embeddings to the video embeddings. 
 
 I tried additive and then FiLM, and found FiLM led the action tokenizer decoder to pay more attention to action tokens.
 
-### Countering action tokenizer collapse
+### 3. Countering action tokenizer collapse
 By far the greatest challenge was avoiding action tokenizer collapse, which I solved by:
 1. Switching VQVAE to FSQVAE
 2. Using only the first frame and masking all others
 3. Adding low-weight variance loss to the pre-quantization encoder outputs across the batch dimension
 
-### Low-level architecture decisions
-I found RMSNorm better than layernorm, and found SwiGLU better than ReLU. L1 loss led to sharper reconstructions than L2, which encouraged muted tones.
+### 4. Low-level architecture decisions
+In ablations, RMSNorm > LayerNorm and SwiGLU > ReLU by loss, and L1 loss > L2 loss since L1 gave sharper reconstructions than L2, which encouraged muted tones.
 
 The default model uses 4 transformer blocks, with d_model 128, 8 heads, 512 FFN hidden dim (SwiGLU takes 2/3 of this for each W matrix), and 4-frame sequences which make for around ~2M parameter tokenizers and dynamics model.
 
@@ -256,6 +263,7 @@ World models can both act as cortexes to give physical world understanding to mo
 - [ ] Replace the mean pool + concat in the action tokenizer with attention pooling (t to t + 1 then mean pool)
 - [ ] Accelerate dynamics training by producing, saving, and loading pre-processed tokens instead of full frames 
 - [ ] Try different optimizers (Muon, SOAP)
+- [ ] Add new schedulers for MaskGIT like cosine and [Halton](https://github.com/valeoai/Halton-MaskGIT)
 
 **Please make a PR! I've added TODOs throughout and there are many small things to try which could offer massive performance gains. The codebase is meant to be built upon.**
 

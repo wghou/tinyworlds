@@ -117,11 +117,11 @@ class LatentActionModel(nn.Module):
         # decode to get predicted frames
         pred_frames = self.decoder(frames, action_latents_quantized, training=True)  # [B, T - 1, C, H, W]
 
-        # Compute reconstruction loss
+        # reconstruction loss
         target_frames = frames[:, 1:]  # All frames except first [B, T - 1, C, H, W]
         recon_loss = F.smooth_l1_loss(pred_frames, target_frames)
 
-        # Encourage non-collapsed encoder variance per-dimension
+        # variance loss across batch dim for pre-quant encoder outputs (helps prevent action collapse)
         z_var = action_latents.var(dim=0, unbiased=False).mean()
         var_penalty = F.relu(self.var_target - z_var)
         total_loss = recon_loss + self.var_lambda * var_penalty

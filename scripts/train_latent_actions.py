@@ -19,17 +19,15 @@ from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unw
 
 
 def main():
-    # Load stage config merged with training_config.yaml (training takes priority), plus CLI overrides
+    # latent actions config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: LatentActionsConfig = load_stage_config_merged(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
-    # Minimal DDP setup
+    # DDP setup
     ddp = init_distributed_from_env()
     device = ddp['device']
 
-    # Always define a timestamp-like name
+    # run save dir if it doesn't exist (running not from full train)
     timestamp = readable_timestamp()
-
-    # Create organized save directory structure under a shared run root
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
@@ -39,13 +37,12 @@ def main():
         stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
         print(f'Results will be saved in {stage_dir}')
 
-    # Build optional loader overrides
+    # dataloader
     data_overrides = {}
     if hasattr(args, 'fps') and args.fps is not None:
         data_overrides['fps'] = args.fps
     if hasattr(args, 'preload_ratio') and args.preload_ratio is not None:
         data_overrides['preload_ratio'] = args.preload_ratio
-
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset,
         batch_size=args.batch_size,
@@ -54,6 +51,7 @@ def main():
         **data_overrides,
     )
 
+    # init model and optional ckpt load
     model = LatentActionModel(
         frame_size=(args.frame_size, args.frame_size),
         patch_size=args.patch_size,
@@ -63,19 +61,19 @@ def main():
         num_blocks=args.num_blocks,
         n_actions=args.n_actions,
     ).to(device)
-
     if args.checkpoint:
         model, _ = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
 
+    # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "LatentActionModel", is_main)
-
-    # Optionally compile
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-
     model = wrap_ddp_if_needed(model, ddp['is_distributed'], ddp['local_rank'])
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
-    # Create parameter groups to avoid weight decay on biases and norm layers
+    # param groups to avoid weight decay on biases and norm layers
     decay = []
     no_decay = []
     for name, param in unwrap_model(model).named_parameters():
@@ -85,16 +83,14 @@ def main():
             else:
                 decay.append(param)
 
-    # fused AdamW for better throughput
+    # fused AdamW
     optimizer = optim.AdamW([
         {'params': decay, 'weight_decay': 0.01},
         {'params': no_decay, 'weight_decay': 0}
     ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
 
-    # Create cosine scheduler with warmup
+    # cosine scheduler for lr warmup and AMP grad scaler
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-
-    # AMP scaler
     scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
     results = {
@@ -102,7 +98,7 @@ def main():
         'loss_vals': [],
     }
 
-    # Initialize W&B if enabled and available
+    # init wandb
     if args.use_wandb and is_main:
         cfg = asdict(args)
         cfg.update({'timestamp': timestamp})
@@ -144,7 +140,7 @@ def main():
             log_system_metrics(i)
             log_learning_rate(optimizer, i)
   
-        # Save model and visualize results periodically
+        # save model and visualize results
         if i % args.log_interval == 0 and is_main:
             with torch.no_grad():
                 actions = unwrap_model(model).encoder(x)
@@ -167,9 +163,9 @@ def main():
             save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
             visualize_reconstruction(x, pred_frames, save_path)
             
-            print('Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
+            print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
 
-    # Finish W&B run
+    # finish wandb
     if args.use_wandb and is_main:
         finish_wandb()
     cleanup_distributed(ddp['is_distributed'])

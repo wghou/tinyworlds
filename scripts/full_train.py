@@ -6,6 +6,7 @@ from utils.config import TrainingConfig, load_config
 DEFAULT_TRAINING_CONFIG = os.path.join(os.getcwd(), 'configs', 'training.yaml')
 
 def main():
+    # load training config
     argv = sys.argv
     try:
         idx = argv.index('--config')

@@ -24,14 +24,13 @@ def sincos_1d(L, D, device, dtype):
     return pe # [L, D]
 
 def sincos_time(T, D, device, dtype):
-    # temporal PE using 1d sinusoidal PE across time
+    # temporal PE (1d sinusoidal PE across time)
     return sincos_1d(T, D, device, dtype)  # reuse the same 1D builder
 
 
 def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype=torch.float32):
     # spatial positional encodings for a grid of patches in first 2/3 of embed dim (evenly into x and y axes)
-    # Last 1/3 temporal filled with 0s
-
+    # last 1/3 for temporal PE padded with 0s
     H, W = frame_size
     Hp, Wp = H // patch_size, W // patch_size
 
@@ -45,9 +44,9 @@ def build_spatial_only_pe(frame_size, patch_size, embed_dim, device='cpu', dtype
 
     assert spatial_x_dim % 2 == 0 and spatial_y_dim % 2 == 0 and temporal_dim % 2 == 0
 
+    # 2d PE for x and y axes
     pe_x = sincos_1d(Wp, spatial_x_dim, device, dtype)  # [Wp, Dx]
     pe_y = sincos_1d(Hp, spatial_y_dim, device, dtype)  # [Hp, Dy]
-
     pe_x = repeat(pe_x, 'wp dx -> hp wp dx', hp=Hp) # [Hp, Wp, Dx]
     pe_y = repeat(pe_y, 'hp dy -> hp wp dy', wp=Wp) # [Hp, Wp, Dy]
 

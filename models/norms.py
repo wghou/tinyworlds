@@ -28,7 +28,7 @@ class SimpleLayerNorm(nn.Module):
 
 
 class AdaptiveNormalizer(nn.Module):
-    # Conditioned Feature-wise Linear Modulation, optionally unconditioned simple RMSNorm
+    # either conditioned FiLM or unconditioned RMSNorm
     def __init__(self, embed_dim, conditioning_dim=None):
         super().__init__()
         self.ln = None
@@ -44,7 +44,7 @@ class AdaptiveNormalizer(nn.Module):
                 nn.Linear(conditioning_dim, 2 * embed_dim)
             )
             # for lam and dynamics we initialize with small non-zero weights 
-            # so conditioning is active from step 1 (this helps prevent ignoring conditioning)
+            # so conditioning is active from step 1 (helps prevent ignoring conditioning)
             nn.init.normal_(self.to_gamma_beta[-1].weight, mean=0.0, std=1e-3)
             nn.init.zeros_(self.to_gamma_beta[-1].bias)
 
@@ -61,7 +61,7 @@ class AdaptiveNormalizer(nn.Module):
         out = repeat(out, 'b t twoe -> b t p twoe', p=P) # [B, T, P, 2 * E]
         gamma, beta = out.chunk(2, dim=-1) # each [B, T, P, E]
 
-        # preppend with zeros since a_t-1 should impact z_t (and a_0 is used for z_1 etc)
+        # preppend action tensor with zeros in T since a_t-1 should impact z_t (and a_0 is used for z_1 etc)
         if gamma.shape[1] == x.shape[1] - 1 and beta.shape[1] == x.shape[1] - 1:
             gamma = torch.cat([torch.zeros_like(gamma[:, :1]), gamma], dim=1)
             beta = torch.cat([torch.zeros_like(beta[:, :1]), beta], dim=1)
