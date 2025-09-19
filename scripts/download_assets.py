@@ -7,6 +7,7 @@ from huggingface_hub import hf_hub_download, list_repo_files
 
 DATASET_REPO_ID_DEFAULT = "datasets/AlmondGod/tinyworlds"
 MODELS_REPO_ID_DEFAULT = "AlmondGod/tinyworlds-models"
+VALID_TYPES = {"video_tokenizer", "actions", "dynamics", "all"}
 
 
 def repo_root() -> Path:
@@ -68,31 +69,43 @@ def cmd_models(args) -> int:
 	folder_name = f"{timestamp}_{suite}"
 	model_root = base_results / folder_name
 
-	model_type = args.type
-	if model_type not in {"video_tokenizer", "action_tokenizer", "dynamics"}:
-		print("--type must be one of: video_tokenizer, action_tokenizer, dynamics")
+	# Validate and normalize types to fetch
+	type_arg = args.type
+	if type_arg == "all":
+		types_to_fetch = list(VALID_TYPES)
+	elif type_arg in VALID_TYPES:
+		types_to_fetch = [type_arg]
+	else:
+		print("--type must be one of: video_tokenizer, actions, dynamics, all")
 		return 2
 
-	# Determine local save subdirectory (pattern now controls save path, not search)
-	save_subdir = (args.pattern[0] if isinstance(args.pattern, list) else args.pattern) or f"{model_type}/checkpoints"
-
-	# Search strategy: look under <suite>/ and match any file path containing the model_type string
+	# Pre-fetch file listing once
 	all_files = list_repo_files(repo_id=repo_id, repo_type="model")
-	matched = [
-		f for f in all_files
-		if f.startswith(f"{suite}/") and (model_type in f) and f.endswith(".pth")
-	]
-	if not matched:
-		print(f"No checkpoint files found in model repo {repo_id} under '{suite}/' containing '{model_type}'")
-		return 1
 
-	# Target directory: results/<timestamp>_<suite>/<save_subdir>
-	target_root = model_root / save_subdir
-	pairs = [(repo_id, m) for m in matched]
-	paths = download_pairs(pairs, target_root, resume=(not args.no_resume), repo_type="model")
-	for p in paths:
-		print(p)
-	return 0
+	any_found = False
+	for model_type in types_to_fetch:
+		# Determine local save subdirectory (pattern now controls save path, not search)
+		pattern_arg = args.pattern[0] if isinstance(args.pattern, list) else args.pattern
+		save_subdir = pattern_arg or f"{model_type}/checkpoints"
+
+		# Search strategy: look under <suite>/ and match any file path containing the model_type string
+		matched = [
+			f for f in all_files
+			if f.startswith(f"{suite}/") and (model_type in f) and f.endswith(".pth")
+		]
+		if not matched:
+			print(f"No checkpoint files found in model repo {repo_id} under '{suite}/' containing '{model_type}'")
+			continue
+
+		any_found = True
+		# Target directory: results/<timestamp>_<suite>/<save_subdir>
+		target_root = model_root / save_subdir
+		pairs = [(repo_id, m) for m in matched]
+		paths = download_pairs(pairs, target_root, resume=(not args.no_resume), repo_type="model")
+		for p in paths:
+			print(p)
+
+	return 0 if any_found else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
 	# models subcommand
 	p_models = subparsers.add_parser("models", help="Download model checkpoints into results/<timestamp>_<suite>/<type>/checkpoints")
 	p_models.add_argument("--repo", type=str, help="HF model repo_id (default: AlmondGod/tinyworlds-models)")
-	p_models.add_argument("--type", required=True, help="Model type: video_tokenizer | action_tokenizer | dynamics")
-	p_models.add_argument("--suite-name", dest="suite_name", type=str, help="Folder name suffix (e.g., 'sonic_models')")
+	p_models.add_argument("--type", default="all", help=f"Model type: {', '.join(VALID_TYPES)}, all")
+	p_models.add_argument("--suite-name", dest="suite_name", type=str, help="Folder name suffix (e.g., 'sonic')")
 	p_models.add_argument("--pattern", action="append", help="Save subdirectory under results folder (default: <type>/checkpoints)")
 	p_models.add_argument("--out", type=Path, help="Base results directory (default: repo_root/results)")
 	p_models.add_argument("--no-resume", action="store_true", help="Disable resume for interrupted downloads")

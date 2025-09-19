@@ -3,13 +3,14 @@ import glob
 import subprocess
 import os
 import re
+from typing import Optional
 
 
 def readable_timestamp():
     """Generate a sortable timestamp for filenames (no weekday)."""
     return time.strftime("%Y_%m_%d_%H_%M_%S")
 
-def find_latest_checkpoint(base_dir, model_name, run_root_dir: str | None = None, stage_name: str | None = None):
+def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = None, stage_name: Optional[str] = None):
     """Find latest checkpoint.
     If run_root_dir (and optional stage_name) are provided, search only under
     <run_root_dir>/<stage_name>/checkpoints (or <run_root_dir>/**/checkpoints if stage_name None).
@@ -124,9 +125,8 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
     import torch
     from models.video_tokenizer import VideoTokenizer
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location='cpu')
     cfg = ckpt.get('config', {}) or {}
-    # Build kwargs from saved config with sensible fallbacks
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),
@@ -139,8 +139,9 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None):
         'num_bins': cfg.get('num_bins', 4),
     }
     if model is None:
-        model = VideoTokenizer(**kwargs).to(device)
+        model = VideoTokenizer(**kwargs)
     model.load_state_dict(ckpt['model'], strict=True)
+    model = model.to(device)
     return model, ckpt
 
 
@@ -148,7 +149,7 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
     from models.latent_actions import LatentActionModel
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location='cpu')
     cfg = ckpt.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
@@ -161,8 +162,9 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None):
         'num_blocks': cfg.get('num_blocks', 4),
     }
     if model is None:
-        model = LatentActionModel(**kwargs).to(device)
+        model = LatentActionModel(**kwargs)
     model.load_state_dict(ckpt['model'], strict=True)
+    model = model.to(device)
     return model, ckpt
 
 
@@ -170,7 +172,7 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
     from models.dynamics import DynamicsModel
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location='cpu')
     cfg = ckpt.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
     # Infer conditioning_dim from checkpoint if missing
@@ -195,11 +197,12 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):
         'num_bins': cfg.get('num_bins', 4),
     }
     if model is None:
-        model = DynamicsModel(**kwargs).to(device)
+        model = DynamicsModel(**kwargs)
     model.load_state_dict(ckpt['model'], strict=True)
+    model = model.to(device)
     return model, ckpt
 
-def prepare_pipeline_run_root(run_name: str | None = None, base_cwd: str | None = None):
+def prepare_pipeline_run_root(run_name: Optional[str] = None, base_cwd: Optional[str] = None):
     """Create a top-level run root directory results/<timestamp_or_name>"""
     cwd = base_cwd or os.getcwd()
     ts = readable_timestamp()
