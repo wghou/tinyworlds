@@ -74,7 +74,7 @@ class DynamicsModel(nn.Module):
 
         return predicted_logits, mask_positions, loss  # logits, mask, optional loss
 
-    def exp_schedule_torch(t, T, P_total, k):
+    def exp_schedule_torch(self, t, T, P_total, k, device):
         # t: current step, T: total steps, P_total: total masked positions across the horizon window
         # exp schedule is P_total * (1 - exp(k * t / T)) / (1 - exp(k))
         x = t / max(T, 1)
@@ -101,7 +101,7 @@ class DynamicsModel(nn.Module):
 
         P_total = H * P  # total masked positions across the horizon window
         for m in range(num_steps):
-            n_tokens_raw = exp_schedule_torch(m, num_steps, P_total, k=schedule_k)
+            n_tokens_raw = self.exp_schedule_torch(m, num_steps, P_total, schedule_k, device)
 
             # predict logits for current input
             logits, _, _ = self.forward(input_latents, training=False, conditioning=conditioning, targets=None)  # [B, T_ctx+H, P, L^D]

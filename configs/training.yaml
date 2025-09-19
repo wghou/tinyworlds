@@ -3,8 +3,8 @@ use_wandb: true
 wandb_project: nano-genie-pipeline
 
 # dataset
-dataset: SONIC
-preload_ratio: 1.0
+dataset: PICODOOM
+preload_ratio: 0.3
 
 # shared model params
 patch_size: 4
@@ -17,7 +17,7 @@ n_actions: 16
 # these can vary but for convenience, here
 embed_dim: 128
 num_heads: 8
-hidden_dim: 256
+hidden_dim: 512
 num_blocks: 4
 
 # performance

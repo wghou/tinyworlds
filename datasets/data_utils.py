@@ -24,7 +24,7 @@ def _default_video_transform():
     ])
 
 
-def _load_video_dataset_pair(dataset_cls, video_rel_path, h5_rel_path, num_frames, transform=None, fps=15, preload_ratio=1, **kwargs):
+def _load_video_dataset_pair(dataset_cls, video_rel_path, h5_rel_path, num_frames, transform=None, fps=30, preload_ratio=1, **kwargs):
     current_folder_path = os.getcwd()
     video_path = current_folder_path + video_rel_path
     preprocessed_path = current_folder_path + h5_rel_path
@@ -86,13 +86,13 @@ def load_pole_position(num_frames=4, fps=15, preload_ratio=1):
     )
 
 
-def load_picodoom(num_frames=4, fps=15, preload_ratio=1):
+def load_picodoom(num_frames=4, fps=30, preload_ratio=1):
     return _load_video_dataset_pair(
         PicoDoomDataset,
         '/data/picodoom cleaned.mp4',
         '/data/picodoom_frames.h5',
         num_frames=num_frames,
-        fps=fps,
+        fps=30,
         preload_ratio=preload_ratio
     )
 
@@ -170,39 +170,39 @@ def readable_timestamp():
 
 
 def visualize_reconstruction(original, reconstruction, save_path=None):
-    # original: (B, C, H, W) or (B, S, C, H, W)
-    # reconstruction: (B, C, H, W) or (B, S, C, H, W) 
+    # original: (B, C, H, W) or (B, T, C, H, W)
+    # reconstruction: (B, C, H, W) or (B, T, C, H, W) 
 
-    # Move tensors to CPU and convert to float32 for matplotlib compatibility
+    # move tensors to CPU and convert to float32 for matplotlib compatibility
     original = original.detach().to('cpu', dtype=torch.float32)
     reconstruction = reconstruction.detach().to('cpu', dtype=torch.float32)
 
-    # Handle single frames by expanding to sequences
+    # handle single frames by expanding to sequences
     if original.dim() == 4:  # (B, C, H, W)
         original = original.unsqueeze(1)  # Add sequence dimension
     if reconstruction.dim() == 4:  # (B, C, H, W)
         reconstruction = reconstruction.unsqueeze(1)  # Add sequence dimension
 
-    # Take first 4 sequences, each of length 4 (or available length)
+    # take first 4 sequences, each of length 4 (or available length)
     num_sequences = min(4, original.shape[0])
     seq_length = min(4, original.shape[1])
 
-    original = original[:num_sequences, :seq_length]  # (B, S, C, H, W)
-    reconstruction = reconstruction[:num_sequences, :seq_length]  # (B, S, C, H, W)
+    original = original[:num_sequences, :seq_length]  # (B, T, C, H, W)
+    reconstruction = reconstruction[:num_sequences, :seq_length]  # (B, T, C, H, W)
 
-    # Create a figure with two subplots side by side
+    # create a figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
 
-    # For original sequences
-    # Reshape to (B * S, C, H, W) for make_grid
-    orig_flat = original.reshape(-1, *original.shape[2:])  # (B*S, C, H, W)
+    # for original sequences
+    # reshape to (B * T, C, H, W) for make_grid
+    orig_flat = original.reshape(-1, *original.shape[2:])  # (B*T, C, H, W)
     grid_orig = make_grid(orig_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
     ax1.imshow(grid_orig.permute(1, 2, 0).contiguous().numpy())
     ax1.axis('off')
     ax1.set_title(f'Original Sequences (4 sequences × {seq_length} frames)')
 
-    # For reconstructed sequences
-    recon_flat = reconstruction.reshape(-1, *reconstruction.shape[2:])  # (B*S, C, H, W)
+    # for reconstructed sequences
+    recon_flat = reconstruction.reshape(-1, *reconstruction.shape[2:])  # (B*T, C, H, W)
     grid_recon = make_grid(recon_flat, nrow=seq_length, normalize=True, padding=2).clamp(0, 1)
     ax2.imshow(grid_recon.permute(1, 2, 0).contiguous().numpy())
     ax2.axis('off')

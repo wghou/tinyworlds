@@ -1,7 +1,7 @@
 # paths (need if not get latest)
 video_tokenizer_path: /workspace/nano-genie/results/2025_09_17_03_33_24/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_17_06_20_26.pth
 latent_actions_path: /workspace/nano-genie/results/2025_09_17_03_33_24/latent_actions/checkpoints/latent_actions_step_2500_2025_09_17_06_50_59.pth
-dynamics_path: /workspace/nano-genie/results/2025_09_17_07_22_08/dynamics/checkpoints/dynamics_step_97500_2025_09_17_21_04_50.pth
+dynamics_path: /workspace/nano-genie/results/2025_09_17_21_48_54/dynamics/checkpoints/dynamics_step_97500_2025_09_18_11_25_59.pth
 use_latest_checkpoints: false
 
 # inference params
@@ -12,7 +12,7 @@ generation_steps: 10
 context_window: 3
 fps: 2
 temperature: 0.0 # 0 is argmax
-teacher_forced: true # for testing/dev
+teacher_forced: false # for testing/dev
 prediction_horizon: 1 # how many masked frames to append and decode at a time
 
 # use random actions or use lam-inferred actions

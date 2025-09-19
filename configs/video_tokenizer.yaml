@@ -5,4 +5,4 @@ learning_rate: 0.0004
 log_interval: 2500
 
 # resume from checkpoint
-checkpoint: null
+checkpoint: /workspace/nano-genie/results/2025_09_18_20_05_16/video_tokenizer/checkpoints/video_tokenizer_step_2500_2025_09_18_20_17_42.pth

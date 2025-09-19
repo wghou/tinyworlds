@@ -18,7 +18,7 @@ class VideoHDF5Dataset(Dataset):
         disable_test_split: bool = True,
         num_frames: int = 4, # context length
         resize_to: Tuple[int, int] = (64, 64), 
-        fps: int = 15,
+        fps: int = 30,
         sequence_stride: Optional[int] = None, # default 60//fps
         fraction_of_dataset: float = 1.0, # fraction of valid starting indices to expose
         load_chunk_size: int = 1000, # chunk size when reading from HDF5
@@ -194,7 +194,7 @@ class SonicDataset(VideoHDF5Dataset):
         )
 
 class PicoDoomDataset(VideoHDF5Dataset):
-    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=15, preload_ratio=1):
+    def __init__(self, video_path, transform=None, save_path=None, train=True, num_frames=4, resolution=(128, 128), fps=30, preload_ratio=0.3):
         super().__init__(
             video_path=video_path,
             transform=transform,

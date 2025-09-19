@@ -1,14 +1,14 @@
 # Training
 batch_size: 256
-n_updates: 100000
+n_updates: 300000
 learning_rate: 0.0005
 log_interval: 2500
 
 use_actions: true
 
 # Paths
-video_tokenizer_path: /workspace/nano-genie/results/2025_09_17_03_33_24/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_17_06_20_26.pth
-latent_actions_path: /workspace/nano-genie/results/2025_09_17_03_33_24/latent_actions/checkpoints/latent_actions_step_2500_2025_09_17_06_50_59.pth
+video_tokenizer_path: /workspace/nano-genie/results/2025_09_18_20_24_55/video_tokenizer/checkpoints/video_tokenizer_step_27500_2025_09_18_22_30_48.pth
+latent_actions_path: /workspace/nano-genie/results/2025_09_18_20_24_55/latent_actions/checkpoints/latent_actions_step_4500_2025_09_18_23_02_09.pth
 
 # resume from checkpoint
-checkpoint: /workspace/nano-genie/results/2025_09_17_07_22_08/dynamics/checkpoints/dynamics_step_97500_2025_09_17_21_04_50.pth
+checkpoint: /workspace/nano-genie/results/2025_09_18_23_23_14/dynamics/checkpoints/dynamics_step_2500_2025_09_18_23_38_16.pth
