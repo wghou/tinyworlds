@@ -74,7 +74,7 @@ STTransformer is used in all 3 models, and FSQVAE is used in both tokenizers. Th
 ## Space-Time Transformer (STT)
 papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
 
-![stt](/assets/space-timetransformer.png)
+![stt](/assets/spacetimetransformer.png)
 
 The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
 
