@@ -2,32 +2,30 @@
 
 TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
-Because world models need video data **with action data**, they can't naively train on internet video and scale up to results like Google's [VEO3](https://deepmind.google/models/veo/).
+Requiring both video and action data, world models can't use internet video (which has no actions) to scale like Google's [VEO3](https://deepmind.google/models/veo/).
 
-Google's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no action data**.
+Google's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no prior action data**.
 
 TinyWorlds is meant to help people understand world modeling and the clever autoregressive, unsupervised method Deepmind used to achieve **scalable world models**.
 
 ## Table of Contents
 
 - [Getting Started](#getting-started)
+- [Why World Models?](#why-world-models)
 - [Overview](#architecture-overview)
 - [Building Blocks](#architecture-building-blocks)
    - [Space-Time Transformer (STT)](#space-time-transformer-stt)
-   - [Variational Autoencoders (VAEs)](#vaes)
+   - [Variational Autoencoder (VAE)](#vaes)
    - [Finite Scalar Quantization (FSQ)](#finite-scalar-quantization)
-   - [Putting both together (FSQVAE)](#putting-both-together-fsq-vae)
 - [Architecture](#architecture)
    - [Video Tokenizer](#video-tokenizer)
    - [Action Tokenizer](#action-tokenizer)
    - [Dynamics Model](#dynamics-model)
-   - [Full TinyWorlds Inference](#full-tinyworlds-inference)
+   - [TinyWorlds Inference](#full-tinyworlds-inference)
    - [Data](#data)
    - [Training and Inference Acceleration](#training-and-inference-acceleration-options)
    - [Shape Annotation Key](#shape-annotation-key)
-- [World Models First Principles](#world-models-first-principles)
 - [Next Steps](#next-steps)
-
 
 # Getting Started
 
@@ -52,13 +50,29 @@ python scripts/download_assets.py models --suite-name sonic
 python scripts/run_inference.py --config configs/inference.yaml --use-latest-checkpoints
 ```
 
+# Why World Models?
+A world model is a function mapping the current state of the environment, plus conditioning, to next state. 
+
+In current world models, we train a deep network which, given an image and action, predicts the most likely next image. In the near term, world models can be:
+1. cortexes to give physical world understanding to models 
+2. simulators for models to interact with physics fully-online 
+3. experiences with new structures of reality for humans to interact with
+
+To predict the next world state accurately, the world function must compress all the information in the world into a set of laws. 
+
+Hence the name world model: **it is capturing all the inherent structure and emergent phenomena of the world.** 
+
+A world model is the world itself. The universe is a world model. Reality emerges within that model.
+
+We are only at the beginning of world modeling. Are you getting it?
+
 # Overview 
 
 ![tinyworldsarch](/assets/tinyworldsarchv3.png)
 
 TinyWorlds uses an autoregressive transformer world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
-Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~4096 tokens in our vocabulary (aka codebook).
+Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~1000 tokens in our vocabulary (aka codebook).
 
 TinyWorlds consists of three modules:
 
@@ -70,11 +84,9 @@ TinyWorlds consists of three modules:
 
 # Building Blocks
 
-The above modules are built using ST Transformer, Finite Scalar Quantization, and VAE, explained below:
+The above modules are built using [ST Transformer](https://arxiv.org/pdf/2001.02908), Finite Scalar Quantization, and VAE, explained below:
 
 ### Space-Time Transformer (STT)
-papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
-
 ![stt](/assets/spacetimetransformer.png)
 
 Each Space-Time Transformer block contains a spatial attention layer, a temporal attention layer, and a FeedForward Network (FFN). For a brush up on self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748)
@@ -82,17 +94,18 @@ Each Space-Time Transformer block contains a spatial attention layer, a temporal
 In the spatial layer, each token attends to all other tokens in the same frame (within its timestep). 
 In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps.
 
-The FFN is a 2-layer MLP on each embedding vector. The default is Linear -> ReLU -> Linear, but I used SwiGLU. SwiGLU adds a Gated Linear Unit (GLU) to Swish, and is computed as $x_t = W_3[Sigmoid(W_1x + b1) * W_2x + b2] + b3$.
+The FFN is a 2-layer MLP on each embedding vector. Inspired by divine benevolence, I used [SwiGLU](https://arxiv.org/pdf/2002.05202) for the FFN. SwiGLU adds a Gated Linear Unit (GLU) to [Swish](https://arxiv.org/pdf/1710.05941), and is computed as $x_t = W_3[Sigmoid(W_1x + b1) * W_2x + b2] + b3$.
 
 Each attention/FFN have norms afterward, either unconditioned (Video Tokenizer, Action Encoder) or conditioned on actions (Action Decoder, Dynamics). 
 
-For unconditioned STTransformer, we use Root Mean Squared Normalization (RMSNorm), where we divide our input by $\sqrt(\epsilon + x / \sum x^2)$. RMS is less sensitive to extreme outliers than simply dividing by variance.
+For unconditioned STTransformer, we use [Root Mean Squared Normalization (RMSNorm)](https://arxiv.org/pdf/1910.07467), where we divide our input by $\sqrt(\epsilon + x / \sum x^2)$. RMS is less sensitive to extreme outliers than simply dividing by variance.
 
-For conditioned STTransformer, we use Feature-wise Linear Modulation (FiLM). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$). Our norm is then $(x - \mu) / \sigma * (1 + \gamma) + \beta$
+For conditioned STTransformer, we use [Feature-wise Linear Modulation (FiLM)](https://arxiv.org/pdf/1709.07871). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$). Our norm is then $(x - \mu) / \sigma * (1 + \gamma) + \beta$
 
-### VAEs
-Paper: [Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
-*\*VAEs are complex and I'm still building deep intuitions on them, but an overview with many details omitted is below*
+### Variational Autoencoder (VAE)
+[Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
+
+*\*VAEs are complex but an overview with many details omitted is below*
 
 VAEs are defined by:
 1. An encoder network to parameterize the approximate posterior distribution $q(z | x)$ of latent variables $z$ given data $x$
@@ -157,38 +170,41 @@ In practice, the action decoder tries to ignore actions and infer purely from im
 At inference time, we map each key to one of the action tokens that conditions the dynamics for the user to influence video generation.
 
 ## Dynamics Model
-Additional paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
-
 ![dynamicsmodel](/assets/dynamicsmodel.png)
 
-At a high level, we want that at timestep $t \in [1, T]$, the dynamics model takes in tokenized video and action sequences from t=0 (defined as context-length frames old) up to $t - 1$ and predict next frame tokens $z_t$.
+At timestep $t$, the dynamics model should take in tokenized video tokens $z_{1..t - 1}$ and action tokens $a_{_1..t - 1}$ and predict next frame tokens $z_{t}$.
 
-In practice, we use a method similar to MaskGIT and BERT: we mask a subset of tokens, and train our model to predict the masked tokens conditioned on all current and previous frame tokens. The prediction is conditioned on action tokens inferred at train time by the action tokenizer.
+In practice, we train dynamics like [MaskGIT](https://arxiv.org/pdf/2202.04200) and [BERT](https://arxiv.org/pdf/1810.04805).
 
-For inference, at each step, we append a fully masked frame to our context sequence, then our model iteratively predicts next frame tokens using MaskGIT Inference as follows:
-For T steps:
-1. Predict logits at each masked position and compute token probabilities
-2. Take the k most likely tokens out of the still unmasked positions and sample them, unmasking their positions
-We choose k using the exponential schedule (first step would sample ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
+We mask a subset of tokens and train our model to predict the masked tokens, conditioned on all current and previous frame and action tokens.
 
+To infer dynamics at a given step, we first append a fully masked frame to our context sequence. Then, for T steps we:
+1. Predict logits at each masked position
+2. Compute token probabilities with softmax
+3. Sample the k most likely tokens out of the still unmasked positions
+4. Place them into the context tensor, removing corresponding mask tokens
+5. Repeat
 
-## Full TinyWorlds Inference
+To choose k, we use an exponential schedule (first step samples ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
 
-We first give the model an initial frame from the training distribution and tokenize the image with our video tokenizer
+## TinyWorlds Inference
+
+Given initial context frames from the training distribution, we first tokenize them.
+
 We then run the following loop:
-3. The player specifies one of the n_actions action tokens to use by choosing integer value in $[0, |A|]$
-4. Condition the dynamics model with context window c on the video tokens t-c...t and action tokens t-c..t and run dynamics inference 
-5. Detokenize the predicted video tokens into a new video frame for the user
+1. The player specifies one of the n_actions action tokens to use by choosing integer in $[0, |A|]$
+2. Condition the dynamics model with context window c on the video tokens t-c...t and action tokens t-c..t and run dynamics inference 
+3. Detokenize the predicted video tokens into a new video frame for the user
 
-We repeat process autoregressively over the time dimension as actions are passed to model and tokens are predicted by the dynamics model and detokenized into frames to display to the user.
+We repeat this process autoregressively over the time dimension as actions are passed to the model, tokens are predicted by the dynamics model, we detokenize them into frames to display to the user.
 
-This process also lets us predict multiple future frames at once (bounded by memory and going out of distribution), which can improve inference quality.
+This process also lets us predict multiple future frames at once (bounded by memory and the training distribution), which can improve inference quality.
 
 ## Data
 
 ![datasets](/assets/datasets_stylized.png)
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models)) with 
+The data is processed and downsampled from gameplay mp4s into hdf5 files. You can download the above datasets from [Huggingface TinyWorlds Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds/tree/main) with 
 
 ```bash
 python scripts/download_assets.py datasets --pattern "<name>_frames.h5`
@@ -201,16 +217,15 @@ Available are:
 4. **Pole Position** (`pole_position_frames.h5`), a pixel racing game
 5. **Sonic** (`sonic_frames.h5`), the original game
 
-Any new data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py).
-
+Any new data can be added by creating a new dataclass in [datasets.py](datasets/datasets.py).
 
 ## Training and Inference Acceleration
 
-TinyWorlds uses the following torch features to accelerate training/inference:
-1. **Torch compile**, which allows us to use faster kernels for certain pre-optimized operations
-2. **Distributed data parallel (DDP)**, which allows us to train using multiple gpus by using different data per-gpu
-3. **Automatic mixed precision (AMP)**, which dynamically switches between FP32 and BF16 based on the current nodes used floating point range
-4. **TF32 training**, which lets us use NVIDIA TensorFloat32 for tensor-core-optimized FLOPs
+TinyWorlds supports the following torch features to accelerate training and/or inference:
+1. **Torch compile**, which allows us to use faster CUDA kernels for certain pre-optimized operations like attention and matmuls
+2. **Distributed data parallel (DDP)**, which allows us to train using multiple gpus by using same model different data per-gpu
+3. **Automatic mixed precision (AMP)**, which scales certain ops from FP32 to BF16 based on the current nodes used floating point range
+4. **TF32 training**, which lets us use NVIDIA TensorFloat32 for tensor-core-optimized matmuls and convolutions
 
 ## Shape Annotation Key
 
@@ -229,19 +244,9 @@ All tensors are shape-annotated and use einops tensor manipulation operations wi
 **W:** pixel-grid width \
 **Hp:** patch-grid height \
 **Wp:** patch-grid width \
-**S:** patch size \
+**S:** patch size
 
-## World Models First Principles
-A world model predicts the next state of an environment given current state and some conditioning. 
-
-To predict the next world state, we encode the structure and emergent phenomena of the universe itself.
-
-We train a deep network which, given an image and action, predicts the most likely next image.
-
-World models can both act as cortexes to give physical world understanding to models and as simulators for models and humans to experience new structures of reality.
-
-
-## Next Steps
+# Next Steps
 
 - [ ] Implement MoE in the Feedforward layer
 - [ ] Try RoPE/AliBi Spatial/Temporal Position Embeddings
