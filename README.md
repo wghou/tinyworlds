@@ -6,7 +6,7 @@ Requiring both video and action data, world models can't use internet video (whi
 
 Google's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no prior action data**.
 
-TinyWorlds is meant to help people understand world modeling and the clever autoregressive, unsupervised method Deepmind used to achieve **scalable world models**.
+TinyWorlds is meant to help people understand the clever autoregressive, unsupervised method Deepmind used to achieve **scalable world models**.
 
 ## Table of Contents
 
@@ -50,8 +50,9 @@ python scripts/download_assets.py models --suite-name sonic
 python scripts/run_inference.py --config configs/inference.yaml --use-latest-checkpoints
 ```
 
-# Why World Models?
-A world model is a function mapping the current state of the environment, plus conditioning, to next state. 
+# Overview
+### Why World Models?
+A world model is a function mapping the current state of the environment, plus conditioning, to the next state of the environment. 
 
 In current world models, we train a deep network which, given an image and action, predicts the most likely next image. In the near term, world models can be:
 1. cortexes to give physical world understanding to models 
@@ -66,11 +67,13 @@ A world model is the world itself. The universe is a world model. Reality emerge
 
 We are only at the beginning of world modeling. Are you getting it?
 
-# Overview 
+I hope TinyWorlds will help you to understand world modeling better. 
 
+### Architecture Overview
 ![tinyworldsarch](/assets/tinyworldsarchv3.png)
 
-TinyWorlds uses an autoregressive transformer world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
+
+It is an autoregressive transformer over discrete tokens, so we can also use SOTA LLM techniques to improve our world model. 
 
 Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~1000 tokens in our vocabulary (aka codebook).
 
@@ -80,11 +83,11 @@ TinyWorlds consists of three modules:
 
 **Action Tokenizer:** This tokenizer (also a VAE) infers the discrete action token between two frames. It trains by reconstructing the next frame using the previous frame and a discrete action token that sees the next frame.
 
-**Dynamics Model:** Given past action and frame tokens, this predicts our next frame tokens. This should capture the physics and emergent phenomena of our tiny video game worlds.
+**Dynamics Model:** Given past action and frame tokens, this predicts our next frame tokens. This should capture the physics of our tiny video game worlds.
 
 # Building Blocks
 
-The above modules are built using [ST Transformer](https://arxiv.org/pdf/2001.02908), Finite Scalar Quantization, and VAE, explained below:
+The above modules are built using [ST Transformer](https://arxiv.org/pdf/2001.02908), Finite Scalar Quantization, and VAEs, explained below:
 
 ### Space-Time Transformer (STT)
 ![stt](/assets/spacetimetransformer.png)
@@ -94,25 +97,23 @@ Each Space-Time Transformer block contains a spatial attention layer, a temporal
 In the spatial layer, each token attends to all other tokens in the same frame (within its timestep). 
 In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps.
 
-The FFN is a 2-layer MLP on each embedding vector. Inspired by divine benevolence, I used [SwiGLU](https://arxiv.org/pdf/2002.05202) for the FFN. SwiGLU adds a Gated Linear Unit (GLU) to [Swish](https://arxiv.org/pdf/1710.05941), and is computed as $x_t = W_3[Sigmoid(W_1x + b1) * W_2x + b2] + b3$.
+The FFN is a two-layer MLP on each embedding vector. Inspired by divine benevolence, I used [SwiGLU](https://arxiv.org/pdf/2002.05202) for the FFN. SwiGLU adds a Gated Linear Unit (GLU) to [Swish](https://arxiv.org/pdf/1710.05941), and is computed as $x_t = W_3[Sigmoid(W_1x + b1) * W_2x + b2] + b3$.
 
-Each attention/FFN have norms afterward, either unconditioned (Video Tokenizer, Action Encoder) or conditioned on actions (Action Decoder, Dynamics). 
+Both attentions and FFN are normed afterward, either unconditioned (Video Tokenizer, Action Encoder) or conditioned on actions (Action Decoder, Dynamics). 
 
 For unconditioned STTransformer, we use [Root Mean Squared Normalization (RMSNorm)](https://arxiv.org/pdf/1910.07467), where we divide our input by $\sqrt(\epsilon + x / \sum x^2)$. RMS is less sensitive to extreme outliers than simply dividing by variance.
 
 For conditioned STTransformer, we use [Feature-wise Linear Modulation (FiLM)](https://arxiv.org/pdf/1709.07871). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$). Our norm is then $(x - \mu) / \sigma * (1 + \gamma) + \beta$
 
 ### Variational Autoencoder (VAE)
-[Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
 
-*\*VAEs are complex but an overview with many details omitted is below*
+*\*VAEs are complex, but below is an overview with many details omitted*
 
-VAEs are defined by:
+[VAEs]((https://arxiv.org/pdf/1906.02691)) are defined by:
 1. An encoder network to parameterize the approximate posterior distribution $q(z | x)$ of latent variables $z$ given data $x$
-2. Prior distribution $p(z)$, chosen as regular gaussian $N(0,I)$
-3. A decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z
+3. A decoder network to parameterize the likelihood $p(x | z)$ over input data x given latent z
 
-We maximize $log(p(x | z))$, the likelihood we exactly reconstruct the input x given our latent z. 
+We maximize $log(p(x | z))$, the likelihood the decoder exactly reconstructs the input x given latent z from the encoder. 
 
 The important takeaway is that $z$ is low dimensional, so for reconstruction, it will compress all the important information from $x$.
 
@@ -120,18 +121,18 @@ The important takeaway is that $z$ is low dimensional, so for reconstruction, it
 
 ![fsq](/assets/finitescalarquantizer.png)
 
-Since we want a set of discrete tokens, we need to quantize z (use one of a finite set of possible zs).
+Since we want a set of discrete tokens, we quantize continous $z$ to one of a finite set of possible $z$.
 
-Thinking of vectors as points in high dimensional space, FSQ is a quantization method that divides space into hypercubes. The hypercube a vector falls into becomes its quantized representation.
+If vectors are points in high dimensional space, FSQ is a quantization method that divides space into hypercubes, and the hypercube a vector falls into becomes its quantized representation.
 
 Concretely, we quantize a vector in FSQ by:
 
 1. tanh(x) which bounds to [-1,1]
 2. scale/shift to [0, L]
-3. rounding to the nearest integer (quantization step)
+3. round to the nearest integer (quantization step)
 4. scale/shift back to [-1,1]
 
-The token vocabulary has size ${L^{D}}$ where $L$ is bins per dimension and $D$ is the dimensionality of the hypercube. With 3 dimensions and 2 levels per dimension, we'd have 8 possible regions in the cube and a size 8 token vocabulary. 
+The token vocabulary has size ${L^{D}}$ where $L$ is bins per dimension and $D$ is the dimensionality of the hypercube. With 3 dimensions and 2 levels per dimension, we'd have 8 regions in the cube and size 8 token vocabulary. 
 
 FSQ VAEs let us learn structured hypercubes to use as our token vocabularies that encode information about the input. In our context, maybe one of these hypercubes represents moving left, another jumping, another crouching, et cetera.
 
@@ -139,11 +140,9 @@ To allow gradients to flow to the encoder (since quantization is non-differentia
 
 Precisely, the decoder takes as input $z + stopgrad(z_q - z)$ where stopgrad is, in pytorch, `.detach()`. The decoder only uses $z_q$ (since $z - z = 0$), but the gradient is taken only on $z$.
 
-Now we can go over each module:
-
 # Architecture
 
-## Video Tokenizer
+### Video Tokenizer
 
 ![videotokenizer](/assets/videotokenizer.png)
 
@@ -151,7 +150,7 @@ The video tokenizer compresses videos into discrete tokens to reduce the dimensi
 
 It uses an FSQ VAE implemented with an STTransformer (causal over time). Each video token contains information about both its own patch and other patches in the same location or timestep.
 
-## Action Tokenizer
+### Action Tokenizer
 
 ![actiontokenizer](/assets/actiontokenizer.png)
 
@@ -169,7 +168,7 @@ In practice, the action decoder tries to ignore actions and infer purely from im
 
 At inference time, we map each key to one of the action tokens that conditions the dynamics for the user to influence video generation.
 
-## Dynamics Model
+### Dynamics Model
 ![dynamicsmodel](/assets/dynamicsmodel.png)
 
 At timestep $t$, the dynamics model should take in tokenized video tokens $z_{1..t - 1}$ and action tokens $a_{_1..t - 1}$ and predict next frame tokens $z_{t}$.
@@ -187,7 +186,7 @@ To infer dynamics at a given step, we first append a fully masked frame to our c
 
 To choose k, we use an exponential schedule (first step samples ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
 
-## TinyWorlds Inference
+### TinyWorlds Inference
 
 Given initial context frames from the training distribution, we first tokenize them.
 
@@ -200,7 +199,7 @@ We repeat this process autoregressively over the time dimension as actions are p
 
 This process also lets us predict multiple future frames at once (bounded by memory and the training distribution), which can improve inference quality.
 
-## Data
+### Data
 
 ![datasets](/assets/datasets_stylized.png)
 
@@ -219,7 +218,7 @@ Available are:
 
 Any new data can be added by creating a new dataclass in [datasets.py](datasets/datasets.py).
 
-## Training and Inference Acceleration
+### Training and Inference Acceleration
 
 TinyWorlds supports the following torch features to accelerate training and/or inference:
 1. **Torch compile**, which allows us to use faster CUDA kernels for certain pre-optimized operations like attention and matmuls
@@ -227,7 +226,7 @@ TinyWorlds supports the following torch features to accelerate training and/or i
 3. **Automatic mixed precision (AMP)**, which scales certain ops from FP32 to BF16 based on the current nodes used floating point range
 4. **TF32 training**, which lets us use NVIDIA TensorFloat32 for tensor-core-optimized matmuls and convolutions
 
-## Shape Annotation Key
+### Shape Annotation Key
 
 All tensors are shape-annotated and use einops tensor manipulation operations with the following abbreviations:
 
