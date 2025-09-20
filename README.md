@@ -2,7 +2,7 @@
 
 TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
-Because world models need video data **with action data**, we can't naively train on action-less internet video and scale like in Google's [VEO3](https://deepmind.google/models/veo/).
+Because world models need video data **with action data**, they can't naively train on internet video and scale up to results like Google's [VEO3](https://deepmind.google/models/veo/).
 
 Google's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no action data**.
 
@@ -10,13 +10,13 @@ TinyWorlds is meant to help people understand world modeling and the clever auto
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Architecture Overview](#architecture-overview)
-- [Priors](#priors)
+- [Getting Started](#getting-started)
+- [Overview](#architecture-overview)
+- [Building Blocks](#architecture-building-blocks)
    - [Space-Time Transformer (STT)](#space-time-transformer-stt)
    - [Variational Autoencoders (VAEs)](#vaes)
    - [Finite Scalar Quantization (FSQ)](#finite-scalar-quantization)
-   - [Putting both Together: FSQVAE](#putting-both-together-fsq-vae)
+   - [Putting both together (FSQVAE)](#putting-both-together-fsq-vae)
 - [Architecture](#architecture)
    - [Video Tokenizer](#video-tokenizer)
    - [Action Tokenizer](#action-tokenizer)
@@ -25,106 +25,108 @@ TinyWorlds is meant to help people understand world modeling and the clever auto
    - [Data](#data)
    - [Training and Inference Acceleration](#training-and-inference-acceleration-options)
    - [Shape Annotation Key](#shape-annotation-key)
-- [Development Process and Decisions](#development-process-and-decisions)
-- [An Appreciation of World Models](#an-appreciation-of-world-models)
+- [World Models First Principles](#world-models-first-principles)
 - [Next Steps](#next-steps)
 
 
-## Installation
+# Getting Started
 
 ```bash
+# Installation
 git clone https://github.com/AlmondGod/nano-genie.git
 cd nano-genie
-
-# necessary installs
 pip install -r requirements.txt
 export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
 export PYTHONPATH="/workspace/nano-genie:$PYTHONPATH"
 
-# download data (pong)
+# Training
+# 1. download data (pong)
 python scripts/download_assets.py datasets --pattern "pong_frames.h5"
-
-# training
+# 2. run training
 python scripts/full_train.py --config configs/training_config.yaml
 
-# inference
-python scripts/run_inference.py --config configs/inference.yaml
+# Inference
+# 1. pull pretrained sonic checkpoints from huggingface
+python scripts/download_assets.py models --suite-name sonic
+# 2. run inference
+python scripts/run_inference.py --config configs/inference.yaml --use-latest-checkpoints
 ```
 
-# Architecture Overview 
+# Overview 
 
 ![tinyworldsarch](/assets/tinyworldsarchv3.png)
 
-TinyWorlds uses an autoregressive world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
+TinyWorlds uses an autoregressive transformer world model over discrete tokens, so we can use SOTA LLM techniques to improve our world model. 
 
-Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~4096 tokens in our vocabulary.
+Why discrete tokens? Discretization makes our dynamics prediction problem much easier, because instead of predicting an image a near-infinite continuous space, it need only select one of the ~4096 tokens in our vocabulary (aka codebook).
 
-Our world model consists of three modules:
+TinyWorlds consists of three modules:
 
-**Video Tokenizer:** Continuous domains like audio and video require more clever tokenization than inherently discrete language. We tokenize using a VAE: we train a model to reconstruct a sequence of video, placing a small discrete bottleneck (our video tokens) in model's center which should capture the important information in the video.
+**Video Tokenizer:** This tokenizer (a VAE) reconstructs a sequence of video with a small discrete bottleneck (our video tokens) in the middle. This layer should maximally compress the important information in the video.
 
-**Action Tokenizer:** This infers the discrete action token between two frames. We again use a VAE to reconstruct the next frame conditioned on the previous frame and a discrete bottleneck (our action token) that encodes information of the transition between previous and next frame.
+**Action Tokenizer:** This tokenizer (also a VAE) infers the discrete action token between two frames. It trains by reconstructing the next frame using the previous frame and a discrete action token that sees the next frame.
 
-**Dynamics Model:** Given action and past frame tokens, this predicts our next frame tokens. This is the core of our world model that captures the structure and emergent phenomena of our tiny video game worlds.
+**Dynamics Model:** Given past action and frame tokens, this predicts our next frame tokens. This should capture the physics and emergent phenomena of our tiny video game worlds.
 
-# Architecture Priors
+# Building Blocks
 
-STTransformer is used in all 3 models, and FSQVAE is used in both tokenizers. Thus, we'll go over STT and FSQVAE before examining the structure each of the 3 models in-depth.
+The above modules are built using ST Transformer, Finite Scalar Quantization, and VAE, explained below:
 
-## Space-Time Transformer (STT)
+### Space-Time Transformer (STT)
 papers: [STTransformer](https://arxiv.org/pdf/2001.02908), [FiLM](https://arxiv.org/pdf/1709.07871), [RMSNorm](https://arxiv.org/pdf/1910.07467), [SwiGLU](https://arxiv.org/pdf/2002.05202)
 
 ![stt](/assets/spacetimetransformer.png)
 
-The Space-Time Transformer consists of B spatial/temporal blocks, where each block contains a spatial attention layer, a temporal attention layer, and a feedforward layer. For a brush up on regular self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748).
+Each Space-Time Transformer block contains a spatial attention layer, a temporal attention layer, and a FeedForward Network (FFN). For a brush up on self-attention, see Karpathy's [GPT From Scratch Video](https://youtu.be/kCc8FmEb1nY?si=tvfcBnGHBbEiS70v&t=3748)
 
-In the spatial layer, each token attends to all other tokens in the same frame (within its timestep). Attention operates over a given timestep with P tokens, where P = Hp x Wp, Hp = Pixel height / patch size (# patches along the H dimension), and Wp = Pixel width / patch size (# patches along the width dimension). 
+In the spatial layer, each token attends to all other tokens in the same frame (within its timestep). 
+In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps.
 
-In the temporal layer, each token in a given position attends causally to other previous tokens in the exact same position but previous timesteps. Attention operates causally over slices of T x 1 across T timesteps for the same token.
+The FFN is a 2-layer MLP on each embedding vector. The default is Linear -> ReLU -> Linear, but I used SwiGLU. SwiGLU adds a Gated Linear Unit (GLU) to Swish, and is computed as $x_t = W_3[Sigmoid(W_1x + b1) * W_2x + b2] + b3$.
 
-In the Feedforward Layer, we could use a basic FFL: Wx + b -> ReLU -> Wx + b -> LayerNorm. However, it turns out that SwiGLU allows for greater model capacity and faster learning for the same number of parameters.
-SwiGLU comes from Swish, which is x * sigmoid(x). SwiGLU adds a Gated Linear Unit (GLU), so we first compute x_t = Swish(W_1x + b) to W_2x + b, and then we have a final wx_t + b.
+Each attention/FFN have norms afterward, either unconditioned (Video Tokenizer, Action Encoder) or conditioned on actions (Action Decoder, Dynamics). 
 
-Both attentions and the feedforward have norms afterward (postnorm), either unconditioned (for Video Tokenizer and Action Tokenizer Encoder) or conditioned on actions (for action tokenizer decoder and the dynamics model). 
+For unconditioned STTransformer, we use Root Mean Squared Normalization (RMSNorm), where we divide our input by $\sqrt(\epsilon + x / \sum x^2)$. RMS is less sensitive to extreme outliers than simply dividing by variance.
 
-For unconditioned STTransformer, we use RMSNorm, which computes norm as sqrt(eps + x / sum over x^2)
-
-For conditioned STTransformer, we use Feature-wise Linear Modulation (FiLM). FiLM takes in the conditioning, in this case, actions for each timestep. It then uses a FeedForward Layer to transform each action latent into one beta vector and one gamma vector, both of embedding dim length. we then compute the norm as layernorm(x) * gamma + (1 + beta)
+For conditioned STTransformer, we use Feature-wise Linear Modulation (FiLM). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$). Our norm is then $(x - \mu) / \sigma * (1 + \gamma) + \beta$
 
 ### VAEs
 Paper: [Overview of VAEs](https://arxiv.org/pdf/1906.02691), Eric Jang's [Variational Methods](https://blog.evjang.com/2016/08/variational-bayes.html)
+*\*VAEs are complex and I'm still building deep intuitions on them, but an overview with many details omitted is below*
 
-VAEs consist of:
-1. Encoder network to parameterize posterior distribution $q(z | x)$ of latent random variables z given input data x (probability image is a cat given a frame of a cat)
-2. Unknown prior distribution $p(z)$ (probability any random thing is a cat)
-3. Decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z (frame of cat given idea of cat)
+VAEs are defined by:
+1. An encoder network to parameterize the approximate posterior distribution $q(z | x)$ of latent variables $z$ given data $x$
+2. Prior distribution $p(z)$, chosen as regular gaussian $N(0,I)$
+3. A decoder network to parameterize likelihood $p(x | z)$ over input data x given latent z
 
-We cannot learn these quantities directly, but we can instead learn to maximize the likelihoods of z | x and x | z by ascending the reconstruction objective p(x | z | x), where z will learn semantically meaningful information because we constrain its dimensionality be low (it is forced to choose only the most important information from an image).
+We maximize $log(p(x | z))$, the likelihood we exactly reconstruct the input x given our latent z. 
 
-### Finite Scalar Quantization
+The important takeaway is that $z$ is low dimensional, so for reconstruction, it will compress all the important information from $x$.
+
+### Finite Scalar Quantization (FSQ)
 
 ![fsq](/assets/finitescalarquantizer.png)
 
-Posterior and prior distributions are categorical, and samples drawn from these fall into a specific region of a hypercube, which are used as discrete inputs to decoder network.
+Since we want a set of discrete tokens, we need to quantize z (use one of a finite set of possible zs).
 
-Latent Embedding Space $|e| = {L^{D}}$ where $L$ is the number of levels/bins per dimension and $D$ is the dimensionality of the hypercube (number of dimensions in the latent embeddings). Essentially, for each dimension, we can fall into one of L buckets, and we have D dimensions. if we had 3 dimensions and 2 levels per dimension, we'd have 2^8 possible regions in the cube.
+Thinking of vectors as points in high dimensional space, FSQ is a quantization method that divides space into hypercubes. The hypercube a vector falls into becomes its quantized representation.
 
-Input $x$ passed through encoder to produce $z_e(x)$, and discrete latent $z$ is calculated by:
+Concretely, we quantize a vector in FSQ by:
 
-1. tanhing to [-1,1]
-2. transforming to [0, L]
-3. rounding to the nearest integer
-4. transforming back to [-1,1]
+1. tanh(x) which bounds to [-1,1]
+2. scale/shift to [0, L]
+3. rounding to the nearest integer (quantization step)
+4. scale/shift back to [-1,1]
 
-the resulting discrete latent vector $e_k$ is used as input to decoder network.
+The token vocabulary has size ${L^{D}}$ where $L$ is bins per dimension and $D$ is the dimensionality of the hypercube. With 3 dimensions and 2 levels per dimension, we'd have 8 possible regions in the cube and a size 8 token vocabulary. 
 
-## Putting both Together: FSQ-VAE
+FSQ VAEs let us learn structured hypercubes to use as our token vocabularies that encode information about the input. In our context, maybe one of these hypercubes represents moving left, another jumping, another crouching, et cetera.
 
-In FSQVAEs, the discretization process has a straight-through gradient, where the input to the decoder is equal to z + stopgrad(z_q - z). So the quantity is z_q, but the gradient is on z.
+To allow gradients to flow to the encoder (since quantization is non-differentiable), we pass the post-quantization gradients directly to the pre-quantization layer. 
 
-We thus need no extra loss terms unlike in VQVAE, which makes this method siginificantly more wieldy.
+Precisely, the decoder takes as input $z + stopgrad(z_q - z)$ where stopgrad is, in pytorch, `.detach()`. The decoder only uses $z_q$ (since $z - z = 0$), but the gradient is taken only on $z$.
 
-stopgrad is the stopgradient operator (in pytorch, .detach()) that is identity at forward computation time and has zero partial derivatives, and thus constrains the operand to be non-updated constant.
+Now we can go over each module:
 
 # Architecture
 
@@ -132,27 +134,27 @@ stopgrad is the stopgradient operator (in pytorch, .detach()) that is identity a
 
 ![videotokenizer](/assets/videotokenizer.png)
 
-The video tokenizer compresses videos into discrete tokens to reduce dimensionality and have higher quality video generation.
-It does so as an FSQVAE implemented with an STTransformer that attends to tokens full-spatially and temporal-causally. 
-Thus, each token contains information about its frame in relation to itself and to previous frames. 
+The video tokenizer compresses videos into discrete tokens to reduce the dimensionality of the dynamics model but keep high quality video generation.
+
+It uses an FSQ VAE implemented with an STTransformer (causal over time). Each video token contains information about both its own patch and other patches in the same location or timestep.
 
 ## Action Tokenizer
 
 ![actiontokenizer](/assets/actiontokenizer.png)
 
-The Action Tokenizer allows us to train without labels by learning unsupervised actions between to frames. We can then condition the dynamics on action without needing action labels for data
+The Action Tokenizer is the key to scalability: it allows us to train without action labels by learning to infer actions between to frames. We then condition the dynamics on these actions.
 
-The Action Tokenizer Encoder takes in a sequence of frames $(x_1...x_t+1)$, and outputs a corresponding set of continuous action latent vectors between the frames $(a_1...a_t)$, where a_1 is the action taken between x_1 and x_2.
+It is also an FSQ VAE. The encoder takes in a sequence of frames $(x_1...x_t-1)$, and outputs action tokens between the frames $(a_1...a_t-1)$, where a_1 is the action taken between x_1 and x_2.
 
-To create the discrete action codebook, we again use an FSQ objective to bound and bin the continuous action latent vectors outtputed by the encoder into one of |codebook size| cubes which represent our codebook.
+The Action Tokenizer Decoder takes in all previous frames $(x_1...x_t-1)$ and quantized action latent vectors $(a_1...a_t-1)$ as input and predicts the next frames $(x_2...x_t)$.
 
-The Action Tokenizer Decoder takes in all previous frames $(x_1...x_t)$ and quantized action latent vectors $(x_1...x_t)$ as input and predicts the next frame $x_{t + 1}$.
+The action tokens should learn to encode the most meaningful change between the past and current frame, which should correspond to some high-level action.
 
-Since the decoder only has access to frame history and the action token, $a_t$ should encode most meaningful change between the past frame and the future frame for decoder to successfully reconstruct future frame. 
+In practice, the action decoder tries to ignore actions and infer purely from images. To counteract this, 
+1. we mask most frames except the first, so the decoder must learn to use the string of actions as signal for reconstruction
+2. we encourage batch-wise variance in the encoder through an auxiliary loss
 
-In practice, the decoder tends to try to ignore actions as much as possible. To counteract this, we mask most frames except the first, so the decoder must learn to use the string of actions as signal. We also add auxiliary variance regularization batch-wise to the encoder.
-
-At inference time, we only use the learned cubes (latents) which correspond to action indices that the user can output. These actions should each end up corresponding to a semantically meaningful condition for next frame prediction.
+At inference time, we map each key to one of the action tokens that conditions the dynamics for the user to influence video generation.
 
 ## Dynamics Model
 Additional paper: MaskGIT (https://arxiv.org/pdf/2202.04200)
@@ -180,71 +182,56 @@ We then run the following loop:
 
 We repeat process autoregressively over the time dimension as actions are passed to model and tokens are predicted by the dynamics model and detokenized into frames to display to the user.
 
+This process also lets us predict multiple future frames at once (bounded by memory and going out of distribution), which can improve inference quality.
+
 ## Data
 
 ![datasets](/assets/datasets_stylized.png)
 
-The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models))
-
-1. PicoDoom (`picodoom_frames.h5`)
-2. Pong (`pong_frames.h5`)
-3. Zelda Ocarina of Tima (`zelda_frames.h5`)
-4. Pole Position (`pole_position_frames.h5`)
-5. Sonic (`sonic_frames.h5`)
-
-Any data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py)
+The data is processed and downsampled from mp4s into hdf5 files. You can download the following datasets I uploaded to huggingface ([Datasets](https://huggingface.co/datasets/AlmondGod/tinyworlds), [Pretrained models](https://huggingface.co/AlmondGod/tineyworlds-models)) with 
 
 ```bash
-# retrieve data and downlaod into data/
-python scripts/download_assets.py datasets --pattern "sonic_frames.h5"
-
-# puls sonic dynamics checkpoint into results/<TIMESTAMP>_sonic_models/dynamics/checkpoints
-python scripts/download_assets.py models --type dynamics --suite-name sonic_models
+python scripts/download_assets.py datasets --pattern "<name>_frames.h5`
 ```
+
+Available are:
+1. **PicoDoom** (`picodoom_frames.h5`), a minimal version of Doom
+2. **Pong** (`pong_frames.h5`), the classic
+3. **Zelda Ocarina of Time** (`zelda_frames.h5`), one of the originl 2D Zelda games
+4. **Pole Position** (`pole_position_frames.h5`), a pixel racing game
+5. **Sonic** (`sonic_frames.h5`), the original game
+
+Any new data can be added by creating a new dataclass and specifying the mp4 path in [datasets.py](datasets/datasets.py).
+
 
 ## Training and Inference Acceleration
 
-TinyWorlds uses the following:
-1. torch compile which allows us to use faster kernels for certain pre-optimized operations
-2. distributed data parallel (DDP) which allows us to train using multiple gpus by using different data per-gpu
-3. automatic mixed precision (AMP) which dynamically switches between FP32 and BF16 based on the current nodes used floating point range
-4. FP32 training which lets us use nvidia floating point 32 for extremely precise floating point operations 
-(all of the above were made much easier by torch, thank you torch team)
-
+TinyWorlds uses the following torch features to accelerate training/inference:
+1. **Torch compile**, which allows us to use faster kernels for certain pre-optimized operations
+2. **Distributed data parallel (DDP)**, which allows us to train using multiple gpus by using different data per-gpu
+3. **Automatic mixed precision (AMP)**, which dynamically switches between FP32 and BF16 based on the current nodes used floating point range
+4. **TF32 training**, which lets us use NVIDIA TensorFloat32 for tensor-core-optimized FLOPs
 
 ## Shape Annotation Key
 
-When looking through the codebase, I shape-annotate all tensors and use einops tensor manipulation operations with the following abbreviations:
+All tensors are shape-annotated and use einops tensor manipulation operations with the following abbreviations:
 
-![shape annotations key](assets/shapeannotationkeydark.png)
+**B:** batch size \
+**T:** time/sequence dimension (number of frames) \
+**P:** number of patch tokens per frame \
+**E:** embedding dim (d_model) \
+**L:** Video Tokenizer latent dim \
+**A:** Action Tokenizer latent dim (action dim) \
+**D:** number of bins for each video tokenizer dim \
+**L^D:** Size of the video tokenizer vocabulary \
+**C:** image channels \
+**H:** pixel-grid height \
+**W:** pixel-grid width \
+**Hp:** patch-grid height \
+**Wp:** patch-grid width \
+**S:** patch size \
 
-
-## Filling in the Gaps (and Differing) from Genie
-
-### 1. FSQ vs VQVAE
-In Genie 1, VQVAE is used for both the video tokenizer and the action tokenizer. 
-
-VQVAE is notoriously difficult to train: it has 2 auxiliary losses that demand careful tuning, and often ends in codebook usage lower than 10%.
-
-I searched for alternatives and settled on the most recommended, FSQ, which worked as a drop-in fix and led to 100% codebook usage out of the box. FSQ is a genius algorithm.
-
-### 2. Additive Action Embeddings vs FiLM
-Genie 1 conditions frame genration on actions by adding the action embeddings to the video embeddings. 
-
-I tried additive and then FiLM, and found FiLM led the action tokenizer decoder to pay more attention to action tokens.
-
-### 3. Countering action tokenizer collapse
-By far the greatest challenge was avoiding action tokenizer collapse, which I solved by:
-1. Switching VQVAE to FSQVAE
-2. Using only the first frame and masking all others
-3. Adding low-weight variance loss to the pre-quantization encoder outputs across the batch dimension
-
-### 4. Low-level architecture decisions
-In ablations, RMSNorm > LayerNorm and SwiGLU > ReLU by loss, and L1 loss > L2 loss since L1 gave sharper reconstructions than L2, which encouraged muted tones.
-
-The default model uses 4 transformer blocks, with d_model 128, 8 heads, 512 FFN hidden dim (SwiGLU takes 2/3 of this for each W matrix), and 4-frame sequences which make for around ~2M parameter tokenizers and dynamics model.
-
-## An Appreciation of World Models
+## World Models First Principles
 A world model predicts the next state of an environment given current state and some conditioning. 
 
 To predict the next world state, we encode the structure and emergent phenomena of the universe itself.
@@ -261,8 +248,9 @@ World models can both act as cortexes to give physical world understanding to mo
 - [ ] Scale! Train on more GPUs and scale to multibillions of params by adding FSDP Support
 - [ ] Add more datasets (Terraria, Street Fighter, your favorite retro videogame!) 
 - [ ] Replace the mean pool + concat in the action tokenizer with attention pooling (t to t + 1 then mean pool)
-- [ ] Accelerate dynamics training by producing, saving, and loading pre-processed tokens instead of full frames 
+- [ ] Accelerate dynamics training by producing, saving, and loading pre-processed image patch embeddings instead of full frames 
 - [ ] Try different optimizers (Muon, SOAP)
+- [ ] Try [AdaLN-Zero](https://arxiv.org/pdf/2212.09748) instead of FiLM (adds a pre-scale parameter)
 - [ ] Add new schedulers for MaskGIT like cosine and [Halton](https://github.com/valeoai/Halton-MaskGIT)
 
 **Please make a PR! I've added TODOs throughout and there are many small things to try which could offer massive performance gains. The codebase is meant to be built upon.**
