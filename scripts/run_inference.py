@@ -10,6 +10,7 @@ from utils.utils import load_videotokenizer_from_checkpoint, load_latent_actions
 from utils.config import InferenceConfig, load_config
 from utils.inference_utils import load_models, visualize_inference, sample_random_action, get_action_latent
 from einops import repeat
+from typing import Optional
 
 
 def main():

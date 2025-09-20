@@ -45,7 +45,7 @@ python scripts/full_train.py --config configs/training_config.yaml -- --dataset=
 # 1. pull pretrained sonic checkpoints from huggingface
 python scripts/download_assets.py models --suite-name sonic
 # 2. run inference
-python scripts/run_inference.py --config configs/inference.yaml -- use-latest-checkpoints=true dataset=SONIC
+python scripts/run_inference.py --config configs/inference.yaml -- use_latest_checkpoints=true dataset=SONIC
 ```
 
 # Overview
@@ -96,11 +96,11 @@ The FFN is a multi-layer perceptron on each embedding vector. Inspired by divine
 $x_t = W_3[\sigma(W_1x + b1) * W_2x + b2] + b3$ (see SwiGLU diagram for clarity)
 
 
-For regular STT, we use [Root Mean Squared Normalization (RMSNorm)](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html) as the normalizer, which is less sensitive to extreme outliers than 0-variance norm. In RMS, we divide our input by 
+For regular STT, I used [Root Mean Squared Normalization (RMSNorm)](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html) as the normalizer, which is less sensitive to extreme outliers than 0-variance norm. In RMS, we divide our input by 
 
 $\sqrt(\epsilon + x / \sum x^2)$. 
 
-For STT conditioned on actions, we use [Feature-wise Linear Modulation (FiLM)](https://arxiv.org/pdf/1709.07871). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$) vectors. Our norm is then 
+For STT conditioned on actions, I used [Feature-wise Linear Modulation (FiLM)](https://arxiv.org/pdf/1709.07871). FiLM passes actions for each timestep through an FFN to transform each action latent into Gamma ($\gamma$) and Beta ($\beta$) vectors. Our norm is then 
 
 $(x - \mu) / \sigma * (1 + \gamma) + \beta$
 
@@ -190,7 +190,7 @@ To infer dynamics at a given step, we first append a fully masked frame to our c
 4. Place them into the context tensor, removing corresponding mask tokens
 5. Repeat
 
-To choose k, we use an exponential schedule (first step samples ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
+I chose an exponential schedule for k (first step samples ~1 token, then ~2, then ~5, then ~20, then ~50, etc)
 
 ### TinyWorlds Inference
 
