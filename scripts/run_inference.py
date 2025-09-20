@@ -25,7 +25,7 @@ def main():
     use_latent_actions = (args.use_actions or args.use_gt_actions or args.use_interactive_mode)
 
     # check if any path is missing
-    def missing(path: str | None) -> bool:
+    def missing(path: Optional[str]) -> bool:
         return (path is None) or (not os.path.isfile(path))
 
     # resolve latest checkpoints if requested or any path missing
