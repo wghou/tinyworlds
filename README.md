@@ -1,7 +1,7 @@
 <div align="center">
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/assets/tinyworldslight.png">
-  <img alt="tiny corp logo" src="assets/tinyworldsdarkclean.png" width="70%" height="70%">
+  <img alt="tiny corp logo" src="assets/tinyworldsdark.png" width="80%" height="80%">
 </picture>
 </div>
 
