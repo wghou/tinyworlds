@@ -3,22 +3,16 @@ use_wandb: true
 wandb_project: nano-genie-pipeline
 
 # dataset
-dataset: PICODOOM
-preload_ratio: 0.3
+dataset: POLE_POSITION
+preload_ratio: 1.0
 
 # shared model params
 patch_size: 4
 context_length: 4
 frame_size: 64
-latent_dim: 6 # for video tokenizer
+latent_dim: 5 # for video tokenizer
 num_bins: 4 # for video tokenizer
-n_actions: 16
-
-# these can vary but for convenience, here
-embed_dim: 128
-num_heads: 8
-hidden_dim: 512
-num_blocks: 4
+n_actions: 8
 
 # performance
 amp: true
@@ -36,6 +30,6 @@ latent_actions_config: configs/latent_actions.yaml
 dynamics_config: configs/dynamics.yaml
 
 # which stages to run
-run_video_tokenizer: false
+run_video_tokenizer: true
 run_latent_actions: false
 run_dynamics: true

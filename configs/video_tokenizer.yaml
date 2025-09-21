@@ -1,8 +1,14 @@
 # Training
-batch_size: 256
-n_updates: 30000
-learning_rate: 0.0004
+batch_size: 350
+n_updates: 10000
+learning_rate: 0.001
 log_interval: 2500
 
+# these can vary but for convenience, here
+embed_dim: 32
+num_heads: 8
+hidden_dim: 128
+num_blocks: 4
+
 # resume from checkpoint
-checkpoint: /workspace/nano-genie/results/2025_09_18_20_05_16/video_tokenizer/checkpoints/video_tokenizer_step_2500_2025_09_18_20_17_42.pth
+checkpoint:

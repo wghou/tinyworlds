@@ -1,8 +1,14 @@
 # Training
-batch_size: 256
+batch_size: 350
 n_updates: 5000
 learning_rate: 0.0001
 log_interval: 500
+
+# these can vary but for convenience, here
+embed_dim: 32
+num_heads: 8
+hidden_dim: 128
+num_blocks: 2
 
 # resume from checkpoint
 checkpoint: null
