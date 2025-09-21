@@ -203,10 +203,10 @@ class PicoDoomDataset(VideoHDF5Dataset):
             num_frames=num_frames,
             resize_to=resolution,
             fps=fps,
-            preload_ratio=preload_ratio,
+            preload_ratio=0.015,
             sequence_stride=None,
             load_chunk_size=1000,
-            load_start_index=100,
+            load_start_index=300,
             preprocess_read_step=1,
             preprocess_slice=None,
         )

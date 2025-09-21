@@ -37,9 +37,9 @@ export PYTHONPATH="/workspace/nano-genie:$PYTHONPATH"
 
 # Training
 # 1. download data from huggingface
-python scripts/download_assets.py datasets --pattern "picodoom_frames.h5"
+python scripts/download_assets.py datasets --pattern "zelda_frames.h5"
 # 2. run training
-python scripts/full_train.py --config configs/training_config.yaml -- --dataset=
+python scripts/full_train.py --config configs/training.yaml -- --dataset=ZELDA
 
 # Inference
 # 1. pull pretrained sonic checkpoints from huggingface

@@ -10,7 +10,7 @@ use_actions: true
 embed_dim: 32
 num_heads: 8
 hidden_dim: 128
-num_blocks: 10
+num_blocks: 8
 
 # Paths
 video_tokenizer_path:

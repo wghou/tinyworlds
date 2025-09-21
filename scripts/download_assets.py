@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Tuple
 from huggingface_hub import hf_hub_download, list_repo_files
 
-DATASET_REPO_ID_DEFAULT = "datasets/AlmondGod/tinyworlds"
+DATASET_REPO_ID_DEFAULT = "AlmondGod/tinyworlds"
 MODELS_REPO_ID_DEFAULT = "AlmondGod/tinyworlds-models"
 VALID_TYPES = {"video_tokenizer", "actions", "dynamics", "all"}
 

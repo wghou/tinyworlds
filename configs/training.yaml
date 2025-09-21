@@ -3,26 +3,26 @@ use_wandb: true
 wandb_project: nano-genie-pipeline
 
 # dataset
-dataset: POLE_POSITION
-preload_ratio: 1.0
+dataset: PICODOOM
+preload_ratio: 0.01
 
 # shared model params
 patch_size: 4
 context_length: 4
 frame_size: 64
-latent_dim: 5 # for video tokenizer
+latent_dim: 4 # for video tokenizer
 num_bins: 4 # for video tokenizer
-n_actions: 8
+n_actions: 4
 
 # performance
 amp: true
 tf32: true
-compile: true
+compile: false
 
 # distributed launch (torchrun)
 distributed: true
-nproc_per_node: 6
-standalone: true
+nproc_per_node: 3 # how many GPUs per node
+standalone: true # if we're using one node, this eliminates extraneous processes
 
 # stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
@@ -31,5 +31,5 @@ dynamics_config: configs/dynamics.yaml
 
 # which stages to run
 run_video_tokenizer: true
-run_latent_actions: false
+run_latent_actions: true
 run_dynamics: true
