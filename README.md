@@ -1,6 +1,6 @@
 <div align="center">
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="/assets/tinyworlds.png">
+  <source media="(prefers-color-scheme: light)" srcset="/assets/tinyworldslight.png">
   <img alt="tiny corp logo" src="assets/tinyworldsdarkclean.png">
 </picture>
 </div>
