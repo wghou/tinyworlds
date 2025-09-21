@@ -20,31 +20,54 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = N
     """
     def collect_files_from_roots(roots, model_name):
         files = []
+        # Accept files whether they start with the dataset name or the model name
+        # Also include common aliases per model
+        alias_map = {
+            'video_tokenizer': ['video_tokenizer'],
+            'latent_actions': ['latent_actions', 'lam', 'actions', 'action_tokenizer'],
+            'dynamics': ['dynamics'],
+        }
+        aliases = alias_map.get(model_name, [model_name])
+        step_patterns = [f"*{a}_step_*.*" for a in aliases]
+        ckpt_patterns = [f"*{a}_checkpoint_*.*" for a in aliases]
         for root in roots:
-            files.extend(glob.glob(os.path.join(root, f"{model_name}_step_*.*"), recursive=True))
-            files.extend(glob.glob(os.path.join(root, f"{model_name}_checkpoint_*.*"), recursive=True))
+            # Search recursively beneath checkpoints to support nested layouts like
+            # <stage>/checkpoints/<dataset>/<file>.pth or Hugging Face download trees.
+            for pat in step_patterns + ckpt_patterns:
+                files.extend(glob.glob(os.path.join(root, "**", pat), recursive=True))
         return [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
 
     def run_dir_of(path: str) -> str:
-        checkpoints_dir = os.path.dirname(path)
-        return os.path.dirname(checkpoints_dir)
+        # Walk up until we reach the 'checkpoints' directory, then return its parent (the stage dir)
+        d = os.path.dirname(path)
+        while d and os.path.basename(d) != 'checkpoints':
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+        # If we found 'checkpoints', return its parent; otherwise, fallback to two-level up
+        if d and os.path.basename(d) == 'checkpoints':
+            return os.path.dirname(d)
+        return os.path.dirname(os.path.dirname(os.path.dirname(path)))
 
     def project_wide_search():
         # Fallback to model_type/results search in repository
-        model_type_map = {
-            'videotokenizer': 'video_tokenizer',
-            'video_tokenizer': 'video_tokenizer',
-            'vqvae': 'video_tokenizer',
-            'lam': 'latent_actions',
-            'latent_actions': 'latent_actions',
-            'dynamics': 'dynamics',
+        # Allow multiple possible directory names per model
+        model_type_dirs = {
+            'video_tokenizer': ['video_tokenizer'],
+            'latent_actions': ['latent_actions', 'lam', 'actions', 'action_tokenizer'],
+            'dynamics': ['dynamics',],
         }
-        model_type = model_type_map.get(model_name, '**')
-        if model_type == '**':
+        dirs = model_type_dirs.get(model_name)
+        if not dirs:
             roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
         else:
-            roots = [os.path.join(base_dir, 'results', '**', model_type, 'checkpoints')]
+            roots = [os.path.join(base_dir, 'results', '**', d, 'checkpoints') for d in dirs]
         files = collect_files_from_roots(roots, model_name)
+        if not files:
+            # Generic fallback: search all checkpoints regardless of stage dir name
+            generic_roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
+            files = collect_files_from_roots(generic_roots, model_name)
         if not files:
             raise Exception(f"No checkpoint files found for {model_name}")
         run_dir_to_files = {}
