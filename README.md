@@ -1,4 +1,9 @@
-![image](assets/tinyworldsbannerv3.png)
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/assets/tinyworlds.png">
+  <img alt="tiny corp logo" src="assets/tinyworldsdarkclean.png">
+</picture>
+</div>
 
 TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
