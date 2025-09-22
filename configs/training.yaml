@@ -4,23 +4,23 @@ wandb_project: nano-genie-pipeline
 
 # dataset
 dataset: PICODOOM
-preload_ratio: 0.01
+preload_ratio: 0.005
 
 # shared model params
 patch_size: 4
 context_length: 4
 frame_size: 64
-latent_dim: 4 # for video tokenizer
+latent_dim: 5 # for video tokenizer
 num_bins: 4 # for video tokenizer
 n_actions: 4
 
 # performance
 amp: true
 tf32: true
-compile: false
+compile: true
 
 # distributed launch (torchrun)
-distributed: true
+distributed: false
 nproc_per_node: 3 # how many GPUs per node
 standalone: true # if we're using one node, this eliminates extraneous processes
 

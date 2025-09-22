@@ -14,7 +14,6 @@ TinyWorlds is meant to help people understand the clever autoregressive, unsuper
 ## Table of Contents
 
 - [Getting Started](#getting-started)
-- [Why World Models?](#why-world-models)
 - [Overview](#architecture-overview)
 - [Building Blocks](#architecture-building-blocks)
    - [Space-Time Transformer](#space-time-transformer-stt)
@@ -54,23 +53,31 @@ python scripts/run_inference.py --config configs/inference.yaml -- use_latest_ch
 ```
 
 # Overview
+
 ### Why World Models?
-A world model is a function mapping the current state of the environment, plus conditioning, to the next state of the environment. 
 
-To predict the next world state accurately, the world function must compress all the information in the world into a set of laws. 
+*How do we bend reality to our will? we generate reality itself…*
 
-Hence the name world model: **it is capturing all the inherent structure and emergent phenomena of the world.** 
 
-In the near term, world models can be:
-1. cortexes to give physical world understanding to models 
-2. simulators for models to interact with physics fully-online 
+A world model is simply a function mapping the current state of the environment to the next state of the environment.
+
+To predict the next state accurately, the function must compress all information in the world into a set of laws. 
+
+So the world model **captures all the inherent structure and emergent phenomena of the world.** 
+
+In fact, all of deep learning, and all of intelligence, is trying to compress the universe into a model. A model that can predict important aspects of the next state of the universe, by learning heuristics about how it operates.
+
+And the universe can also be thought of as a world model. It is a constantly running mapping from state to state, following a set of laws but with many layers of emergent behavior over these laws.
+
+So far, we've seen world models can be:
+
+1. cortexes to give physical world understanding to robots
+2. simulators for models to interact with physics fully-online
 3. experiences with new structures of reality for humans to interact with
 
-A world model is the world itself. The universe is a world model. Reality emerges within that model.
+But we are only at the very beginning of modeling our own worlds.
 
-We are only at the beginning of world modeling. Are you getting it?
-
-I hope TinyWorlds will help you to understand world modeling better. 
+TinyWorlds is built to help you to understand world modeling better. 
 
 ### Architecture Overview
 ![tinyworldsarch](/assets/tinyworldsarchv3.png)
