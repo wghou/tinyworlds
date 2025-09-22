@@ -31,7 +31,7 @@ class VideoHDF5Dataset(Dataset):
         self.train = train
         self.num_frames = num_frames
         self.fps = fps
-        self.frame_skip = max(1, (sequence_stride if sequence_stride is not None else 60 // max(1, fps)))
+        self.frame_skip = max(1, (sequence_stride if sequence_stride is not None else max(1, 60 // fps)))
         self.fraction_of_dataset = float(fraction_of_dataset)
         self.resize_to = resize_to
 
@@ -148,9 +148,8 @@ class PongDataset(VideoHDF5Dataset):
             train=train,
             num_frames=num_frames,
             resize_to=resolution,
-            fps=fps,
-            preload_ratio=preload_ratio,
-            sequence_stride=1,
+            fps=10,
+            preload_ratio=0.8,
             load_chunk_size=1000,
             load_start_index=0,
             preprocess_read_step=10,  # keep every 10th frame from raw
@@ -221,10 +220,10 @@ class ZeldaDataset(VideoHDF5Dataset):
             num_frames=num_frames,
             resize_to=resolution,
             fps=15,
-            preload_ratio=0.05,
+            preload_ratio=0.02,
             sequence_stride=None,
             load_chunk_size=1000,
-            load_start_index=100,
+            load_start_index=1000,
             preprocess_read_step=1,
             preprocess_slice=None,
         )
