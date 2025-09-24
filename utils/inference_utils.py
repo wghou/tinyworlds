@@ -61,7 +61,6 @@ def visualize_inference(predicted_frames, ground_truth_frames, inferred_actions,
         axes[1, i].axis('off')
     
     plt.suptitle('Ground Truth vs Predicted Frames', fontsize=16, fontweight='bold')
-    plt.tight_layout()
     
     # Save the visualization
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -126,8 +125,7 @@ def sample_random_action(n_actions):
 
 
 def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_action_model, step):
-    # Select action mode
-    if args.use_interactive_mode:
+    if args.use_interactive_mode: # let user input actions
         print("using interactive mode")
         user_input = input(f"Enter action id [0..{n_actions-1}] for step {step+1}: ").strip()
 
@@ -139,11 +137,14 @@ def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_
         recent = inferred_actions[-args.context_window:] if len(inferred_actions) > args.context_window else inferred_actions
         recent_tensor = repeat(torch.tensor(recent, device=args.device), 'i -> 1 i') # [1, i or T_ctx]
         action_latent = latent_action_model.quantizer.get_latents_from_indices(recent_tensor)
+        
+        if args.prediction_horizon > 1:
+            action_latent = repeat(action_latent, 'b 1 a -> b ph a', ph=args.prediction_horizon)
         if len(recent) < args.context_window:
             gt_pad_actions = latent_action_model.encode(context_frames[:, :args.context_window - len(recent) + 1])
             quantized_gt_pad_actions = latent_action_model.quantizer(gt_pad_actions)
             action_latent = torch.cat([quantized_gt_pad_actions, action_latent], dim=1)
-    elif args.use_gt_actions:
+    elif args.use_gt_actions: # use action tokenizer actions
         print("using gt actions")
         gt_action_latents = latent_action_model.encode(context_frames) # [1, T - 1, A]
         sampled_action_index = sample_random_action(n_actions) # [1]
@@ -151,7 +152,7 @@ def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_
         sampled_action_index_tensor = repeat(torch.tensor(sampled_action_index, device=args.device), 'i -> 1 i') # [1, i]
         sampled_action_latent = latent_action_model.quantizer.get_latents_from_indices(sampled_action_index_tensor) # [1, i, A]
         action_latent = torch.cat([gt_action_latents, sampled_action_latent], dim=1) # [1, T, A]
-    elif args.use_actions:
+    elif args.use_actions: # use random actions
         print(f"using random actions")
         sampled_action_index = sample_random_action(n_actions) # [1]
         inferred_actions.append(sampled_action_index) # [i]
@@ -159,6 +160,8 @@ def get_action_latent(args, inferred_actions, n_actions, context_frames, latent_
         recent_inferred_actions_tensor = repeat(torch.tensor(recent_inferred_actions, device=args.device), 'i -> 1 i') # [1, i or T_ctx]
 
         action_latent = latent_action_model.quantizer.get_latents_from_indices(recent_inferred_actions_tensor) # [1, i or T_ctx, A]
+        if args.prediction_horizon > 1:
+            action_latent = repeat(action_latent, 'b 1 a -> b ph a', ph=args.prediction_horizon)
 
         if len(recent_inferred_actions) < args.context_window:
             # if we dont have enough inferred actions (in the beginning) add enough gt to fill the sequence
