@@ -33,11 +33,11 @@ TinyWorlds is meant to help people understand the clever autoregressive, unsuper
 
 ```bash
 # Installation
-git clone https://github.com/AlmondGod/nano-genie.git
-cd nano-genie
+git clone https://github.com/AlmondGod/tinyworlds.git
+cd tinyworlds
 pip install -r requirements.txt
 export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
-export PYTHONPATH="/workspace/nano-genie:$PYTHONPATH"
+export PYTHONPATH="/workspace/tinyworlds:$PYTHONPATH"
 
 # Training
 # 1. download data from huggingface
