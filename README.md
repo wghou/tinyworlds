@@ -7,9 +7,9 @@
 
 TinyWorlds is a minimal autoregressive world model built on Google Deepmind's [Genie Architecture](https://arxiv.org/pdf/2402.15391).
 
-World models can't use action-less internet video to scale like [VEO3](https://deepmind.google/models/veo/). Deepmind's [Genie 3](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no prior action data**.
+World models can't use action-less internet video to scale like [VEO3](https://deepmind.google/models/veo/). Deepmind's [Genie](https://deepmind.google/discover/blog/genie-3-a-new-frontier-for-world-models/) solves this by inferring the actions between frames using **no prior action data**.
 
-TinyWorlds is meant to help people understand the clever autoregressive, unsupervised method Deepmind used to achieve **scalable world models**.
+TinyWorlds is meant to help people understand the clever autoregressive, unsupervised method Deepmind likely used to achieve **scalable world models**.
 
 ## Table of Contents
 
