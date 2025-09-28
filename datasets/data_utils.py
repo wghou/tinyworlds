@@ -67,8 +67,8 @@ def load_pong(num_frames=1, fps=15, preload_ratio=1):
 def load_sonic(num_frames=4, fps=15, preload_ratio=1):
     return _load_video_dataset_pair(
         SonicDataset,
-        '/data/Sonic Cleaned.mp4',
-        '/data/Sonic Cleaned_frames.h5',
+        '/data/sonic_frames.mp4',
+        '/data/sonic_frames.h5',
         num_frames=num_frames,
         fps=fps,
         preload_ratio=preload_ratio
