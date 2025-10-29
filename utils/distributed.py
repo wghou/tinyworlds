@@ -1,4 +1,5 @@
 import os
+from models.utils import ModelType
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -35,35 +36,34 @@ def init_distributed_from_env(backend: str = 'nccl') -> Dict[str, object]:
         'is_main': is_main,
     }
 
-def distributed_wrap_if_needed(model: torch.nn.Module, config: DistributedConfig, local_rank: int, model_type: str = 'video_tokenizer') -> torch.nn.Module:
+def distributed_wrap_if_needed(model: torch.nn.Module, config: DistributedConfig, local_rank: int, model_type: ModelType) -> torch.nn.Module:
     if config.use_ddp:
         return DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
     if config.use_fsdp:
         mp_policy = config.get_mixed_precision_policy()
-        if model_type == 'video_tokenizer':
+        fsdp_kwargs = {
+            "reshard_after_forward":config.reshard_after_forward, 
+            "mp_policy":mp_policy, 
+            "offload_policy":config.offload_policy,
+        }
+        if model_type in {ModelType.VideoTokenizer, ModelType.LatentActionModel}:
             fully_shard(
                 model.encoder,
-                reshard_after_forward=config.reshard_after_forward, 
-                mp_policy=mp_policy, 
-                offload_policy=config.offload_policy,
+                **fsdp_kwargs,
             )
             fully_shard(
                 model.decoder,
-                reshard_after_forward=config.reshard_after_forward, 
-                mp_policy=mp_policy, 
-                offload_policy=config.offload_policy,
+                **fsdp_kwargs,
             )
             fully_shard(
                 model.quantizer,
-                reshard_after_forward=config.reshard_after_forward, 
-                mp_policy=mp_policy, 
-                offload_policy=config.offload_policy,
+                **fsdp_kwargs,
             )
+        else:
+            raise ValueError('Unknown model type')
         fully_shard(
             model,
-            reshard_after_forward=config.reshard_after_forward, 
-            mp_policy=mp_policy, 
-            offload_policy=config.offload_policy,
+            **fsdp_kwargs,
         )
 
     return model

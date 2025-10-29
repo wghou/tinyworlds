@@ -66,7 +66,7 @@ def main():
     print_param_count_if_main(model, "VideoTokenizer", is_main)
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-    model = distributed_wrap_if_needed(model, args.distributed, dist_setup['local_rank'])
+    model = distributed_wrap_if_needed(model, args.distributed, dist_setup['local_rank'], model_type=model.model_type)
     if args.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -87,9 +87,8 @@ def main():
         {'params': no_decay, 'weight_decay': 0}
     ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
     
-    # cosine scheduler for lr warmup and AMP grad scaler
+    # cosine scheduler for lr warmup
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
 
     results = {
         'n_updates': 0,
@@ -120,12 +119,12 @@ def main():
 
         # forward + loss under autocast
         with train_ctx:
-            loss, x_hat = unwrap_model(model)(x)
+            loss, x_hat = model(x)
 
-            scaler.loss.backward()
+            loss.backward()
 
         # clip grads, optimizerstep, update scheduler and grad scaler
-        torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
 
@@ -160,7 +159,7 @@ def main():
                 save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')
                 visualize_reconstruction(x_vis[:16], x_hat_vis[:16], save_path)
             
-            print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
+                print('\n Step', i, 'Loss:', torch.mean(torch.stack(results["loss_vals"][-args.log_interval:])).item())
 
     # finish wandb
     if args.use_wandb and is_main:

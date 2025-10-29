@@ -1,3 +1,4 @@
+from models.utils import ModelType
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -132,3 +133,7 @@ class LatentActionModel(nn.Module):
         action_latents = self.encoder(frames)  # [B, T, A]
         action_latents_quantized = self.quantizer(action_latents) # [B, T, A]
         return action_latents_quantized
+    
+    @property
+    def model_type(self) -> str:
+        return ModelType.LatentActionModel
