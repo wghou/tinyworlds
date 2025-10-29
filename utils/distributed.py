@@ -2,7 +2,10 @@ import os
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import fully_shard
 from typing import Dict
+
+from utils.config import DistributedConfig
 
 
 def init_distributed_from_env(backend: str = 'nccl') -> Dict[str, object]:
@@ -32,6 +35,38 @@ def init_distributed_from_env(backend: str = 'nccl') -> Dict[str, object]:
         'is_main': is_main,
     }
 
+def distributed_wrap_if_needed(model: torch.nn.Module, config: DistributedConfig, local_rank: int, model_type: str = 'video_tokenizer') -> torch.nn.Module:
+    if config.use_ddp:
+        return DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    if config.use_fsdp:
+        mp_policy = config.get_mixed_precision_policy()
+        if model_type == 'video_tokenizer':
+            fully_shard(
+                model.encoder,
+                reshard_after_forward=config.reshard_after_forward, 
+                mp_policy=mp_policy, 
+                offload_policy=config.offload_policy,
+            )
+            fully_shard(
+                model.decoder,
+                reshard_after_forward=config.reshard_after_forward, 
+                mp_policy=mp_policy, 
+                offload_policy=config.offload_policy,
+            )
+            fully_shard(
+                model.quantizer,
+                reshard_after_forward=config.reshard_after_forward, 
+                mp_policy=mp_policy, 
+                offload_policy=config.offload_policy,
+            )
+        fully_shard(
+            model,
+            reshard_after_forward=config.reshard_after_forward, 
+            mp_policy=mp_policy, 
+            offload_policy=config.offload_policy,
+        )
+
+    return model
 
 def wrap_ddp_if_needed(model: torch.nn.Module, is_distributed: bool, local_rank: int) -> torch.nn.Module:
     if is_distributed:

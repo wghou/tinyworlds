@@ -130,6 +130,8 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
     """
     import torch
     ts = readable_timestamp()
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        model = model.module
     state = {
         'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
         'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,

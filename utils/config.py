@@ -4,6 +4,48 @@ import argparse
 import os
 from omegaconf import OmegaConf
 
+from torch.distributed.fsdp import MixedPrecisionPolicy, CPUOffloadPolicy
+import torch
+
+
+@dataclass
+class FSDPMixedPrecisionConfig:
+    param_dtype: str = "bfloat16"
+    reduce_dtype: str = "float32"
+    output_dtype: str = "float32"
+    cast_forward_inputs: bool = True
+
+    def _resolve_dtype(self, value: str | torch.dtype) -> torch.dtype:
+        if isinstance(value, torch.dtype):
+            return value
+        try:
+            return getattr(torch, value)
+        except AttributeError as exc:
+            raise ValueError(f"Unknown torch dtype '{value}'") from exc
+
+    def to_policy(self) -> MixedPrecisionPolicy:
+        return MixedPrecisionPolicy(
+            param_dtype=self._resolve_dtype(self.param_dtype),
+            reduce_dtype=self._resolve_dtype(self.reduce_dtype),
+            output_dtype=self._resolve_dtype(self.output_dtype),
+            cast_forward_inputs=self.cast_forward_inputs,
+        )
+
+
+@dataclass
+class DistributedConfig:
+	use_ddp: bool = False # False
+	use_fsdp: bool = True # False
+	reshard_after_forward: bool = False
+	fsdp_mixed_precision: FSDPMixedPrecisionConfig | None = field(default_factory=FSDPMixedPrecisionConfig)
+	offload_policy: CPUOffloadPolicy | None = None # CPUOffloadPolicy(pin_memory=True)
+
+	def get_mixed_precision_policy(self) -> MixedPrecisionPolicy | None:
+		if self.fsdp_mixed_precision is None:
+			return None
+		if isinstance(self.fsdp_mixed_precision, MixedPrecisionPolicy):
+			return self.fsdp_mixed_precision
+		return self.fsdp_mixed_precision.to_policy()
 
 @dataclass
 class VideoTokenizerConfig:
@@ -27,6 +69,10 @@ class VideoTokenizerConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
@@ -57,6 +103,10 @@ class LatentActionsConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
@@ -93,6 +143,10 @@ class DynamicsConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
@@ -128,8 +182,8 @@ class TrainingConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
-	# Distributed launch options
-	distributed: bool
+	# distributed
+	distributed: DistributedConfig
 	nproc_per_node: int
 	standalone: bool
 	# These can vary per model
