@@ -35,10 +35,14 @@ class FSDPMixedPrecisionConfig:
 @dataclass
 class DistributedConfig:
 	use_ddp: bool = False # False
-	use_fsdp: bool = True # False
+	use_fsdp: bool = False # False
 	reshard_after_forward: bool = False
 	fsdp_mixed_precision: FSDPMixedPrecisionConfig | None = field(default_factory=FSDPMixedPrecisionConfig)
 	offload_policy: CPUOffloadPolicy | None = None # CPUOffloadPolicy(pin_memory=True)
+
+	def __post_init__(self) -> None:
+		if self.use_ddp and self.use_fsdp:
+			raise ValueError("DistributedConfig cannot enable both DDP and FSDP; choose only one.")
 
 	def get_mixed_precision_policy(self) -> MixedPrecisionPolicy | None:
 		if self.fsdp_mixed_precision is None:
@@ -46,6 +50,7 @@ class DistributedConfig:
 		if isinstance(self.fsdp_mixed_precision, MixedPrecisionPolicy):
 			return self.fsdp_mixed_precision
 		return self.fsdp_mixed_precision.to_policy()
+
 
 @dataclass
 class VideoTokenizerConfig:

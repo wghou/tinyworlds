@@ -1,16 +1,12 @@
 from contextlib import nullcontext
-import numpy as np
 import torch
 import torch.optim as optim
-import sys
 import os
 from models.latent_actions import LatentActionModel
 from datasets.data_utils import load_data_and_data_loaders, visualize_reconstruction
 from utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
-import json
 import wandb
-import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 from utils.config import LatentActionsConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_latent_actions_from_checkpoint
@@ -32,9 +28,9 @@ def main():
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = dist_setup['is_main']
+    stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
     if is_main:
         print(f"Latent Actions Training")
-        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
         print(f'Results will be saved in {stage_dir}')
 
     # dataloader
@@ -48,7 +44,7 @@ def main():
         batch_size=args.batch_size,
         num_frames=args.context_length,
         distributed=dist_setup['is_distributed'],
-        rank=dist_setup['device_mesh'].get_rank(),
+        rank=dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0,
         world_size=dist_setup['world_size'],
         **data_overrides,
     )
@@ -64,7 +60,12 @@ def main():
         n_actions=args.n_actions,
     ).to('cuda')
     if args.checkpoint:
-        model, _ = load_latent_actions_from_checkpoint(args.checkpoint, 'cuda', model)
+        model, _ = load_latent_actions_from_checkpoint(
+            args.checkpoint, 
+            'cuda', 
+            model,
+            dist_setup['is_distributed'],
+        )
 
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "LatentActionModel", is_main)
@@ -170,9 +171,9 @@ def main():
                 }, step=i)
                 log_action_distribution(idx, i, args.n_actions)
 
+            hyperparameters = vars(args)
+            save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
             if is_main:
-                hyperparameters = vars(args)
-                checkpoint_path = save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
                 save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
                 visualize_reconstruction(x, pred_frames, save_path)
             

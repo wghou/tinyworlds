@@ -28,9 +28,9 @@ def main():
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     is_main = dist_setup['is_main']
+    stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
     if is_main:
         print(f"Video Tokenizer Training")
-        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'video_tokenizer')
         print(f'Results will be saved in {stage_dir}')
 
     # dataloader
@@ -44,7 +44,7 @@ def main():
         batch_size=args.batch_size_per_gpu, 
         num_frames=args.context_length,
         distributed=dist_setup['is_distributed'],
-        rank=dist_setup['device_mesh'].get_rank(),
+        rank=dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0,
         world_size=dist_setup['world_size'],
         **data_overrides,
     )
@@ -62,7 +62,12 @@ def main():
         num_bins=args.num_bins,
     ).to('cuda')
     if args.checkpoint:
-        model, _ = load_videotokenizer_from_checkpoint(args.checkpoint, 'cuda', model)
+        model, _ = load_videotokenizer_from_checkpoint(
+            args.checkpoint, 
+            'cuda', 
+            model,
+            dist_setup['is_distributed'],
+        )
 
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "VideoTokenizer", is_main)
@@ -134,7 +139,7 @@ def main():
 
         if isinstance(model, FSDPModule):
             model.set_requires_gradient_sync(True)
-            
+
         torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
@@ -162,9 +167,9 @@ def main():
                 if is_main:
                     wandb.log({'train/codebook_usage': codebook_usage}, step=i)
 
+            hyperparameters = args.__dict__
+            save_training_state(model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
             if is_main:
-                hyperparameters = args.__dict__
-                save_training_state(model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
                 x_hat_vis = x_hat.detach().cpu()
                 x_vis = x.detach().cpu()
                 save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')

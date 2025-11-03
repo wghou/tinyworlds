@@ -1,3 +1,4 @@
+from pathlib import Path
 import time
 import glob
 import subprocess
@@ -5,6 +6,18 @@ import os
 import re
 from typing import Optional
 
+from torch.distributed.checkpoint.state_dict import (
+    get_model_state_dict,
+    get_optimizer_state_dict,
+    set_model_state_dict,
+    StateDictOptions,
+)
+from torch.distributed.fsdp import FSDPModule
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+MODEL_CHECKPOINT = "model_state_dict.pt"
+OPTIMIZER_CHECKPOINT = "optim_state_dict.pt"
+STATE = "state.pt"
 
 def readable_timestamp():
     """Generate a sortable timestamp for filenames (no weekday)."""
@@ -130,28 +143,47 @@ def save_training_state(model, optimizer, scheduler, config, checkpoints_dir, pr
     """
     import torch
     ts = readable_timestamp()
-    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-        model = model.module
+    if isinstance(model, (FSDPModule, DDP)):
+        state_dict = get_model_state_dict(
+            model=model,
+            options=StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+            ),
+        )
+        optimizer_state_dict = get_optimizer_state_dict(
+            model=model,
+            optimizers=optimizer,
+            options=StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,
+            ),
+        )
+    else:
+        state_dict = model.state_dict()
+        optimizer_state_dict = optimizer.state_dict()
     state = {
-        'model': (model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()),
-        'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
         'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
         'config': config,
         'step': int(step) if step is not None else None,
         'timestamp': ts,
     }
     os.makedirs(checkpoints_dir, exist_ok=True)
-    ckpt_path = os.path.join(checkpoints_dir, f"{prefix}_step_{int(step) if step is not None else 0}_{ts}.pth")
-    torch.save(state, ckpt_path)
+    ckpt_path = os.path.join(checkpoints_dir, f"{prefix}_step_{int(step) if step is not None else 0}")
+    os.makedirs(ckpt_path, exist_ok=True)
+    torch.save(state_dict, Path(ckpt_path) / MODEL_CHECKPOINT)
+    torch.save(optimizer_state_dict, Path(ckpt_path) / OPTIMIZER_CHECKPOINT)
+    torch.save(state, Path(ckpt_path) / STATE)
     return ckpt_path
 
 
-def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None):
+def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
     """Instantiate VideoTokenizer from a checkpoint's saved config and load weights."""
     import torch
     from models.video_tokenizer import VideoTokenizer
-    ckpt = torch.load(checkpoint_path, map_location='cpu')
-    cfg = ckpt.get('config', {}) or {}
+    model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),
@@ -165,17 +197,25 @@ def load_videotokenizer_from_checkpoint(checkpoint_path, device, model = None):
     }
     if model is None:
         model = VideoTokenizer(**kwargs)
-    model.load_state_dict(ckpt['model'], strict=True)
+    set_model_state_dict(
+        model=model,
+        model_state_dict=model_sd,
+        options=StateDictOptions(
+            full_state_dict=True,
+            broadcast_from_rank0=is_distributed,
+        ),
+    )
     model = model.to(device)
-    return model, ckpt
+    return model, state_cfg
 
 
-def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None):
+def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
     """Instantiate LatentActionModel from a checkpoint's saved config and load weights."""
     import torch
     from models.latent_actions import LatentActionModel
-    ckpt = torch.load(checkpoint_path, map_location='cpu')
-    cfg = ckpt.get('config', {}) or {}
+    model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
     kwargs = {
         'frame_size': (frame_size, frame_size),
@@ -188,9 +228,16 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None):
     }
     if model is None:
         model = LatentActionModel(**kwargs)
-    model.load_state_dict(ckpt['model'], strict=True)
+    set_model_state_dict(
+        model=model,
+        model_state_dict=model_sd,
+        options=StateDictOptions(
+            full_state_dict=True,
+            broadcast_from_rank0=is_distributed,
+        ),
+    )
     model = model.to(device)
-    return model, ckpt
+    return model, state_cfg
 
 
 def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):

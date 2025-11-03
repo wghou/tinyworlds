@@ -20,6 +20,8 @@ def init_distributed_from_env() -> Dict[str, object]:
 
     if is_distributed:
         device_mesh = init_device_mesh("cuda", (world_size,), mesh_dim_names=('fsdp',))
+    else:
+        device_mesh = None
 
     rank = device_mesh.get_rank() if is_distributed else 0
     is_main = (rank == 0)
