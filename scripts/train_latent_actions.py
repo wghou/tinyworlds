@@ -16,8 +16,8 @@ from utils.config import LatentActionsConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_latent_actions_from_checkpoint
 from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb, log_action_distribution, log_learning_rate
 from dataclasses import asdict
-from utils.distributed import init_distributed_from_env, distributed_wrap_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
-
+from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
+from torch.distributed.fsdp import FSDPModule
 
 def main():
     # latent actions config merged with training_config.yaml (training takes priority), plus CLI overrides
@@ -25,7 +25,6 @@ def main():
 
     # DDP setup
     dist_setup = init_distributed_from_env()
-    device = dist_setup['device']
 
     # run save dir if it doesn't exist (running not from full train)
     timestamp = readable_timestamp()
@@ -48,7 +47,9 @@ def main():
         dataset=args.dataset,
         batch_size=args.batch_size,
         num_frames=args.context_length,
-        **get_dataloader_distributed_kwargs(dist_setup),
+        distributed=dist_setup['is_distributed'],
+        rank=dist_setup['device_mesh'].get_rank(),
+        world_size=dist_setup['world_size'],
         **data_overrides,
     )
 
@@ -61,15 +62,20 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
         n_actions=args.n_actions,
-    ).to(device)
+    ).to('cuda')
     if args.checkpoint:
-        model, _ = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
+        model, _ = load_latent_actions_from_checkpoint(args.checkpoint, 'cuda', model)
 
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "LatentActionModel", is_main)
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-    model = distributed_wrap_if_needed(model, args.distributed, dist_setup['local_rank'], model_type=model.model_type)
+    model = prepare_model_for_distributed(
+        model, 
+        args.distributed, 
+        model_type=model.model_type, 
+        device_mesh=dist_setup['device_mesh'],
+    )
     if args.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -111,21 +117,27 @@ def main():
 
     train_iter = iter(training_loader)
     for i in tqdm(range(args.n_updates), disable=not is_main):
-        try:
-            (x, _) = next(train_iter)
-        except StopIteration:
-            train_iter = iter(training_loader)
-            (x, _) = next(train_iter)
-
-        x = x.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
+        if isinstance(model, FSDPModule):
+            model.set_requires_gradient_sync(False)
+        for micro_batch in range(args.gradient_accumulation_steps):
+            try:
+                (x, _) = next(train_iter)
+            except StopIteration:
+                train_iter = iter(training_loader)
+                (x, _) = next(train_iter)
 
-        with train_ctx:
-            loss, pred_frames = model(x)
+            x = x.to('cuda', non_blocking=True)
 
-            loss.backward()
+            with train_ctx:
+                loss, pred_frames = model(x)
+                loss /= args.gradient_accumulation_steps
+                loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if isinstance(model, FSDPModule):
+            model.set_requires_gradient_sync(True)
+
+        torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
 
@@ -143,9 +155,9 @@ def main():
         if i % args.log_interval == 0 and is_main:
             if args.use_wandb:
                 with torch.no_grad():
-                    actions = model.encoder(x)
-                    actions_quantized = model.quantizer(actions)
-                    idx = model.quantizer.get_indices_from_latents(actions_quantized)
+                    actions = unwrap_model(model).encoder(x)
+                    actions_quantized = unwrap_model(model).quantizer(actions)
+                    idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
                     codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
                     z_e_var = actions.var(dim=0, unbiased=False).mean().item()
                     pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
