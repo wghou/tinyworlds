@@ -12,8 +12,8 @@ from utils.config import VideoTokenizerConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_videotokenizer_from_checkpoint
 from utils.wandb_utils import init_wandb, log_training_metrics, log_system_metrics, log_learning_rate, finish_wandb
 from dataclasses import asdict
-from utils.distributed import init_distributed_from_env, distributed_wrap_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
-
+from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
+from torch.distributed.fsdp import FSDPModule
 
 def main():
     # vidtokenizer config merged with training_config.yaml (training takes priority), plus CLI overrides
@@ -21,7 +21,6 @@ def main():
 
     # DDP setup
     dist_setup = init_distributed_from_env()
-    device = dist_setup['device']
 
     # run save dir if it doesn't exist (running not from full train)
     timestamp = readable_timestamp()
@@ -42,12 +41,15 @@ def main():
         data_overrides['preload_ratio'] = args.preload_ratio
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset, 
-        batch_size=args.batch_size, 
+        batch_size=args.batch_size_per_gpu, 
         num_frames=args.context_length,
-        **get_dataloader_distributed_kwargs(dist_setup),
+        distributed=dist_setup['is_distributed'],
+        rank=dist_setup['device_mesh'].get_rank(),
+        world_size=dist_setup['world_size'],
         **data_overrides,
     )
-
+    # print("Length of training data:", len(training_data))
+    # print("Length of validation data:", len(validation_data))
     # init model and optional ckpt load
     model = VideoTokenizer(
         frame_size=(args.frame_size, args.frame_size), 
@@ -58,15 +60,20 @@ def main():
         num_blocks=args.num_blocks,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
-    ).to(device)
+    ).to('cuda')
     if args.checkpoint:
-        model, _ = load_videotokenizer_from_checkpoint(args.checkpoint, device, model)
+        model, _ = load_videotokenizer_from_checkpoint(args.checkpoint, 'cuda', model)
 
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "VideoTokenizer", is_main)
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-    model = distributed_wrap_if_needed(model, args.distributed, dist_setup['local_rank'], model_type=model.model_type)
+    model = prepare_model_for_distributed(
+        model, 
+        args.distributed, 
+        model_type=model.model_type, 
+        device_mesh=dist_setup['device_mesh'],
+    )
     if args.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -89,6 +96,7 @@ def main():
     
     # cosine scheduler for lr warmup
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
+    train_ctx = torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
         'n_updates': 0,
@@ -104,27 +112,30 @@ def main():
         # wandb.watch(unwrap_model(model), log="all", log_freq=args.log_interval)
 
     unwrap_model(model).train()
-    train_ctx = torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     train_iter = iter(training_loader)
     for i in tqdm(range(args.n_updates), disable=not is_main):
-        try:
-            (x, _) = next(train_iter)
-        except StopIteration:
-            train_iter = iter(training_loader)  # reset iterator when epoch ends
-            (x, _) = next(train_iter)
-
         optimizer.zero_grad(set_to_none=True)
-        x = x.to(device, non_blocking=True)
+        if isinstance(model, FSDPModule):
+            model.set_requires_gradient_sync(False)
+        for micro_batch in range(args.gradient_accumulation_steps):
+            try:
+                (x, _) = next(train_iter)
+            except StopIteration:
+                train_iter = iter(training_loader)  # reset iterator when epoch ends
+                (x, _) = next(train_iter)
 
-        # forward + loss under autocast
-        with train_ctx:
-            loss, x_hat = model(x)
+            x = x.to('cuda', non_blocking=True)
 
-            loss.backward()
+            with train_ctx:
+                loss, x_hat = model(x)
+                loss /= args.gradient_accumulation_steps
+                loss.backward()
 
-        # clip grads, optimizerstep, update scheduler and grad scaler
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if isinstance(model, FSDPModule):
+            model.set_requires_gradient_sync(True)
+            
+        torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
 
@@ -142,18 +153,18 @@ def main():
             log_learning_rate(optimizer, i)
 
         # save model and visualize results
-        if i % args.log_interval == 0 and is_main:
+        if i % args.log_interval == 0:
             if args.use_wandb:
                 with torch.no_grad():
-                    indices = model.tokenize(x)
+                    indices = unwrap_model(model).tokenize(x)
                     unique_codes = torch.unique(indices).numel()
-                    codebook_usage = unique_codes / unwrap_model(model).codebook_size
-
+                codebook_usage = unique_codes / unwrap_model(model).codebook_size
                 if is_main:
                     wandb.log({'train/codebook_usage': codebook_usage}, step=i)
+
             if is_main:
                 hyperparameters = args.__dict__
-                save_training_state(unwrap_model(model), optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
+                save_training_state(model, optimizer, scheduler, hyperparameters, checkpoints_dir, prefix='video_tokenizer', step=i)
                 x_hat_vis = x_hat.detach().cpu()
                 x_vis = x.detach().cpu()
                 save_path = os.path.join(visualizations_dir, f'video_tokenizer_recon_step_{i}.png')

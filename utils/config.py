@@ -50,7 +50,8 @@ class DistributedConfig:
 @dataclass
 class VideoTokenizerConfig:
 	# Training
-	batch_size: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
 	n_updates: int
 	learning_rate: float
 	log_interval: int
@@ -85,7 +86,8 @@ class VideoTokenizerConfig:
 @dataclass
 class LatentActionsConfig:
 	# Training
-	batch_size: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
 	n_updates: int
 	learning_rate: float
 	log_interval: int
@@ -119,7 +121,8 @@ class LatentActionsConfig:
 @dataclass
 class DynamicsConfig:
 	# Training
-	batch_size: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
 	n_updates: int
 	learning_rate: float
 	log_interval: int
