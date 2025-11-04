@@ -31,28 +31,48 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = N
     Newest run dir first, then highest step within it.
     If the newest run root has none for this model, keep searching older runs.
     """
-    def collect_files_from_roots(roots, model_name):
-        files = []
-        # Accept files whether they start with the dataset name or the model name
-        # Also include common aliases per model
+    def collect_checkpoint_paths(roots, model_name):
         alias_map = {
             'video_tokenizer': ['video_tokenizer'],
             'latent_actions': ['latent_actions', 'lam', 'actions', 'action_tokenizer'],
             'dynamics': ['dynamics'],
         }
         aliases = alias_map.get(model_name, [model_name])
-        step_patterns = [f"*{a}_step_*.*" for a in aliases]
-        ckpt_patterns = [f"*{a}_checkpoint_*.*" for a in aliases]
+        candidates = []
+        seen = set()
+
+        def add_candidate(path: str) -> None:
+            norm = os.path.normpath(path)
+            if norm in seen:
+                return
+            if os.path.isdir(norm):
+                # require at least state or model file
+                state_file = os.path.join(norm, STATE)
+                model_file = os.path.join(norm, MODEL_CHECKPOINT)
+                if os.path.isfile(state_file) or os.path.isfile(model_file):
+                    candidates.append(norm)
+                    seen.add(norm)
+            else:
+                _, ext = os.path.splitext(norm)
+                if ext in ('.pt', '.pth'):
+                    candidates.append(norm)
+                    seen.add(norm)
+
+        patterns = []
+        for alias in aliases:
+            patterns.append(f"*{alias}_step_*")
+            patterns.append(f"*{alias}_checkpoint_*")
+
         for root in roots:
-            # Search recursively beneath checkpoints to support nested layouts like
-            # <stage>/checkpoints/<dataset>/<file>.pth or Hugging Face download trees.
-            for pat in step_patterns + ckpt_patterns:
-                files.extend(glob.glob(os.path.join(root, "**", pat), recursive=True))
-        return [p for p in files if os.path.splitext(p)[1] in ('.pt', '.pth')]
+            for pat in patterns:
+                search_pattern = os.path.join(root, "**", pat)
+                for match in glob.glob(search_pattern, recursive=True):
+                    add_candidate(match)
+        return candidates
 
     def run_dir_of(path: str) -> str:
         # Walk up until we reach the 'checkpoints' directory, then return its parent (the stage dir)
-        d = os.path.dirname(path)
+        d = path if os.path.isdir(path) else os.path.dirname(path)
         while d and os.path.basename(d) != 'checkpoints':
             parent = os.path.dirname(d)
             if parent == d:
@@ -61,7 +81,9 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = N
         # If we found 'checkpoints', return its parent; otherwise, fallback to two-level up
         if d and os.path.basename(d) == 'checkpoints':
             return os.path.dirname(d)
-        return os.path.dirname(os.path.dirname(os.path.dirname(path)))
+        # Fallback: use the directory containing the checkpoint path (or its parent)
+        candidate_dir = path if os.path.isdir(path) else os.path.dirname(path)
+        return candidate_dir
 
     def project_wide_search():
         # Fallback to model_type/results search in repository
@@ -76,11 +98,11 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = N
             roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
         else:
             roots = [os.path.join(base_dir, 'results', '**', d, 'checkpoints') for d in dirs]
-        files = collect_files_from_roots(roots, model_name)
+        files = collect_checkpoint_paths(roots, model_name)
         if not files:
             # Generic fallback: search all checkpoints regardless of stage dir name
             generic_roots = [os.path.join(base_dir, 'results', '**', 'checkpoints')]
-            files = collect_files_from_roots(generic_roots, model_name)
+            files = collect_checkpoint_paths(generic_roots, model_name)
         if not files:
             raise Exception(f"No checkpoint files found for {model_name}")
         run_dir_to_files = {}
@@ -96,7 +118,7 @@ def find_latest_checkpoint(base_dir, model_name, run_root_dir: Optional[str] = N
             roots = [os.path.join(run_root_dir, stage_name, 'checkpoints')]
         else:
             roots = [os.path.join(run_root_dir, '**', 'checkpoints')]
-        files = collect_files_from_roots(roots, model_name)
+        files = collect_checkpoint_paths(roots, model_name)
         if not files:
             # Fallback: search project-wide older runs until found
             candidate_files = project_wide_search()
@@ -240,18 +262,19 @@ def load_latent_actions_from_checkpoint(checkpoint_path, device, model = None, i
     return model, state_cfg
 
 
-def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):
+def load_dynamics_from_checkpoint(checkpoint_path, device, model = None, is_distributed = False):
     """Instantiate DynamicsModel from a checkpoint's saved config and load weights."""
     import torch
     from models.dynamics import DynamicsModel
-    ckpt = torch.load(checkpoint_path, map_location='cpu')
-    cfg = ckpt.get('config', {}) or {}
+    model_sd = torch.load(Path(checkpoint_path) / MODEL_CHECKPOINT, map_location='cpu', weights_only=True)
+    state_cfg = torch.load(Path(checkpoint_path) / STATE, map_location='cpu', weights_only=False)
+    cfg = state_cfg.get('config', {}) or {}
     frame_size = cfg.get('frame_size', 128)
     # Infer conditioning_dim from checkpoint if missing
     conditioning_dim = cfg.get('conditioning_dim', None)
     if conditioning_dim is None:
         cond_inferred = None
-        for k, v in ckpt.get('model', {}).items():
+        for k, v in model_sd.get('model', {}).items():
             # Linear weight shape: [out_features, in_features]; in_features is conditioning dim
             if k.endswith('to_gamma_beta.1.weight'):
                 cond_inferred = int(v.shape[1])
@@ -270,9 +293,16 @@ def load_dynamics_from_checkpoint(checkpoint_path, device, model = None):
     }
     if model is None:
         model = DynamicsModel(**kwargs)
-    model.load_state_dict(ckpt['model'], strict=True)
+    set_model_state_dict(
+        model=model,
+        model_state_dict=model_sd,
+        options=StateDictOptions(
+            full_state_dict=True,
+            broadcast_from_rank0=is_distributed,
+        )
+    )
     model = model.to(device)
-    return model, ckpt
+    return model, state_cfg
 
 def prepare_pipeline_run_root(run_name: Optional[str] = None, base_cwd: Optional[str] = None):
     """Create a top-level run root directory results/<timestamp_or_name>"""

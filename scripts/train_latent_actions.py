@@ -41,7 +41,7 @@ def main():
         data_overrides['preload_ratio'] = args.preload_ratio
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size_per_gpu,
         num_frames=args.context_length,
         distributed=dist_setup['is_distributed'],
         rank=dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0,
@@ -153,7 +153,7 @@ def main():
             log_learning_rate(optimizer, i)
   
         # save model and visualize results
-        if i % args.log_interval == 0 and is_main:
+        if i % args.log_interval == 0:
             if args.use_wandb:
                 with torch.no_grad():
                     actions = unwrap_model(model).encoder(x)

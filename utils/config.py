@@ -52,6 +52,13 @@ class DistributedConfig:
 		return self.fsdp_mixed_precision.to_policy()
 
 
+def _validate_amp_fsdp(amp: bool, distributed: DistributedConfig) -> None:
+	if amp and distributed.use_fsdp:
+		raise ValueError(
+			"Disable AMP when using FSDP; configure mixed precision via distributed.fsdp_mixed_precision instead."
+		)
+
+
 @dataclass
 class VideoTokenizerConfig:
 	# Training
@@ -86,6 +93,9 @@ class VideoTokenizerConfig:
 	checkpoint: Optional[str]
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
 
 
 @dataclass
@@ -121,6 +131,9 @@ class LatentActionsConfig:
 	checkpoint: Optional[str]
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
 
 
 @dataclass
@@ -162,6 +175,9 @@ class DynamicsConfig:
 	checkpoint: Optional[str]
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
 
 
 @dataclass
@@ -205,6 +221,9 @@ class TrainingConfig:
 	n_updates: Optional[int] = None
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
 
 
 @dataclass
