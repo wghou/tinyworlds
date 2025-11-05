@@ -78,9 +78,6 @@ def main():
         conditioning_dim=unwrap_model(latent_action_model).action_dim,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
-        use_moe=args.use_moe,
-        num_experts=args.num_experts,
-        top_k=args.top_k,
     ).to('cuda')
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
@@ -158,7 +155,8 @@ def main():
     )
     train_iter = iter(training_loader)
 
-    for i in tqdm(range(0, args.n_updates), disable=not is_main):
+    # args.n_updates tracks true optimizer steps, so we multiply it by gradient_accumulation_steps.
+    for i in tqdm(range(0, args.n_updates * args.gradient_accumulation_steps), disable=not is_main):
         optimizer.zero_grad(set_to_none=True)
         if isinstance(dynamics_model, FSDPModule):
             dynamics_model.set_requires_gradient_sync(False)

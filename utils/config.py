@@ -34,11 +34,11 @@ class FSDPMixedPrecisionConfig:
 
 @dataclass
 class DistributedConfig:
-	use_ddp: bool = False # False
-	use_fsdp: bool = False # False
+	use_ddp: bool = False
+	use_fsdp: bool = False
 	reshard_after_forward: bool = False
 	fsdp_mixed_precision: FSDPMixedPrecisionConfig | None = field(default_factory=FSDPMixedPrecisionConfig)
-	offload_policy: CPUOffloadPolicy | None = None # CPUOffloadPolicy(pin_memory=True)
+	offload_policy: CPUOffloadPolicy | None = None
 
 	def __post_init__(self) -> None:
 		if self.use_ddp and self.use_fsdp:
@@ -59,12 +59,19 @@ def _validate_amp_fsdp(amp: bool, distributed: DistributedConfig) -> None:
 		)
 
 
+def _validate_distibuted_training(nproc_per_node: int, distributed: DistributedConfig) -> None:
+	if nproc_per_node > 1 and not (distributed.use_ddp or distributed.use_fsdp):
+		raise ValueError(
+			"nproc_per_node > 1 requires enabling distributed.use_ddp or distributed.use_fsdp."
+		)
+
+
 @dataclass
 class VideoTokenizerConfig:
 	# Training
 	batch_size_per_gpu: int
 	gradient_accumulation_steps: int
-	n_updates: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -96,6 +103,7 @@ class VideoTokenizerConfig:
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
 
 
 @dataclass
@@ -103,7 +111,7 @@ class LatentActionsConfig:
 	# Training
 	batch_size_per_gpu: int
 	gradient_accumulation_steps: int
-	n_updates: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -134,6 +142,7 @@ class LatentActionsConfig:
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
 
 
 @dataclass
@@ -141,7 +150,7 @@ class DynamicsConfig:
 	# Training
 	batch_size_per_gpu: int
 	gradient_accumulation_steps: int
-	n_updates: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -178,6 +187,7 @@ class DynamicsConfig:
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
 
 
 @dataclass
@@ -216,14 +226,16 @@ class TrainingConfig:
 	hidden_dim: Optional[int] = None
 	num_blocks: Optional[int] = None
 	learning_rate: Optional[float] = None
-	batch_size: Optional[int] = None
+	batch_size_per_gpu: Optional[int] = None
+	gradient_accumulation_steps: Optional[int] = None
 	log_interval: Optional[int] = None
-	n_updates: Optional[int] = None
+	n_updates: Optional[int] = None # number of optimizer.step(), excluding grad_accum_step
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
 
 
 @dataclass

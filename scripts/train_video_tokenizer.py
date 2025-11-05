@@ -119,7 +119,8 @@ def main():
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
-    for i in tqdm(range(args.n_updates), disable=not is_main):
+    # args.n_updates tracks true optimizer steps, so we multiply it by gradient_accumulation_steps.
+    for i in tqdm(range(args.n_updates * args.gradient_accumulation_steps), disable=not is_main):
         optimizer.zero_grad(set_to_none=True)
         if isinstance(model, FSDPModule):
             model.set_requires_gradient_sync(False)
