@@ -270,7 +270,7 @@ All tensors are shape-annotated and use einops tensor manipulation operations wi
 - [ ] Add new schedulers for MaskGIT like cosine and [Halton](https://github.com/valeoai/Halton-MaskGIT)
 - [ ] Replace `mean pool + concat` in the action tokenizer with `length-2 windowed attention + mean`
 - [ ] Accelerate dynamics training by producing, saving, and loading pre-processed image patch embeddings instead of full frames 
-- [ ] Scale! Train on more GPUs and scale to multibillions of params by adding `FSDP` Support
+- [x] Scale! Train on more GPUs and scale to multibillions of params by adding `FSDP` Support — made by [alekseymalakhov11](https://github.com/alekseymalakhov11)
 
 **Please make a PR! I've added TODOs throughout and there are many small things to try which could offer massive performance gains. The codebase is meant to be built upon.**
 
