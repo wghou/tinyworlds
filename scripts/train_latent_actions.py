@@ -134,10 +134,10 @@ def main():
             with train_ctx:
                 loss, pred_frames = model(x)
                 loss /= args.gradient_accumulation_steps
+                if isinstance(model, FSDPModule):
+                    if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
+                        model.set_requires_gradient_sync(True)
                 loss.backward()
-
-        if isinstance(model, FSDPModule):
-            model.set_requires_gradient_sync(True)
 
         torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
         optimizer.step()

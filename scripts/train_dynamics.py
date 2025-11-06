@@ -184,10 +184,10 @@ def main():
                 )
 
                 loss /= args.gradient_accumulation_steps
+                if isinstance(dynamics_model, FSDPModule):
+                    if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
+                        dynamics_model.set_requires_gradient_sync(True)
                 loss.backward()
-
-        if isinstance(dynamics_model, FSDPModule):
-            dynamics_model.set_requires_gradient_sync(True)
 
         results['n_updates'] = i
         results['dynamics_losses'].append(loss.detach().cpu())
