@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 import argparse
 import os
@@ -7,6 +8,10 @@ from omegaconf import OmegaConf
 from torch.distributed.fsdp import MixedPrecisionPolicy, CPUOffloadPolicy
 import torch
 
+
+class DeviceType(str, Enum):
+	CUDA: str = 'cuda'
+	CPU: str = 'cpu'
 
 @dataclass
 class FSDPMixedPrecisionConfig:
@@ -66,6 +71,12 @@ def _validate_distibuted_training(nproc_per_node: int, distributed: DistributedC
 		)
 
 
+def _validate_distributed_device(device: DeviceType, distributed: DistributedConfig) -> None:
+	current_device = device if isinstance(device, DeviceType) else DeviceType(device)
+	if (distributed.use_ddp or distributed.use_fsdp) and current_device is not DeviceType.CUDA:
+		raise ValueError("Distributed training (DDP/FSDP) requires device=cuda.")
+
+
 @dataclass
 class VideoTokenizerConfig:
 	# Training
@@ -85,7 +96,6 @@ class VideoTokenizerConfig:
 	num_blocks: int
 	latent_dim: int
 	num_bins: int
-	# Perf
 	amp: bool
 	tf32: bool
 	compile: bool
@@ -98,12 +108,16 @@ class VideoTokenizerConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
 		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
@@ -124,7 +138,6 @@ class LatentActionsConfig:
 	num_heads: int
 	hidden_dim: int
 	num_blocks: int
-	# Perf
 	amp: bool
 	tf32: bool
 	compile: bool
@@ -137,12 +150,16 @@ class LatentActionsConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
 		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
@@ -182,12 +199,16 @@ class DynamicsConfig:
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
 	
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
 		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
@@ -220,6 +241,8 @@ class TrainingConfig:
 	distributed: DistributedConfig
 	nproc_per_node: int
 	standalone: bool
+	# device
+	device: DeviceType = DeviceType.CUDA
 	# These can vary per model
 	embed_dim: Optional[int] = None
 	num_heads: Optional[int] = None
@@ -236,6 +259,7 @@ class TrainingConfig:
 	def __post_init__(self) -> None:
 		_validate_amp_fsdp(self.amp, self.distributed)
 		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass

@@ -35,19 +35,19 @@ def main():
 
     # run save dir if it doesn't exist (running not from full train)
     is_main = dist_setup['is_main']
+    run_root = os.environ.get('NG_RUN_ROOT_DIR')
+    if not run_root:
+        run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
     stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'dynamics')
     if is_main:
         print(f"Dynamics Training")
-        run_root = os.environ.get('NG_RUN_ROOT_DIR')
-        if not run_root:
-            run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
         print(f"Results will be saved in {stage_dir}")
 
     # load video tokenizer and latent action model
     if os.path.isdir(args.video_tokenizer_path):
         video_tokenizer, vq_ckpt = load_videotokenizer_from_checkpoint(
             checkpoint_path=args.video_tokenizer_path, 
-            device='cuda', 
+            device=args.device, 
             is_distributed=dist_setup['is_distributed'],
         )
         video_tokenizer.eval()
@@ -58,7 +58,7 @@ def main():
     if os.path.isdir(args.latent_actions_path):
         latent_action_model, latent_action_ckpt = load_latent_actions_from_checkpoint(
             checkpoint_path=args.latent_actions_path, 
-            device='cuda',
+            device=args.device,
             is_distributed=dist_setup['is_distributed'],
         )
         unwrap_model(latent_action_model).eval()
@@ -78,11 +78,11 @@ def main():
         conditioning_dim=unwrap_model(latent_action_model).action_dim,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
-    ).to('cuda')
+    ).to(args.device)
     if args.checkpoint:
         dynamics_model, _ = load_dynamics_from_checkpoint(
             checkpoint_path=args.checkpoint, 
-            device='cuda', 
+            device=args.device, 
             model=dynamics_model,
             is_distributed=dist_setup['is_distributed'],
         )
@@ -122,7 +122,7 @@ def main():
 
     # cosine scheduler for lr warmup and AMP grad scaler
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-    train_ctx = torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
+    train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
         'n_updates': 0,
@@ -134,7 +134,6 @@ def main():
     if args.use_wandb and is_main:
         run_name = f"dynamics_{readable_timestamp()}"
         init_wandb(args.wandb_project, asdict(args), run_name)
-        # wandb.watch(unwrap_model(dynamics_model), log="all", log_freq=args.log_interval)
 
     unwrap_model(dynamics_model).train()
 
@@ -155,8 +154,7 @@ def main():
     )
     train_iter = iter(training_loader)
 
-    # args.n_updates tracks true optimizer steps, so we multiply it by gradient_accumulation_steps.
-    for i in tqdm(range(0, args.n_updates * args.gradient_accumulation_steps), disable=not is_main):
+    for i in tqdm(range(0, args.n_updates), disable=not is_main):
         optimizer.zero_grad(set_to_none=True)
         if isinstance(dynamics_model, FSDPModule):
             dynamics_model.set_requires_gradient_sync(False)
@@ -167,7 +165,7 @@ def main():
                 train_iter = iter(training_loader)  # reset iterator when epoch ends
                 x, _ = next(train_iter)
 
-            x = x.to('cuda', non_blocking=True)  # [batch_size, seq_len, channels, height, width]
+            x = x.to(args.device, non_blocking=True)  # [batch_size, seq_len, channels, height, width]
 
             # get video tokens for batch
             video_tokens = video_tokenizer.tokenize(x) # [B, T, P]
@@ -183,10 +181,11 @@ def main():
                     video_latents, training=True, conditioning=quantized_actions, targets=video_tokens
                 )
 
-                loss /= args.gradient_accumulation_steps
                 if isinstance(dynamics_model, FSDPModule):
                     if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
                         dynamics_model.set_requires_gradient_sync(True)
+
+                loss /= args.gradient_accumulation_steps
                 loss.backward()
 
         results['n_updates'] = i

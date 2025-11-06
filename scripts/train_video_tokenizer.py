@@ -60,11 +60,11 @@ def main():
         num_blocks=args.num_blocks,
         latent_dim=args.latent_dim,
         num_bins=args.num_bins,
-    ).to('cuda')
+    ).to(args.device)
     if args.checkpoint:
         model, _ = load_videotokenizer_from_checkpoint(
             args.checkpoint, 
-            'cuda', 
+            args.device,
             model,
             dist_setup['is_distributed'],
         )
@@ -101,7 +101,7 @@ def main():
     
     # cosine scheduler for lr warmup
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-    train_ctx = torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
+    train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
         'n_updates': 0,
@@ -114,13 +114,11 @@ def main():
         cfg.update({'timestamp': timestamp})
         run_name = f"video_tokenizer_{timestamp}"
         init_wandb(args.wandb_project, cfg, run_name)
-        # wandb.watch(unwrap_model(model), log="all", log_freq=args.log_interval)
 
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
-    # args.n_updates tracks true optimizer steps, so we multiply it by gradient_accumulation_steps.
-    for i in tqdm(range(args.n_updates * args.gradient_accumulation_steps), disable=not is_main):
+    for i in tqdm(range(args.n_updates), disable=not is_main):
         optimizer.zero_grad(set_to_none=True)
         if isinstance(model, FSDPModule):
             model.set_requires_gradient_sync(False)
@@ -131,7 +129,7 @@ def main():
                 train_iter = iter(training_loader)  # reset iterator when epoch ends
                 (x, _) = next(train_iter)
 
-            x = x.to('cuda', non_blocking=True)
+            x = x.to(args.device, non_blocking=True)
 
             with train_ctx:
                 loss, x_hat = model(x)
