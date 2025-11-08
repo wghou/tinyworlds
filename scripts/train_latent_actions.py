@@ -1,40 +1,36 @@
-import numpy as np
+from contextlib import nullcontext
 import torch
 import torch.optim as optim
-import sys
 import os
 from models.latent_actions import LatentActionModel
 from datasets.data_utils import load_data_and_data_loaders, visualize_reconstruction
 from utils.scheduler_utils import create_cosine_scheduler
 from tqdm import tqdm
-import json
 import wandb
-import torch.nn.functional as F
 from utils.utils import readable_timestamp, save_training_state, prepare_stage_dirs, prepare_pipeline_run_root
 from utils.config import LatentActionsConfig, load_stage_config_merged
 from utils.utils import save_training_state, load_latent_actions_from_checkpoint
 from utils.wandb_utils import init_wandb, log_system_metrics, finish_wandb, log_action_distribution, log_learning_rate
 from dataclasses import asdict
-from utils.distributed import init_distributed_from_env, wrap_ddp_if_needed, unwrap_model, get_dataloader_distributed_kwargs, print_param_count_if_main, cleanup_distributed
-
+from utils.distributed import init_distributed_from_env, prepare_model_for_distributed, unwrap_model, print_param_count_if_main, cleanup_distributed
+from torch.distributed.fsdp import FSDPModule
 
 def main():
     # latent actions config merged with training_config.yaml (training takes priority), plus CLI overrides
     args: LatentActionsConfig = load_stage_config_merged(LatentActionsConfig, default_config_path=os.path.join(os.getcwd(), 'configs', 'latent_actions.yaml'))
 
     # DDP setup
-    ddp = init_distributed_from_env()
-    device = ddp['device']
+    dist_setup = init_distributed_from_env()
 
     # run save dir if it doesn't exist (running not from full train)
     timestamp = readable_timestamp()
     run_root = os.environ.get('NG_RUN_ROOT_DIR')
     if not run_root:
         run_root, _ = prepare_pipeline_run_root(base_cwd=os.getcwd())
-    is_main = ddp['is_main']
+    is_main = dist_setup['is_main']
+    stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
     if is_main:
         print(f"Latent Actions Training")
-        stage_dir, checkpoints_dir, visualizations_dir = prepare_stage_dirs(run_root, 'latent_actions')
         print(f'Results will be saved in {stage_dir}')
 
     # dataloader
@@ -45,9 +41,11 @@ def main():
         data_overrides['preload_ratio'] = args.preload_ratio
     training_data, validation_data, training_loader, validation_loader, x_train_var = load_data_and_data_loaders(
         dataset=args.dataset,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size_per_gpu,
         num_frames=args.context_length,
-        **get_dataloader_distributed_kwargs(ddp),
+        distributed=dist_setup['is_distributed'],
+        rank=dist_setup['device_mesh'].get_rank() if dist_setup['device_mesh'] is not None else 0,
+        world_size=dist_setup['world_size'],
         **data_overrides,
     )
 
@@ -60,15 +58,25 @@ def main():
         hidden_dim=args.hidden_dim,
         num_blocks=args.num_blocks,
         n_actions=args.n_actions,
-    ).to(device)
+    ).to(args.device)
     if args.checkpoint:
-        model, _ = load_latent_actions_from_checkpoint(args.checkpoint, device, model)
+        model, _ = load_latent_actions_from_checkpoint(
+            args.checkpoint, 
+            args.device,
+            model,
+            dist_setup['is_distributed'],
+        )
 
     # optional DDP, compile, param count, tf32
     print_param_count_if_main(model, "LatentActionModel", is_main)
     if args.compile:
         model = torch.compile(model, mode="reduce-overhead", fullgraph=False, dynamic=True)
-    model = wrap_ddp_if_needed(model, ddp['is_distributed'], ddp['local_rank'])
+    model = prepare_model_for_distributed(
+        model, 
+        args.distributed, 
+        model_type=model.model_type, 
+        device_mesh=dist_setup['device_mesh'],
+    )
     if args.tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -89,9 +97,9 @@ def main():
         {'params': no_decay, 'weight_decay': 0}
     ], lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, fused=True)
 
-    # cosine scheduler for lr warmup and AMP grad scaler
+    # cosine scheduler for lr warmup and AMP
     scheduler = create_cosine_scheduler(optimizer, args.n_updates)
-    scaler = torch.amp.GradScaler('cuda', enabled=bool(args.amp))
+    train_ctx = torch.amp.autocast(args.device, enabled=True, dtype=torch.bfloat16) if args.amp and not args.distributed.use_fsdp else nullcontext()
 
     results = {
         'n_updates': 0,
@@ -104,30 +112,33 @@ def main():
         cfg.update({'timestamp': timestamp})
         run_name = f"latent_actions_{timestamp}"
         init_wandb(args.wandb_project, cfg, run_name)
-        wandb.watch(unwrap_model(model), log="all", log_freq=args.log_interval)
 
     unwrap_model(model).train()
 
     train_iter = iter(training_loader)
     for i in tqdm(range(args.n_updates), disable=not is_main):
-        try:
-            (x, _) = next(train_iter)
-        except StopIteration:
-            train_iter = iter(training_loader)
-            (x, _) = next(train_iter)
-
-        x = x.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
+        if isinstance(model, FSDPModule):
+            model.set_requires_gradient_sync(False)
+        for micro_batch in range(args.gradient_accumulation_steps):
+            try:
+                (x, _) = next(train_iter)
+            except StopIteration:
+                train_iter = iter(training_loader)
+                (x, _) = next(train_iter)
 
-        with torch.amp.autocast('cuda', enabled=bool(args.amp), dtype=torch.bfloat16 if args.amp else None):
-            loss, pred_frames = unwrap_model(model)(x)
+            x = x.to(args.device, non_blocking=True)
 
-        scaler.scale(loss).backward()
+            with train_ctx:
+                loss, pred_frames = model(x)
+                loss /= args.gradient_accumulation_steps
+                if isinstance(model, FSDPModule):
+                    if (micro_batch + 1) % args.gradient_accumulation_steps == 0:
+                        model.set_requires_gradient_sync(True)
+                loss.backward()
 
-        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(unwrap_model(model).parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
         scheduler.step()
 
         results['n_updates'] = i
@@ -141,16 +152,17 @@ def main():
             log_learning_rate(optimizer, i)
   
         # save model and visualize results
-        if i % args.log_interval == 0 and is_main:
-            with torch.no_grad():
-                actions = unwrap_model(model).encoder(x)
-                actions_quantized = unwrap_model(model).quantizer(actions)
-                idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
-                codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
-                z_e_var = actions.var(dim=0, unbiased=False).mean().item()
-                pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
-
+        if i % args.log_interval == 0:
             if args.use_wandb:
+                with torch.no_grad():
+                    actions = unwrap_model(model).encoder(x)
+                    actions_quantized = unwrap_model(model).quantizer(actions)
+                    idx = unwrap_model(model).quantizer.get_indices_from_latents(actions_quantized)
+                    codebook_usage = idx.unique().numel() / unwrap_model(model).quantizer.codebook_size
+                    z_e_var = actions.var(dim=0, unbiased=False).mean().item()
+                    pred_frames_var = pred_frames.var(dim=0, unbiased=False).mean().item()
+
+            if args.use_wandb and is_main:
                 wandb.log({
                     "latent_actions/codebook_usage": codebook_usage,
                     "latent_actions/encoder_variance": z_e_var,
@@ -159,16 +171,17 @@ def main():
                 log_action_distribution(idx, i, args.n_actions)
 
             hyperparameters = vars(args)
-            checkpoint_path = save_training_state(unwrap_model(model), optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
-            save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
-            visualize_reconstruction(x, pred_frames, save_path)
+            save_training_state(model, optimizer, None, hyperparameters, checkpoints_dir, prefix='latent_actions', step=i)
+            if is_main:
+                save_path = os.path.join(visualizations_dir, f'reconstructions_latent_actions_step_{i}.png')
+                visualize_reconstruction(x, pred_frames, save_path)
             
-            print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
+                print('\n Step', i, 'Loss:', loss.item(), 'Codebook Usage:', codebook_usage, 'Encoder Variance:', z_e_var, 'Decoder Variance:', pred_frames_var)
 
     # finish wandb
     if args.use_wandb and is_main:
         finish_wandb()
-    cleanup_distributed(ddp['is_distributed'])
+    cleanup_distributed(dist_setup['is_distributed'])
 
 if __name__ == "__main__":
     main()

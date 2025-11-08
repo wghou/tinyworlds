@@ -1,3 +1,4 @@
+from models.utils import ModelType
 import torch
 import torch.nn as nn
 import math
@@ -194,3 +195,7 @@ class DynamicsModel(nn.Module):
                     mask[b, int(uh.item()), p_list, 0] = False
 
         return input_latents # [B, T_ctx + H, P, L]
+
+    @property
+    def model_type(self) -> str:
+        return ModelType.DynamicsModel
