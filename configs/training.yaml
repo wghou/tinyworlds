@@ -20,8 +20,11 @@ tf32: true
 compile: true
 
 # distributed launch (torchrun)
-distributed: false
-nproc_per_node: 3 # how many GPUs per node
+distributed: 
+  use_ddp: False
+  use_fsdp: False
+  reshard_after_forward: False
+nproc_per_node: 1 # how many GPUs per node
 standalone: true # if we're using one node, this eliminates extraneous processes
 
 # stage configs

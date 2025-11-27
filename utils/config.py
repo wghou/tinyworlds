@@ -1,15 +1,88 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 import argparse
 import os
 from omegaconf import OmegaConf
 
+from torch.distributed.fsdp import MixedPrecisionPolicy, CPUOffloadPolicy
+import torch
+
+
+class DeviceType(str, Enum):
+	CUDA: str = 'cuda'
+	CPU: str = 'cpu'
+
+@dataclass
+class FSDPMixedPrecisionConfig:
+    param_dtype: str = "bfloat16"
+    reduce_dtype: str = "float32"
+    output_dtype: str = "float32"
+    cast_forward_inputs: bool = True
+
+    def _resolve_dtype(self, value: str | torch.dtype) -> torch.dtype:
+        if isinstance(value, torch.dtype):
+            return value
+        try:
+            return getattr(torch, value)
+        except AttributeError as exc:
+            raise ValueError(f"Unknown torch dtype '{value}'") from exc
+
+    def to_policy(self) -> MixedPrecisionPolicy:
+        return MixedPrecisionPolicy(
+            param_dtype=self._resolve_dtype(self.param_dtype),
+            reduce_dtype=self._resolve_dtype(self.reduce_dtype),
+            output_dtype=self._resolve_dtype(self.output_dtype),
+            cast_forward_inputs=self.cast_forward_inputs,
+        )
+
+
+@dataclass
+class DistributedConfig:
+	use_ddp: bool = False
+	use_fsdp: bool = False
+	reshard_after_forward: bool = False
+	fsdp_mixed_precision: FSDPMixedPrecisionConfig | None = field(default_factory=FSDPMixedPrecisionConfig)
+	offload_policy: CPUOffloadPolicy | None = None
+
+	def __post_init__(self) -> None:
+		if self.use_ddp and self.use_fsdp:
+			raise ValueError("DistributedConfig cannot enable both DDP and FSDP; choose only one.")
+
+	def get_mixed_precision_policy(self) -> MixedPrecisionPolicy | None:
+		if self.fsdp_mixed_precision is None:
+			return None
+		if isinstance(self.fsdp_mixed_precision, MixedPrecisionPolicy):
+			return self.fsdp_mixed_precision
+		return self.fsdp_mixed_precision.to_policy()
+
+
+def _validate_amp_fsdp(amp: bool, distributed: DistributedConfig) -> None:
+	if amp and distributed.use_fsdp:
+		raise ValueError(
+			"Disable AMP when using FSDP; configure mixed precision via distributed.fsdp_mixed_precision instead."
+		)
+
+
+def _validate_distibuted_training(nproc_per_node: int, distributed: DistributedConfig) -> None:
+	if nproc_per_node > 1 and not (distributed.use_ddp or distributed.use_fsdp):
+		raise ValueError(
+			"nproc_per_node > 1 requires enabling distributed.use_ddp or distributed.use_fsdp."
+		)
+
+
+def _validate_distributed_device(device: DeviceType, distributed: DistributedConfig) -> None:
+	current_device = device if isinstance(device, DeviceType) else DeviceType(device)
+	if (distributed.use_ddp or distributed.use_fsdp) and current_device is not DeviceType.CUDA:
+		raise ValueError("Distributed training (DDP/FSDP) requires device=cuda.")
+
 
 @dataclass
 class VideoTokenizerConfig:
 	# Training
-	batch_size: int
-	n_updates: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -23,24 +96,36 @@ class VideoTokenizerConfig:
 	num_blocks: int
 	latent_dim: int
 	num_bins: int
-	# Perf
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
 class LatentActionsConfig:
 	# Training
-	batch_size: int
-	n_updates: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -53,24 +138,36 @@ class LatentActionsConfig:
 	num_heads: int
 	hidden_dim: int
 	num_blocks: int
-	# Perf
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
 class DynamicsConfig:
 	# Training
-	batch_size: int
-	n_updates: int
+	batch_size_per_gpu: int
+	gradient_accumulation_steps: int
+	n_updates: int # number of optimizer.step(), excluding grad_accum_step
 	learning_rate: float
 	log_interval: int
 	dataset: str
@@ -93,13 +190,25 @@ class DynamicsConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
+	# distributed
+	distributed: DistributedConfig
+	nproc_per_node: int
+	standalone: bool
 	# W&B
 	use_wandb: bool
 	wandb_project: str
 	# resume from checkpoint
 	checkpoint: Optional[str]
+	# device
+	device: DeviceType = DeviceType.CUDA
+	# other params
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass
@@ -128,21 +237,29 @@ class TrainingConfig:
 	amp: bool
 	tf32: bool
 	compile: bool
-	# Distributed launch options
-	distributed: bool
+	# distributed
+	distributed: DistributedConfig
 	nproc_per_node: int
 	standalone: bool
+	# device
+	device: DeviceType = DeviceType.CUDA
 	# These can vary per model
 	embed_dim: Optional[int] = None
 	num_heads: Optional[int] = None
 	hidden_dim: Optional[int] = None
 	num_blocks: Optional[int] = None
 	learning_rate: Optional[float] = None
-	batch_size: Optional[int] = None
+	batch_size_per_gpu: Optional[int] = None
+	gradient_accumulation_steps: Optional[int] = None
 	log_interval: Optional[int] = None
-	n_updates: Optional[int] = None
+	n_updates: Optional[int] = None # number of optimizer.step(), excluding grad_accum_step
 	fps: Optional[int] = None
 	preload_ratio: Optional[float] = None
+	
+	def __post_init__(self) -> None:
+		_validate_amp_fsdp(self.amp, self.distributed)
+		_validate_distibuted_training(self.nproc_per_node, self.distributed)
+		_validate_distributed_device(self.device, self.distributed)
 
 
 @dataclass

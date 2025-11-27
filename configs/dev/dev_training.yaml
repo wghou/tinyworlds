@@ -26,7 +26,8 @@ amp: true
 log_interval: 1
 n_updates: 2
 learning_rate: 0.0001
-batch_size: 8
+batch_size_per_gpu: 8
+gradient_accumulation_steps: 1
 
 # Stage configs
 video_tokenizer_config: configs/video_tokenizer.yaml
@@ -34,6 +35,6 @@ latent_actions_config: configs/latent_actions.yaml
 dynamics_config: configs/dynamics.yaml
 
 # Which stages to run
-run_video_tokenizer: false
+run_video_tokenizer: true
 run_latent_actions: true
 run_dynamics: true 

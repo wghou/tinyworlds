@@ -18,7 +18,7 @@ def main():
     train_config: TrainingConfig = load_config(TrainingConfig, default_config_path=training_cfg_path)
 
     # torchrun if distributed, else python
-    if train_config.distributed:
+    if train_config.nproc_per_node > 1:
         launcher = [
             "torchrun",
             "--nproc_per_node", str(train_config.nproc_per_node),
