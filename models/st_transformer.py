@@ -139,9 +139,10 @@ class STTransformer(nn.Module):
         ])
         
     def forward(self, x, conditioning=None):
-        # x: [B, T, P, E]
-        # conditioning: [B, T, E]
+        #* x: [B, T, P, E], where B is batch size, T is length of chunk, P is number of patches, E is dim of embedding vector.
+        #* conditioning: [B, T, E], where B is batch size, T is length of chunk, E is condition with same dim of embedding vector.
         B, T, P, E = x.shape
+        # position embedding of temporal
         tpe = sincos_time(T, self.temporal_dim, x.device, x.dtype)  # [T, E/3]
 
         # temporal PE (pad with 0s for first 2/3s spatial PE, last 1/3 temporal PE)

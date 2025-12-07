@@ -20,9 +20,10 @@ class VideoTokenizerEncoder(nn.Module):
         )
 
     def forward(self, frames):
-        # frames: [B, T, C, H, W]
+        #* frames: [B, T, C, H, W]
         # frames to patch embeddings, pass through transformer, project to latent dim
-        embeddings = self.patch_embed(frames)  # [B, T, P, E]
+        embeddings = self.patch_embed(frames)  #* [B, T, P, E], where B is batch size, T is chunk length, P is number of patches, E is dim of embedding vector.
+        # process with transformer
         transformed = self.transformer(embeddings) # [B, T, P, E]
         predicted_latents = self.latent_head(transformed) # [B, T, P, L]
         return predicted_latents
@@ -79,6 +80,18 @@ class VideoTokenizerDecoder(nn.Module):
 class VideoTokenizer(nn.Module):
     def __init__(self, frame_size=(128, 128), patch_size=8, embed_dim=128, num_heads=8,
                  hidden_dim=256, num_blocks=4, latent_dim=3, num_bins=4):
+        """Video tokenizer
+
+        Args:
+            frame_size (tuple, optional): frame size of image. Defaults to (128, 128).
+            patch_size (int, optional): patch size that the image going to be devide. Defaults to 8.
+            embed_dim (int, optional): dim of image embedding. Defaults to 128.
+            num_heads (int, optional): num of heads for self-attention. Defaults to 8.
+            hidden_dim (int, optional): dim of latent. Defaults to 256.
+            num_blocks (int, optional): _description_. Defaults to 4.
+            latent_dim (int, optional): _description_. Defaults to 3.
+            num_bins (int, optional): _description_. Defaults to 4.
+        """
         super().__init__()
         self.encoder = VideoTokenizerEncoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
         self.decoder = VideoTokenizerDecoder(frame_size, patch_size, embed_dim, num_heads, hidden_dim, num_blocks, latent_dim)
@@ -86,6 +99,7 @@ class VideoTokenizer(nn.Module):
         self.codebook_size = num_bins**latent_dim
 
     def forward(self, frames):
+        #* frame: [B, T, C, H, W], where B is batch size, T is chunk size, C, H, W is channel, heigh, width of image
         # encode frames to latent representations, quantize, and decode back to frames
         embeddings = self.encoder(frames)  # [B, T, P, L]
         quantized_z = self.quantizer(embeddings)
